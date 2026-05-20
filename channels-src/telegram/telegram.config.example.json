@@ -1,0 +1,25 @@
+{
+  "path": "/webhook/telegram",
+  "auth": {
+    "type": "header_secret",
+    "header": "x-telegram-bot-api-secret-token",
+    "secret": "TELEGRAM_WEBHOOK_SECRET"
+  },
+  "http_credentials": [
+    {
+      "host": "api.telegram.org",
+      "placeholder": "{TELEGRAM_BOT_TOKEN}",
+      "secret": "TELEGRAM_BOT_TOKEN"
+    },
+    {
+      "host": "api.telegram.org",
+      "placeholder": "{TELEGRAM_WEBHOOK_SECRET}",
+      "secret": "TELEGRAM_WEBHOOK_SECRET"
+    }
+  ],
+  "owner_id": "123456789",
+  "telegram": {
+    "bot_token_secret": "TELEGRAM_BOT_TOKEN",
+    "webhook_enabled": true
+  }
+}

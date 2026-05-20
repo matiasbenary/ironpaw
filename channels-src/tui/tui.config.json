@@ -1,0 +1,6 @@
+{
+  "path": "/channel/tui/message",
+  "auth": {
+    "type": "bearer"
+  }
+}

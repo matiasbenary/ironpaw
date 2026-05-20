@@ -1,0 +1,14 @@
+package warden:channel;
+
+interface channel-host {
+    http-request: func(method: string, url: string, body-json: string) -> result<string, string>;
+    emit-message: func(message-json: string) -> result<_, string>;
+}
+
+world channel {
+    import channel-host;
+
+    export on-start: func(config-json: string) -> result<_, string>;
+    export handle-http: func(path: string, body-json: string, config-json: string) -> result<option<string>, string>;
+    export on-message-out: func(message-json: string, address-json: string, config-json: string) -> result<bool, string>;
+}
