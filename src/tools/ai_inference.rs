@@ -1,26 +1,39 @@
+use std::{borrow::Cow, time::Duration};
+
+use async_trait::async_trait;
+use reqwest::Client;
+use schemars::{JsonSchema, Schema, SchemaGenerator};
+
 use crate::{
-    http::{HttpError, HttpTool},
-    openai::{CreateChatCompletionRequest, CreateChatCompletionResponse},
-    secrets::ToolSecrets,
+    http::HttpError,
+    openai::{ChatCompletionTools, CreateChatCompletionRequest, CreateChatCompletionResponse},
+    tools::{self, InternalTool},
 };
 
 const DEFAULT_MODEL: &str = "Qwen/Qwen3-30B-A3B-Instruct-2507";
 
 #[derive(Clone)]
 pub struct AiInferenceTool {
-    http: HttpTool<ToolSecrets>,
+    client: Client,
+    near_api_key: String,
     base_url: String,
     model: String,
 }
 
 impl AiInferenceTool {
-    pub fn new(http: HttpTool<ToolSecrets>) -> Self {
-        Self {
-            http,
+    pub fn new(near_api_key: String) -> Result<Self, HttpError> {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .map_err(sanitize_reqwest_error)?;
+
+        Ok(Self {
+            client,
+            near_api_key,
             base_url: std::env::var("NEAR_BASE_URL")
                 .unwrap_or_else(|_| "https://cloud-api.near.ai".to_string()),
             model: std::env::var("NEAR_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
-        }
+        })
     }
 
     fn chat_completions_url(&self) -> String {
@@ -30,18 +43,97 @@ impl AiInferenceTool {
         )
     }
 
-    pub async fn infer(
+    pub async fn execute(
         &self,
         mut request: CreateChatCompletionRequest,
-    ) -> Result<CreateChatCompletionResponse, HttpError> {
+    ) -> Result<CreateChatCompletionResponse, String> {
         if request.model.is_empty() {
             request.model = self.model.clone();
         }
 
-        let body = self
-            .http
-            .post_json(&self.chat_completions_url(), &request)
-            .await?;
-        serde_json::from_str(&body).map_err(|err| HttpError::Http(err.to_string()))
+        let response = self
+            .client
+            .post(self.chat_completions_url())
+            .bearer_auth(&self.near_api_key)
+            .json(&request)
+            .send()
+            .await
+            .map_err(sanitize_reqwest_error)
+            .map_err(|err| err.to_string())?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(sanitize_reqwest_error)
+            .map_err(|err| err.to_string())?;
+
+        if !status.is_success() {
+            return Err(format!("request failed with {status}: {body}"));
+        }
+
+        serde_json::from_str(&body).map_err(|err| err.to_string())
     }
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct AiInferenceParams(pub CreateChatCompletionRequest);
+
+impl JsonSchema for AiInferenceParams {
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("AiInferenceParams")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        Schema::try_from(serde_json::json!({
+            "type": "object",
+            "description": "OpenAI-compatible CreateChatCompletionRequest.",
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "description": "Optional model name. If omitted, Warden uses its configured default."
+                },
+                "messages": {
+                    "type": "array",
+                    "description": "OpenAI-compatible chat messages.",
+                    "items": { "type": "object" }
+                },
+                "tools": {
+                    "type": "array",
+                    "description": "Optional OpenAI-compatible tool definitions."
+                },
+                "tool_choice": {
+                    "description": "Optional OpenAI-compatible tool choice."
+                }
+            },
+            "required": ["messages"],
+            "additionalProperties": true
+        }))
+        .expect("ai_inference schema should be valid")
+    }
+}
+
+#[async_trait]
+impl InternalTool for AiInferenceTool {
+    fn name(&self) -> &'static str {
+        "ai_inference"
+    }
+
+    fn openai_schema(&self) -> ChatCompletionTools {
+        tools::openai_tool_schema::<AiInferenceParams>(
+            self.name(),
+            "Call an OpenAI-compatible chat completion model with a chat completion request.",
+        )
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> Result<serde_json::Value, String> {
+        tools::execute_typed(args, |params: AiInferenceParams| async {
+            AiInferenceTool::execute(self, params.0).await
+        })
+        .await
+    }
+}
+
+fn sanitize_reqwest_error(err: reqwest::Error) -> HttpError {
+    HttpError::Http(err.without_url().to_string())
 }

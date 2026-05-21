@@ -27,7 +27,8 @@ pub enum Event {
     MessageOut {
         channel: String,
         recipient: Sender,
-        address: ChannelAddress,
+        #[serde(default)]
+        address: Option<ChannelAddress>,
         message: ChatCompletionResponseMessage,
     },
     CronTick {

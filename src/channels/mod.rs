@@ -66,7 +66,8 @@ pub async fn start(
         .collect::<Result<Vec<_>, _>>()
         .map_err(io::Error::other)?;
     for channel in &channels {
-        if let Err(err) = channel.wasm.lock().await.on_start(&channel.config_json) {
+        let config_json = channel.state.lock().await.config_json.clone();
+        if let Err(err) = channel.wasm.lock().await.on_start(&config_json) {
             eprintln!("{} channel start failed: {err}", channel.name);
         }
     }

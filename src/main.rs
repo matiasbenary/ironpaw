@@ -4,7 +4,7 @@ use warden::{
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
     secrets::Secrets,
-    tools::ToolsRuntime,
+    tools::{InternalTools, ai_inference::AiInferenceTool, send_message::SendMessageTool},
 };
 
 #[tokio::main]
@@ -13,7 +13,14 @@ async fn main() -> std::io::Result<()> {
     let secrets = Secrets::load(&layout);
 
     let bus = Bus::new(16);
-    let tools = ToolsRuntime::new(secrets.tools.clone()).map_err(std::io::Error::other)?;
+    let near_api_key = secrets
+        .tools
+        .get("NEAR_API_KEY")
+        .ok_or_else(|| std::io::Error::other("missing tool secret: NEAR_API_KEY"))?;
+    let tools = InternalTools::new(
+        AiInferenceTool::new(near_api_key).map_err(std::io::Error::other)?,
+        SendMessageTool::new(bus.clone()),
+    );
     let engine = AiEngine::new(bus.clone(), tools);
     let _engine_task = engine.start();
 

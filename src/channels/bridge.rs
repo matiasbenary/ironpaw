@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io, sync::Arc};
+use std::{collections::HashMap, fs, io, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -16,10 +16,7 @@ use crate::{
         config::{ChannelAuth, ChannelConfig, ChannelManifest},
         wasm::WasmChannel,
     },
-    openai::{
-        ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
-        ChatCompletionRequestUserMessageContent,
-    },
+    openai::{ChatCompletionRequestUserMessageContent, user_request_message},
     secrets::ChannelSecrets,
 };
 
@@ -28,9 +25,15 @@ pub const DEFAULT_ADDR: &str = "127.0.0.1:7878";
 #[derive(Clone)]
 pub struct LoadedChannel {
     pub name: String,
+    pub config_path: std::path::PathBuf,
+    pub state: Arc<Mutex<LoadedChannelState>>,
+    pub wasm: Arc<Mutex<WasmChannel>>,
+}
+
+#[derive(Clone)]
+pub struct LoadedChannelState {
     pub config: ChannelConfig,
     pub config_json: String,
-    pub wasm: Arc<Mutex<WasmChannel>>,
 }
 
 #[derive(Clone)]
@@ -49,16 +52,17 @@ pub async fn run_server(
     secrets: ChannelSecrets,
     channels: Vec<LoadedChannel>,
 ) -> io::Result<()> {
-    let channels_by_path = channels
-        .into_iter()
-        .map(|channel| (channel.config.path.clone(), channel))
-        .collect::<HashMap<_, _>>();
+    let mut channels_by_path = HashMap::new();
+    for channel in channels {
+        let path = channel.state.lock().await.config.path.clone();
+        channels_by_path.insert(path, channel);
+    }
     let channels_by_name = channels_by_path
         .values()
         .cloned()
         .map(|channel| (channel.name.clone(), channel))
         .collect::<HashMap<_, _>>();
-    tokio::spawn(deliver_message_out(bus.clone(), channels_by_name));
+    tokio::spawn(message_warden_to_channel(bus.clone(), channels_by_name));
 
     let state = BridgeState {
         bus,
@@ -67,7 +71,7 @@ pub async fn run_server(
         channels_by_path: Arc::new(channels_by_path),
     };
     let app = Router::new()
-        .route("/{*path}", post(post_channel_message))
+        .route("/{*path}", post(message_channel_to_warden))
         .with_state(state);
 
     println!("channel bridge listening on http://{addr}");
@@ -94,13 +98,16 @@ pub fn load_channel(
         .map_err(|err| err.to_string())?;
     Ok(LoadedChannel {
         name: manifest.name,
-        config: manifest.config,
-        config_json: manifest.config_json,
+        config_path: manifest.config_path,
+        state: Arc::new(Mutex::new(LoadedChannelState {
+            config: manifest.config,
+            config_json: manifest.config_json,
+        })),
         wasm: Arc::new(Mutex::new(wasm)),
     })
 }
 
-async fn post_channel_message(
+async fn message_channel_to_warden(
     State(state): State<BridgeState>,
     Path(path): Path<String>,
     headers: HeaderMap,
@@ -110,14 +117,20 @@ async fn post_channel_message(
     let Some(channel) = state.channels_by_path.get(&path).cloned() else {
         return Err((StatusCode::NOT_FOUND, "channel route not found".to_string()));
     };
+    let channel_state = channel.state.lock().await.clone();
 
-    authorize(&headers, &state.token, &state.secrets, &channel.config)?;
+    authorize(
+        &headers,
+        &state.token,
+        &state.secrets,
+        &channel_state.config,
+    )?;
 
     let body = String::from_utf8(body.to_vec())
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let mut wasm = channel.wasm.lock().await;
     let event_json = wasm
-        .handle_http(&path, &body, &channel.config_json)
+        .handle_http(&path, &body, &channel_state.config_json)
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let mut emitted_messages = wasm.take_emitted_messages();
     if let Some(event_json) = event_json {
@@ -142,17 +155,21 @@ async fn post_channel_message(
             ));
         }
 
-        let sender = sender_for_inbound(&channel.config, &inbound);
+        let sender = sender_for_inbound(&channel_state.config, &inbound);
         if sender != Sender::User {
             ignored += 1;
             continue;
         }
 
+        remember_default_address(&channel, &inbound.address)
+            .await
+            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
+
         state.bus.publish(Event::MessageIn {
             channel: inbound.channel.clone(),
             sender,
             address: inbound.address,
-            message: user_message(inbound.content),
+            message: user_request_message(inbound.content),
         });
         accepted += 1;
     }
@@ -164,7 +181,7 @@ async fn post_channel_message(
     })))
 }
 
-async fn deliver_message_out(bus: Bus, channels_by_name: HashMap<String, LoadedChannel>) {
+async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, LoadedChannel>) {
     let mut events = bus.subscribe();
     loop {
         let event = match events.recv().await {
@@ -196,6 +213,11 @@ async fn deliver_message_out(bus: Bus, channels_by_name: HashMap<String, LoadedC
         let Some(channel_runtime) = channels_by_name.get(&channel) else {
             continue;
         };
+        let channel_state = channel_runtime.state.lock().await.clone();
+        let Some(address) = address.or(channel_state.config.default_address) else {
+            eprintln!("{channel} message out has no address and no default_address");
+            continue;
+        };
 
         let message_json = match serde_json::to_string(&message) {
             Ok(message_json) => message_json,
@@ -215,7 +237,7 @@ async fn deliver_message_out(bus: Bus, channels_by_name: HashMap<String, LoadedC
         let handled = channel_runtime.wasm.lock().await.on_message_out(
             &message_json,
             &address_json,
-            &channel_runtime.config_json,
+            &channel_state.config_json,
         );
         match handled {
             Ok(true) => {}
@@ -223,6 +245,25 @@ async fn deliver_message_out(bus: Bus, channels_by_name: HashMap<String, LoadedC
             Err(err) => eprintln!("{channel} message out failed: {err}"),
         }
     }
+}
+
+async fn remember_default_address(
+    channel: &LoadedChannel,
+    address: &ChannelAddress,
+) -> Result<(), String> {
+    let mut state = channel.state.lock().await;
+    if state.config.default_address.as_ref() == Some(address) {
+        return Ok(());
+    }
+
+    state.config.default_address = Some(address.clone());
+    let mut config_json = serde_json::from_str::<serde_json::Value>(&state.config_json)
+        .map_err(|err| err.to_string())?;
+    config_json["default_address"] =
+        serde_json::to_value(address).map_err(|err| err.to_string())?;
+    state.config_json =
+        serde_json::to_string_pretty(&config_json).map_err(|err| err.to_string())?;
+    fs::write(&channel.config_path, &state.config_json).map_err(|err| err.to_string())
 }
 
 fn authorize(
@@ -326,11 +367,4 @@ struct ChannelInbound {
     channel_user_id: String,
     address: ChannelAddress,
     content: ChatCompletionRequestUserMessageContent,
-}
-
-fn user_message(content: ChatCompletionRequestUserMessageContent) -> ChatCompletionRequestMessage {
-    ChatCompletionRequestMessage::User(ChatCompletionRequestUserMessage {
-        content,
-        name: None,
-    })
 }
