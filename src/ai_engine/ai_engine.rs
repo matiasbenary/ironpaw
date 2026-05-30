@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
@@ -9,12 +9,12 @@ use crate::{
 
 use super::{
     orchestrator::{
-        ExecutionPlan, GeneratedFile, construct_execution_plan, fulfill_pending_deliveries,
-        record_generated_file,
+        ExecutionPlan, construct_execution_plan, execution_plan_input_item,
+        send_generated_file_to_planned_channels,
     },
     preamble::{files_shared_notice_input_item, system_preamble},
     utils::{
-        fill_current_destination, parse_response_output, publish_progress, summarize_tool_args,
+        fill_current_destination, parse_response_output, publish_progress,
         tool_result_input_item,
     },
 };
@@ -96,8 +96,6 @@ async fn run_agent_loop(
         });
     input_items.extend(messages);
     let mut attachments: Vec<OutboundAttachment> = Vec::new();
-    let mut generated_files: Vec<GeneratedFile> = Vec::new();
-    let mut fulfilled_requirements: HashSet<String> = HashSet::new();
     let mut previous_response_id: Option<String> = None;
     for round in 0..MAX_TOOL_ROUNDS {
         let available_tools: Vec<_> = internal_tools
@@ -157,26 +155,30 @@ async fn run_agent_loop(
             function_calls.len()
         ));
         for tool_call in function_calls {
+            let progress_message = format!("calling {}({})", tool_call.name, tool_call.arguments);
+            debug_log(format!("ai_engine: {progress_message}"));
+            publish_progress(bus, channel, address, progress_message);
             let tool_result = execute_tool_call(
                 &internal_tools.tools,
                 tool_call,
-                Some((bus, channel, address)),
-            )
-            .await?;
-            record_generated_file(
-                &mut generated_files,
-                &execution_plan,
-                &tool_result.tool_name,
-                &tool_result.result,
-            );
-            let fulfilled_items = fulfill_pending_deliveries(
-                internal_tools,
                 channel,
-                &execution_plan,
-                &generated_files,
-                &mut fulfilled_requirements,
+                address,
             )
             .await?;
+            let mut sent_items = Vec::new();
+            for attachment in &tool_result.attachments {
+                if let Some(file_id) = attachment.file_id {
+                    sent_items.extend(
+                        send_generated_file_to_planned_channels(
+                            &internal_tools.send_message,
+                            channel,
+                            &execution_plan,
+                            file_id,
+                        )
+                        .await?,
+                    );
+                }
+            }
             let new_attachments = tool_result.attachments;
             input_items.push(tool_result.input_item);
             if !new_attachments.is_empty() {
@@ -184,9 +186,10 @@ async fn run_agent_loop(
                     new_attachments.len(),
                     channel,
                 ));
+                input_items.push(execution_plan_input_item(&execution_plan));
             }
             attachments.extend(new_attachments);
-            input_items.extend(fulfilled_items);
+            input_items.extend(sent_items);
         }
     }
 
@@ -230,27 +233,20 @@ fn publish_current_channel_output(
 struct ToolCallOutput {
     input_item: InputItem,
     attachments: Vec<OutboundAttachment>,
-    tool_name: String,
-    result: serde_json::Value,
 }
 
 async fn execute_tool_call(
     tools: &[Arc<dyn InternalTool>],
     tool_call: crate::openai::FunctionToolCall,
-    progress: Option<(&Bus, &str, &ChannelAddress)>,
+    channel: &str,
+    address: &ChannelAddress,
 ) -> Result<ToolCallOutput, String> {
     let tool_call_id = tool_call.call_id.clone();
     let tool_name = tool_call.name.clone();
-    let args_summary = summarize_tool_args(&tool_call.arguments);
-    let progress_message = format!("calling {tool_name}({args_summary})");
-    debug_log(format!("ai_engine: {progress_message}"));
-    if let Some((bus, channel, address)) = progress {
-        publish_progress(bus, channel, address, progress_message);
-    }
     let tool_response = if let Some(tool) = tools.iter().find(|tool| tool.name() == tool_name) {
         let mut args = serde_json::from_str(&tool_call.arguments).map_err(|err| err.to_string())?;
         if tool_name == "send_message" {
-            fill_current_destination(&mut args, progress);
+            fill_current_destination(&mut args, channel, address);
         }
         match tool.execute(args).await {
             Ok(response) => response,
@@ -269,12 +265,11 @@ async fn execute_tool_call(
         }))
     };
     let result = tool_response.result;
+    let attachments = tool_response.files;
     debug_log(format!("ai_engine: tool {tool_name} finished"));
     Ok(ToolCallOutput {
         input_item: tool_result_input_item(&tool_call_id, result.to_string()),
-        attachments: tool_response.files,
-        tool_name,
-        result,
+        attachments,
     })
 }
 
@@ -292,7 +287,6 @@ mod tests {
 
     #[test]
     fn fill_current_destination_leaves_explicit_channel_defaults_to_channel() {
-        let bus = Bus::new(16);
         let address = ChannelAddress {
             channel: "tui".to_string(),
             conversation_id: "http://127.0.0.1:60684".to_string(),
@@ -303,7 +297,7 @@ mod tests {
             "content": "hi"
         });
 
-        fill_current_destination(&mut args, Some((&bus, "tui", &address)));
+        fill_current_destination(&mut args, "tui", &address);
 
         assert_eq!(args["channel"], "telegram");
         assert!(args.get("conversation_id").is_none());
@@ -312,7 +306,6 @@ mod tests {
 
     #[test]
     fn fill_current_destination_fills_current_conversation_when_channel_omitted() {
-        let bus = Bus::new(16);
         let address = ChannelAddress {
             channel: "telegram".to_string(),
             conversation_id: "123".to_string(),
@@ -322,7 +315,7 @@ mod tests {
             "content": "hi"
         });
 
-        fill_current_destination(&mut args, Some((&bus, "telegram", &address)));
+        fill_current_destination(&mut args, "telegram", &address);
 
         assert_eq!(args["channel"], "telegram");
         assert_eq!(args["conversation_id"], "123");
@@ -346,7 +339,12 @@ mod tests {
             status: None,
         };
 
-        let result = execute_tool_call(&tools, tool_call, None).await.unwrap();
+        let address = ChannelAddress {
+            channel: "telegram".to_string(),
+            conversation_id: "123".to_string(),
+            thread_id: None,
+        };
+        let result = execute_tool_call(&tools, tool_call, "telegram", &address).await.unwrap();
         let result_json = serde_json::to_value(result.input_item).unwrap();
         assert_eq!(result_json["call_id"], "call_1");
         assert!(
@@ -387,7 +385,12 @@ mod tests {
             status: None,
         };
 
-        let result = execute_tool_call(&tools, tool_call, None).await.unwrap();
+        let address = ChannelAddress {
+            channel: "test".to_string(),
+            conversation_id: "123".to_string(),
+            thread_id: None,
+        };
+        let result = execute_tool_call(&tools, tool_call, "test", &address).await.unwrap();
         assert_eq!(result.attachments.len(), 1);
         assert_eq!(result.attachments[0].filename, "generated.png");
         let result_json = serde_json::to_value(result.input_item).unwrap();
@@ -424,6 +427,7 @@ mod tests {
                     kind: "image".to_string(),
                     mime_type: "image/png".to_string(),
                     filename: "generated.png".to_string(),
+                    file_id: None,
                     data_base64: Some("abc".to_string()),
                     url: None,
                 }],

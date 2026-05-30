@@ -6,6 +6,8 @@ pub struct OutboundAttachment {
     pub mime_type: String,
     pub filename: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_base64: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,

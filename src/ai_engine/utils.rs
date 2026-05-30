@@ -47,11 +47,9 @@ pub(super) fn parse_response_output(response: crate::openai::Response) -> Parsed
 
 pub(super) fn fill_current_destination(
     args: &mut serde_json::Value,
-    progress: Option<(&Bus, &str, &ChannelAddress)>,
+    channel: &str,
+    address: &ChannelAddress,
 ) {
-    let Some((_bus, channel, address)) = progress else {
-        return;
-    };
     let Some(object) = args.as_object_mut() else {
         return;
     };
@@ -97,13 +95,4 @@ pub(super) fn publish_progress(
             attachments: Vec::new(),
         },
     });
-}
-
-pub(super) fn summarize_tool_args(arguments: &str) -> String {
-    const MAX_CHARS: usize = 600;
-
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) else {
-        return arguments.chars().take(MAX_CHARS).collect();
-    };
-    value.to_string().chars().take(MAX_CHARS).collect()
 }

@@ -4,8 +4,12 @@ use async_openai::types::chat::{
 };
 
 use crate::{
+    message::OutboundAttachment,
     openai::{EasyInputContent, EasyInputMessage, InputItem, Role},
-    tools::{InternalTools, ai_inference::AiInferenceTool, send_message::SendMessageParams},
+    tools::{
+        ai_inference::AiInferenceTool,
+        send_message::{SendMessageParams, SendMessageTool},
+    },
 };
 
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -44,13 +48,6 @@ struct RequirementObject {
 struct RequirementTarget {
     kind: String,
     name: String,
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct GeneratedFile {
-    requirement_id: String,
-    kind: String,
-    file_id: u32,
 }
 
 pub(super) async fn construct_execution_plan(
@@ -98,6 +95,64 @@ pub(super) async fn construct_execution_plan(
     Ok(plan)
 }
 
+pub(super) fn execution_plan_input_item(plan: &ExecutionPlan) -> InputItem {
+    let content = serde_json::to_string(plan).unwrap_or_else(|_| "{}".to_string());
+    EasyInputMessage {
+        r#type: Default::default(),
+        role: Role::System,
+        content: EasyInputContent::Text(format!(
+            "Execution plan for the current request: {content}. Continue until these requirements are satisfied. If a generated file must be sent to another channel, call send_message with the returned file_id."
+        )),
+        phase: None,
+    }
+    .into()
+}
+
+pub(super) async fn send_generated_file_to_planned_channels(
+    send_message: &SendMessageTool,
+    current_channel: &str,
+    plan: &ExecutionPlan,
+    file_id: u32,
+) -> Result<Vec<InputItem>, String> {
+    let mut sent = Vec::new();
+    for channel in plan.generated_file_channels(current_channel) {
+        send_message
+            .execute(SendMessageParams {
+                channel: channel.clone(),
+                content: "Here is the generated image.".to_string(),
+                attachments: vec![OutboundAttachment {
+                    kind: "image".to_string(),
+                    mime_type: "image/png".to_string(),
+                    filename: format!("{file_id}.png"),
+                    file_id: Some(file_id),
+                    data_base64: None,
+                    url: None,
+                }],
+                conversation_id: None,
+                thread_id: None,
+            })
+            .await?;
+        sent.push(generated_file_sent_input_item(channel, file_id));
+    }
+    Ok(sent)
+}
+
+impl ExecutionPlan {
+    fn generated_file_channels(&self, current_channel: &str) -> Vec<String> {
+        self.requirements
+            .iter()
+            .filter_map(|requirement| {
+                let target = requirement.target.as_ref()?;
+                if target.kind == "channel" && target.name != current_channel {
+                    Some(target.name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
 fn normalize_execution_plan(plan: &mut ExecutionPlan) {
     plan.requirements.retain(|requirement| {
         !requirement.id.trim().is_empty() && !requirement.action.trim().is_empty()
@@ -110,101 +165,6 @@ fn normalize_execution_plan(plan: &mut ExecutionPlan) {
             target.name = target.name.trim().to_ascii_lowercase();
         }
     }
-}
-
-pub(super) fn record_generated_file(
-    generated_files: &mut Vec<GeneratedFile>,
-    plan: &ExecutionPlan,
-    tool_name: &str,
-    result: &serde_json::Value,
-) {
-    if tool_name != "image_generation" {
-        return;
-    }
-    let Some(file_id) = result.get("file_id").and_then(|value| value.as_u64()) else {
-        return;
-    };
-    let requirement_id = plan
-        .requirements
-        .iter()
-        .find(|requirement| requirement.action == "create" && requirement.object.kind == "image")
-        .map(|requirement| requirement.id.clone())
-        .unwrap_or_else(|| "generated_image".to_string());
-
-    generated_files.push(GeneratedFile {
-        requirement_id,
-        kind: "image".to_string(),
-        file_id: file_id as u32,
-    });
-}
-
-pub(super) async fn fulfill_pending_deliveries(
-    internal_tools: &InternalTools,
-    current_channel: &str,
-    plan: &ExecutionPlan,
-    generated_files: &[GeneratedFile],
-    fulfilled_requirements: &mut std::collections::HashSet<String>,
-) -> Result<Vec<InputItem>, String> {
-    let mut fulfilled = Vec::new();
-    for requirement in &plan.requirements {
-        if fulfilled_requirements.contains(&requirement.id) {
-            continue;
-        }
-        let Some(target) = &requirement.target else {
-            continue;
-        };
-        if target.kind != "channel" || target.name == current_channel {
-            continue;
-        }
-        let generated_file = if requirement.action == "deliver" {
-            generated_file_for_requirement(requirement, generated_files)
-        } else if requirement.action == "create" {
-            generated_files
-                .iter()
-                .find(|file| file.requirement_id == requirement.id)
-        } else {
-            None
-        };
-        let Some(generated_file) = generated_file else {
-            continue;
-        };
-        internal_tools
-            .send_message
-            .execute(SendMessageParams {
-                channel: target.name.clone(),
-                content: match generated_file.kind.as_str() {
-                    "image" => "Here is the generated image.".to_string(),
-                    _ => "Here is the requested result.".to_string(),
-                },
-                file_id: Some(generated_file.file_id),
-                image_url: None,
-                image_base64: None,
-                image_mime_type: None,
-                image_filename: None,
-                conversation_id: None,
-                thread_id: None,
-            })
-            .await?;
-        fulfilled_requirements.insert(requirement.id.clone());
-        fulfilled.push(requirement_fulfilled_input_item(requirement.id.clone()));
-    }
-    Ok(fulfilled)
-}
-
-fn generated_file_for_requirement<'a>(
-    requirement: &Requirement,
-    generated_files: &'a [GeneratedFile],
-) -> Option<&'a GeneratedFile> {
-    let refs = [
-        requirement.object_ref.as_deref(),
-        requirement.depends_on.as_deref(),
-        requirement.object.ref_id.as_deref(),
-    ];
-    generated_files.iter().find(|file| {
-        refs.iter()
-            .flatten()
-            .any(|ref_id| *ref_id == file.requirement_id)
-    })
 }
 
 fn extract_text_from_input_items(items: &[InputItem]) -> String {
@@ -239,12 +199,12 @@ fn collect_text_values_for_keys(value: &serde_json::Value, keys: &[&str]) -> Vec
     }
 }
 
-fn requirement_fulfilled_input_item(requirement_id: String) -> InputItem {
+fn generated_file_sent_input_item(channel: String, file_id: u32) -> InputItem {
     EasyInputMessage {
         r#type: Default::default(),
         role: Role::System,
         content: EasyInputContent::Text(format!(
-            "Internal obligation fulfilled: requirement '{requirement_id}'."
+            "Generated file {file_id} was sent to channel '{channel}'."
         )),
         phase: None,
     }
@@ -253,99 +213,10 @@ fn requirement_fulfilled_input_item(requirement_id: String) -> InputItem {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use tokio::time::timeout;
-
     use super::*;
-    use crate::{
-        bus::{Bus, Event},
-        tools::send_message::SendMessageTool,
-    };
 
-    #[tokio::test]
-    async fn delivery_requirement_sends_generated_file() {
-        let bus = Bus::new(16);
-        let mut events = bus.subscribe();
-        let files_dir = test_files_dir("delivery");
-        std::fs::create_dir_all(&files_dir).unwrap();
-        std::fs::write(files_dir.join("42.png"), b"stub-png").unwrap();
-
-        let internal_tools = InternalTools::new(
-            AiInferenceTool::new("test-key".to_string()).unwrap(),
-            SendMessageTool::new(bus.clone(), files_dir),
-            "test-key".to_string(),
-            std::env::temp_dir(),
-        );
-        let plan = ExecutionPlan {
-            user_goal: "Create an image of a dog and send it to Telegram.".to_string(),
-            requirements: vec![
-                Requirement {
-                    id: "r1".to_string(),
-                    action: "create".to_string(),
-                    object: RequirementObject {
-                        kind: "image".to_string(),
-                        description: Some("a dog".to_string()),
-                        ref_id: None,
-                    },
-                    object_ref: None,
-                    target: None,
-                    depends_on: None,
-                },
-                Requirement {
-                    id: "r2".to_string(),
-                    action: "deliver".to_string(),
-                    object: RequirementObject {
-                        kind: "generated_file".to_string(),
-                        description: None,
-                        ref_id: None,
-                    },
-                    object_ref: Some("r1".to_string()),
-                    target: Some(RequirementTarget {
-                        kind: "channel".to_string(),
-                        name: "telegram".to_string(),
-                    }),
-                    depends_on: Some("r1".to_string()),
-                },
-            ],
-        };
-        let mut generated_files = Vec::new();
-        let mut fulfilled_requirements = std::collections::HashSet::new();
-
-        record_generated_file(
-            &mut generated_files,
-            &plan,
-            "image_generation",
-            &serde_json::json!({ "file_id": 42 }),
-        );
-        let fulfilled = fulfill_pending_deliveries(
-            &internal_tools,
-            "tui",
-            &plan,
-            &generated_files,
-            &mut fulfilled_requirements,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(fulfilled.len(), 1);
-        assert_telegram_attachment(events.recv()).await;
-    }
-
-    #[tokio::test]
-    async fn create_requirement_target_sends_generated_file() {
-        let bus = Bus::new(16);
-        let mut events = bus.subscribe();
-        let files_dir = test_files_dir("create-target");
-        std::fs::create_dir_all(&files_dir).unwrap();
-        std::fs::write(files_dir.join("43.png"), b"stub-png").unwrap();
-
-        let internal_tools = InternalTools::new(
-            AiInferenceTool::new("test-key".to_string()).unwrap(),
-            SendMessageTool::new(bus.clone(), files_dir),
-            "test-key".to_string(),
-            std::env::temp_dir(),
-        );
+    #[test]
+    fn execution_plan_input_item_instructs_model_to_send_generated_file() {
         let plan = ExecutionPlan {
             user_goal: "Create and send an image of a dog to Telegram.".to_string(),
             requirements: vec![Requirement {
@@ -364,52 +235,10 @@ mod tests {
                 depends_on: None,
             }],
         };
-        let mut generated_files = Vec::new();
-        let mut fulfilled_requirements = std::collections::HashSet::new();
+        let item = execution_plan_input_item(&plan);
+        let value = serde_json::to_value(item).unwrap();
 
-        record_generated_file(
-            &mut generated_files,
-            &plan,
-            "image_generation",
-            &serde_json::json!({ "file_id": 43 }),
-        );
-        let fulfilled = fulfill_pending_deliveries(
-            &internal_tools,
-            "tui",
-            &plan,
-            &generated_files,
-            &mut fulfilled_requirements,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(fulfilled.len(), 1);
-        assert_telegram_attachment(events.recv()).await;
-    }
-
-    fn test_files_dir(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "warden-ai-engine-orchestrator-{name}-{}",
-            std::process::id()
-        ))
-    }
-
-    async fn assert_telegram_attachment(
-        event: impl std::future::Future<
-            Output = Result<Event, tokio::sync::broadcast::error::RecvError>,
-        >,
-    ) {
-        let event = timeout(Duration::from_secs(1), event)
-            .await
-            .expect("timed out waiting for bus event")
-            .expect("bus closed");
-        let Event::MessageOut {
-            channel, message, ..
-        } = event
-        else {
-            panic!("expected MessageOut");
-        };
-        assert_eq!(channel, "telegram");
-        assert_eq!(message.attachments.len(), 1);
+        assert!(value["content"].as_str().unwrap().contains("send_message"));
+        assert!(value["content"].as_str().unwrap().contains("file_id"));
     }
 }
