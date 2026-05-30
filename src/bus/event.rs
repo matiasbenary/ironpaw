@@ -1,4 +1,4 @@
-use crate::openai::{ChatCompletionRequestMessage, ChatCompletionResponseMessage};
+use crate::{message::OutboundMessage, openai::InputItem};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,20 +16,20 @@ pub struct ChannelAddress {
     pub thread_id: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Event {
     MessageIn {
         channel: String,
         sender: Sender,
         address: ChannelAddress,
-        message: ChatCompletionRequestMessage,
+        message: InputItem,
     },
     MessageOut {
         channel: String,
         recipient: Sender,
         #[serde(default)]
         address: Option<ChannelAddress>,
-        message: ChatCompletionResponseMessage,
+        message: OutboundMessage,
     },
     CronTick {
         schedule: String,

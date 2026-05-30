@@ -3,6 +3,7 @@ pub mod bus;
 pub mod channels;
 pub mod config;
 pub mod http;
+pub mod message;
 pub mod openai;
 pub mod secrets;
 pub mod tools;

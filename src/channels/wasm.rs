@@ -7,6 +7,7 @@ use wasmtime::{
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::{http::HttpTool, secrets::ChannelSecrets};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 wasmtime::component::bindgen!({
     world: "channel",
@@ -130,6 +131,44 @@ impl warden::channel::channel_host::Host for StoreData {
 
         self.http
             .post_json_string_blocking(&url, &body_json)
+            .map_err(|err| err.to_string())
+    }
+
+    fn http_request_base64(
+        &mut self,
+        method: String,
+        url: String,
+        body_json: String,
+    ) -> Result<String, String> {
+        self.http
+            .request_bytes_string_blocking(&method, &url, &body_json)
+            .map(|bytes| STANDARD.encode(bytes))
+            .map_err(|err| err.to_string())
+    }
+
+    fn http_multipart_base64(
+        &mut self,
+        method: String,
+        url: String,
+        fields_json: String,
+        file_field: String,
+        filename: String,
+        mime_type: String,
+        data_base64: String,
+    ) -> Result<String, String> {
+        if method.to_uppercase() != "POST" {
+            return Err("only POST is supported by channel http-multipart-base64".to_string());
+        }
+
+        self.http
+            .post_multipart_base64_blocking(
+                &url,
+                &fields_json,
+                &file_field,
+                &filename,
+                &mime_type,
+                &data_base64,
+            )
             .map_err(|err| err.to_string())
     }
 

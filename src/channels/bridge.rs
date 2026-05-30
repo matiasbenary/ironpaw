@@ -16,7 +16,10 @@ use crate::{
         config::{ChannelAuth, ChannelConfig, ChannelManifest},
         wasm::WasmChannel,
     },
-    openai::{ChatCompletionRequestUserMessageContent, user_request_message},
+    openai::{
+        EasyInputContent, EasyInputMessage, ImageDetail, InputContent, InputFileContent,
+        InputImageContent, InputItem, InputMessage, InputRole, InputTextContent, Role,
+    },
     secrets::ChannelSecrets,
 };
 
@@ -169,7 +172,7 @@ async fn message_channel_to_warden(
             channel: inbound.channel.clone(),
             sender,
             address: inbound.address,
-            message: user_request_message(inbound.content),
+            message: content_to_input_item(inbound.content),
         });
         accepted += 1;
     }
@@ -366,5 +369,86 @@ struct ChannelInbound {
     channel: String,
     channel_user_id: String,
     address: ChannelAddress,
-    content: ChatCompletionRequestUserMessageContent,
+    content: serde_json::Value,
+}
+
+fn content_to_input_item(content: serde_json::Value) -> InputItem {
+    if let Some(text) = content.as_str() {
+        return EasyInputMessage {
+            r#type: Default::default(),
+            role: Role::User,
+            content: EasyInputContent::Text(text.to_string()),
+            phase: None,
+        }
+        .into();
+    }
+
+    let Some(parts) = content.as_array() else {
+        return EasyInputMessage {
+            r#type: Default::default(),
+            role: Role::User,
+            content: EasyInputContent::Text(content.to_string()),
+            phase: None,
+        }
+        .into();
+    };
+
+    let input_parts = parts
+        .iter()
+        .filter_map(content_part_to_input)
+        .collect::<Vec<_>>();
+
+    InputMessage {
+        role: InputRole::User,
+        content: input_parts,
+        status: None,
+    }
+    .into()
+}
+
+fn content_part_to_input(part: &serde_json::Value) -> Option<InputContent> {
+    match part.get("type").and_then(|t| t.as_str()) {
+        Some("text") => Some(InputContent::InputText(InputTextContent {
+            text: part.get("text")?.as_str()?.to_string(),
+        })),
+        Some("image_url") => {
+            let url = part
+                .get("image_url")
+                .and_then(|u| u.get("url"))
+                .and_then(|u| u.as_str())?
+                .to_string();
+            Some(InputContent::InputImage(InputImageContent {
+                detail: ImageDetail::Auto,
+                file_id: None,
+                image_url: Some(url),
+            }))
+        }
+        Some("file") => {
+            let file = part.get("file")?;
+            let file_data = file.get("file_data").and_then(|d| d.as_str()).map(|d| {
+                if d.starts_with("data:") {
+                    d.to_string()
+                } else {
+                    format!("data:application/pdf;base64,{d}")
+                }
+            });
+            Some(InputContent::InputFile(InputFileContent {
+                file_data,
+                file_id: file
+                    .get("file_id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string),
+                file_url: file
+                    .get("file_url")
+                    .and_then(|u| u.as_str())
+                    .map(str::to_string),
+                filename: file
+                    .get("filename")
+                    .and_then(|n| n.as_str())
+                    .map(str::to_string),
+                detail: None,
+            }))
+        }
+        _ => None,
+    }
 }

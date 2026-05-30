@@ -23,6 +23,10 @@ impl RuntimeLayout {
     pub fn channels_dir(&self) -> PathBuf {
         self.root.join("channels")
     }
+
+    pub fn files_dir(&self) -> PathBuf {
+        self.root.join("files")
+    }
 }
 
 fn default_runtime_root() -> PathBuf {

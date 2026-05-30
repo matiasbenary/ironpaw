@@ -1,13 +1,32 @@
 pub mod ai_inference;
+pub mod image_generation;
 pub mod send_message;
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::openai::{ChatCompletionTool, ChatCompletionTools, FunctionObject};
+use crate::message::OutboundAttachment;
+use crate::openai::{FunctionTool, Tool};
 
-use self::{ai_inference::AiInferenceTool, send_message::SendMessageTool};
+use self::{
+    ai_inference::AiInferenceTool, image_generation::ImageGenerationTool,
+    send_message::SendMessageTool,
+};
+
+pub struct ToolOutput {
+    pub result: serde_json::Value,
+    pub files: Vec<OutboundAttachment>,
+}
+
+impl ToolOutput {
+    pub fn json(result: serde_json::Value) -> Self {
+        Self {
+            result,
+            files: Vec::new(),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct InternalTools {
@@ -17,13 +36,18 @@ pub struct InternalTools {
 }
 
 impl InternalTools {
-    pub fn new(ai_inference: AiInferenceTool, send_message: SendMessageTool) -> Self {
-        let ai_inference_tool = Arc::new(ai_inference.clone());
+    pub fn new(
+        ai_inference: AiInferenceTool,
+        send_message: SendMessageTool,
+        near_api_key: String,
+        files_dir: std::path::PathBuf,
+    ) -> Self {
         let send_message = Arc::new(send_message);
+        let image_generation = Arc::new(ImageGenerationTool::new(near_api_key, files_dir));
         Self {
             ai_inference,
             send_message: Arc::clone(&send_message),
-            tools: vec![ai_inference_tool, send_message],
+            tools: vec![send_message, image_generation],
         }
     }
 }
@@ -32,9 +56,9 @@ impl InternalTools {
 pub trait InternalTool: Send + Sync {
     fn name(&self) -> &'static str;
 
-    fn openai_schema(&self) -> ChatCompletionTools;
+    fn responses_schema(&self) -> Tool;
 
-    async fn execute(&self, args: serde_json::Value) -> Result<serde_json::Value, String>;
+    async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput, String>;
 }
 
 pub async fn execute_typed<P, O, F>(
@@ -51,19 +75,17 @@ where
     serde_json::to_value(output).map_err(|err| err.to_string())
 }
 
-pub fn openai_tool_schema<P>(name: &str, description: &str) -> ChatCompletionTools
+pub fn responses_tool_schema<P>(name: &str, description: &str) -> Tool
 where
     P: schemars::JsonSchema,
 {
-    ChatCompletionTools::Function(ChatCompletionTool {
-        function: FunctionObject {
-            name: name.to_string(),
-            description: Some(description.to_string()),
-            parameters: Some(
-                serde_json::to_value(schemars::schema_for!(P))
-                    .expect("tool schema should serialize"),
-            ),
-            strict: None,
-        },
+    Tool::Function(FunctionTool {
+        name: name.to_string(),
+        description: Some(description.to_string()),
+        parameters: Some(
+            serde_json::to_value(schemars::schema_for!(P)).expect("tool schema should serialize"),
+        ),
+        strict: None,
+        defer_loading: None,
     })
 }

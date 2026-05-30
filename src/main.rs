@@ -18,8 +18,10 @@ async fn main() -> std::io::Result<()> {
         .get("NEAR_API_KEY")
         .ok_or_else(|| std::io::Error::other("missing tool secret: NEAR_API_KEY"))?;
     let tools = InternalTools::new(
-        AiInferenceTool::new(near_api_key).map_err(std::io::Error::other)?,
-        SendMessageTool::new(bus.clone()),
+        AiInferenceTool::new(near_api_key.clone()).map_err(std::io::Error::other)?,
+        SendMessageTool::new(bus.clone(), layout.files_dir()),
+        near_api_key.clone(),
+        layout.files_dir(),
     );
     let engine = AiEngine::new(bus.clone(), tools);
     let _engine_task = engine.start();
