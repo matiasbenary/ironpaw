@@ -64,8 +64,14 @@ async fn image_generation_routes_to_telegram() {
     let result = timeout(deadline, async {
         loop {
             let event = events.recv().await.expect("bus closed");
-            if let Event::MessageOut { channel, message, .. } = event {
-                eprintln!("[live_test] MessageOut → channel={channel}, attachments={}", message.attachments.len());
+            if let Event::MessageOut {
+                channel, message, ..
+            } = event
+            {
+                eprintln!(
+                    "[live_test] MessageOut → channel={channel}, attachments={}",
+                    message.attachments.len()
+                );
                 if channel == "telegram" && !message.attachments.is_empty() {
                     return;
                 }

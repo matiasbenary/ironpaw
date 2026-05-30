@@ -1,14 +1,22 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
     message::{OutboundAttachment, OutboundMessage},
-    openai::{
-        CreateResponse, EasyInputContent, EasyInputMessage, FunctionCallOutput,
-        FunctionCallOutputItemParam, InputItem, InputParam, Item, OutputItem, OutputMessageContent,
-        Role, Tool,
-    },
+    openai::{CreateResponse, InputItem, InputParam},
     tools::{InternalTool, InternalTools, ToolOutput},
+};
+
+use super::{
+    orchestrator::{
+        ExecutionPlan, GeneratedFile, construct_execution_plan, fulfill_pending_deliveries,
+        record_generated_file,
+    },
+    preamble::{files_shared_notice_input_item, system_preamble},
+    utils::{
+        fill_current_destination, parse_response_output, publish_progress, summarize_tool_args,
+        tool_result_input_item,
+    },
 };
 
 const MAX_TOOL_ROUNDS: usize = 8;
@@ -41,7 +49,7 @@ impl AiEngine {
                         message,
                     }) => {
                         debug_log(format!("ai_engine: received user message from {channel}"));
-                        let tool_loop = match run_tool_loop(
+                        if let Err(err) = run_agent_loop(
                             internal_tools.as_ref(),
                             &bus,
                             &channel,
@@ -50,32 +58,16 @@ impl AiEngine {
                         )
                         .await
                         {
-                            Ok(output) => output,
-                            Err(err) => ToolLoopOutput {
-                                content: Some(format!("AI inference failed: {err}")),
-                                attachments: Vec::new(),
-                            },
-                        };
-                        let tool_loop =
-                            if tool_loop.content.is_none() && tool_loop.attachments.is_empty() {
-                                ToolLoopOutput {
-                                    content: Some(
-                                        "AI inference failed: empty assistant response".to_string(),
-                                    ),
+                            publish_current_channel_output(
+                                &bus,
+                                &channel,
+                                &address,
+                                AgentLoopOutput {
+                                    content: Some(format!("AI inference failed: {err}")),
                                     attachments: Vec::new(),
-                                }
-                            } else {
-                                tool_loop
-                            };
-                        bus.publish(Event::MessageOut {
-                            channel,
-                            recipient: Sender::User,
-                            address: Some(address),
-                            message: OutboundMessage {
-                                content: tool_loop.content,
-                                attachments: tool_loop.attachments,
-                            },
-                        });
+                                },
+                            );
+                        }
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
@@ -86,21 +78,33 @@ impl AiEngine {
     }
 }
 
-async fn run_tool_loop(
+async fn run_agent_loop(
     internal_tools: &InternalTools,
     bus: &Bus,
     channel: &str,
     address: &ChannelAddress,
     messages: Vec<InputItem>,
-) -> Result<ToolLoopOutput, String> {
+) -> Result<(), String> {
     let mut input_items = system_preamble(channel, address);
+    let execution_plan = construct_execution_plan(&internal_tools.ai_inference, channel, &messages)
+        .await
+        .unwrap_or_else(|err| {
+            debug_log(format!(
+                "ai_engine: execution plan construction failed: {err}"
+            ));
+            ExecutionPlan::default()
+        });
     input_items.extend(messages);
-    let mut last_tool_call: Option<String> = None;
-    let mut repeated_tool_call_count = 0;
     let mut attachments: Vec<OutboundAttachment> = Vec::new();
+    let mut generated_files: Vec<GeneratedFile> = Vec::new();
+    let mut fulfilled_requirements: HashSet<String> = HashSet::new();
     let mut previous_response_id: Option<String> = None;
     for round in 0..MAX_TOOL_ROUNDS {
-        let available_tools = responses_tools(&internal_tools.tools);
+        let available_tools: Vec<_> = internal_tools
+            .tools
+            .iter()
+            .map(|tool| tool.responses_schema())
+            .collect();
         debug_log(format!(
             "ai_engine: round {} calling responses(input_items={}, tools={})",
             round + 1,
@@ -131,14 +135,20 @@ async fn run_tool_loop(
                 "ai_engine: round {} finished with assistant text",
                 round + 1
             ));
-            return Ok(ToolLoopOutput {
-                content: if output.text.is_empty() {
-                    None
-                } else {
-                    Some(output.text)
+            publish_current_channel_output(
+                bus,
+                channel,
+                address,
+                AgentLoopOutput {
+                    content: if output.text.is_empty() {
+                        None
+                    } else {
+                        Some(output.text)
+                    },
+                    attachments,
                 },
-                attachments,
-            });
+            );
+            return Ok(());
         }
 
         debug_log(format!(
@@ -147,50 +157,81 @@ async fn run_tool_loop(
             function_calls.len()
         ));
         for tool_call in function_calls {
-            let tool_call_signature = tool_call_signature(&tool_call);
-            if last_tool_call.as_deref() == Some(tool_call_signature.as_str()) {
-                repeated_tool_call_count += 1;
-                if repeated_tool_call_count >= 2 {
-                    return Ok(ToolLoopOutput {
-                        content: Some(format!(
-                            "stopped after repeated identical tool call: {tool_call_signature}"
-                        )),
-                        attachments,
-                    });
-                }
-            } else {
-                last_tool_call = Some(tool_call_signature);
-                repeated_tool_call_count = 0;
-            }
             let tool_result = execute_tool_call(
                 &internal_tools.tools,
                 tool_call,
                 Some((bus, channel, address)),
             )
             .await?;
+            record_generated_file(
+                &mut generated_files,
+                &execution_plan,
+                &tool_result.tool_name,
+                &tool_result.result,
+            );
+            let fulfilled_items = fulfill_pending_deliveries(
+                internal_tools,
+                channel,
+                &execution_plan,
+                &generated_files,
+                &mut fulfilled_requirements,
+            )
+            .await?;
             let new_attachments = tool_result.attachments;
             input_items.push(tool_result.input_item);
             if !new_attachments.is_empty() {
-                input_items.push(files_shared_notice_input_item(new_attachments.len(), channel));
+                input_items.push(files_shared_notice_input_item(
+                    new_attachments.len(),
+                    channel,
+                ));
             }
             attachments.extend(new_attachments);
+            input_items.extend(fulfilled_items);
         }
     }
 
-    Ok(ToolLoopOutput {
-        content: Some("stopped after too many tool calls".to_string()),
-        attachments,
-    })
+    publish_current_channel_output(
+        bus,
+        channel,
+        address,
+        AgentLoopOutput {
+            content: Some("stopped after too many tool calls".to_string()),
+            attachments,
+        },
+    );
+    Ok(())
 }
 
-struct ToolLoopOutput {
+struct AgentLoopOutput {
     content: Option<String>,
     attachments: Vec<OutboundAttachment>,
+}
+
+fn publish_current_channel_output(
+    bus: &Bus,
+    channel: &str,
+    address: &ChannelAddress,
+    output: AgentLoopOutput,
+) {
+    if output.content.is_none() && output.attachments.is_empty() {
+        return;
+    }
+    bus.publish(Event::MessageOut {
+        channel: channel.to_string(),
+        recipient: Sender::User,
+        address: Some(address.clone()),
+        message: OutboundMessage {
+            content: output.content,
+            attachments: output.attachments,
+        },
+    });
 }
 
 struct ToolCallOutput {
     input_item: InputItem,
     attachments: Vec<OutboundAttachment>,
+    tool_name: String,
+    result: serde_json::Value,
 }
 
 async fn execute_tool_call(
@@ -227,163 +268,18 @@ async fn execute_tool_call(
             "error": format!("unknown tool: {tool_name}"),
         }))
     };
+    let result = tool_response.result;
     debug_log(format!("ai_engine: tool {tool_name} finished"));
     Ok(ToolCallOutput {
-        input_item: tool_result_input_item(
-            &tool_name,
-            &tool_call_id,
-            tool_response.result.to_string(),
-        ),
+        input_item: tool_result_input_item(&tool_call_id, result.to_string()),
         attachments: tool_response.files,
+        tool_name,
+        result,
     })
 }
 
 fn debug_log(message: impl AsRef<str>) {
     eprintln!("{}", message.as_ref());
-}
-
-fn tool_call_signature(tool_call: &crate::openai::FunctionToolCall) -> String {
-    format!("{}({})", tool_call.name, tool_call.arguments)
-}
-
-struct ParsedResponseOutput {
-    function_calls: Vec<crate::openai::FunctionToolCall>,
-    text: String,
-}
-
-fn parse_response_output(response: crate::openai::Response) -> ParsedResponseOutput {
-    let mut function_calls = Vec::new();
-    let mut text_parts = Vec::new();
-
-    for item in response.output {
-        match &item {
-            OutputItem::Message(message) => {
-                for content in &message.content {
-                    match content {
-                        OutputMessageContent::OutputText(text) => {
-                            if !text.text.trim().is_empty() {
-                                text_parts.push(text.text.clone());
-                            }
-                        }
-                        OutputMessageContent::Refusal(refusal) => {
-                            text_parts.push(refusal.refusal.clone());
-                        }
-                    }
-                }
-            }
-            OutputItem::FunctionCall(call) => {
-                function_calls.push(call.clone());
-            }
-            _ => {}
-        }
-    }
-
-    ParsedResponseOutput {
-        function_calls,
-        text: text_parts.join("\n\n"),
-    }
-}
-
-fn responses_tools(tools: &[Arc<dyn InternalTool>]) -> Vec<Tool> {
-    tools.iter().map(|tool| tool.responses_schema()).collect()
-}
-
-fn fill_current_destination(
-    args: &mut serde_json::Value,
-    progress: Option<(&Bus, &str, &ChannelAddress)>,
-) {
-    let Some((_bus, channel, address)) = progress else {
-        return;
-    };
-    let Some(object) = args.as_object_mut() else {
-        return;
-    };
-    if object.get("channel").is_some() {
-        return;
-    }
-    object.insert(
-        "channel".to_string(),
-        serde_json::Value::String(channel.to_string()),
-    );
-    object
-        .entry("conversation_id")
-        .or_insert_with(|| serde_json::Value::String(address.conversation_id.clone()));
-    if let Some(thread_id) = &address.thread_id {
-        object
-            .entry("thread_id")
-            .or_insert_with(|| serde_json::Value::String(thread_id.clone()));
-    }
-}
-
-fn system_preamble(channel: &str, address: &ChannelAddress) -> Vec<InputItem> {
-    let mut text = format!(
-        "You are a personal assistant. \
-        The user is communicating with you through the '{channel}' channel \
-        (conversation_id: '{}'",
-        address.conversation_id,
-    );
-    if let Some(thread_id) = &address.thread_id {
-        text.push_str(&format!(", thread_id: '{thread_id}'"));
-    }
-    text.push(')');
-    text.push('.');
-
-    vec![EasyInputMessage {
-        r#type: Default::default(),
-        role: Role::System,
-        content: EasyInputContent::Text(text),
-        phase: None,
-    }
-    .into()]
-}
-
-fn files_shared_notice_input_item(count: usize, channel: &str) -> InputItem {
-    EasyInputMessage {
-        r#type: Default::default(),
-        role: Role::System,
-        content: EasyInputContent::Text(format!(
-            "{count} file(s) automatically shared with the user on channel '{channel}'."
-        )),
-        phase: None,
-    }
-    .into()
-}
-
-fn tool_result_input_item(
-    _tool_name: &str,
-    tool_call_id: &str,
-    result: impl AsRef<str>,
-) -> InputItem {
-    Item::from(FunctionCallOutputItemParam {
-        call_id: tool_call_id.to_string(),
-        output: FunctionCallOutput::Text(result.as_ref().to_string()),
-        id: None,
-        status: None,
-    })
-    .into()
-}
-
-fn publish_progress(bus: &Bus, channel: &str, address: &ChannelAddress, content: String) {
-    bus.publish(Event::MessageOut {
-        channel: channel.to_string(),
-        recipient: Sender::User,
-        address: Some(address.clone()),
-        message: OutboundMessage {
-            content: Some(content),
-            attachments: Vec::new(),
-        },
-    });
-}
-
-fn summarize_tool_args(arguments: &str) -> String {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments) else {
-        return truncate(arguments, 600);
-    };
-    truncate(&value.to_string(), 600)
-}
-
-fn truncate(value: &str, max_chars: usize) -> String {
-    value.chars().take(max_chars).collect()
 }
 
 #[cfg(test)]
@@ -452,12 +348,12 @@ mod tests {
 
         let result = execute_tool_call(&tools, tool_call, None).await.unwrap();
         let result_json = serde_json::to_value(result.input_item).unwrap();
-        assert_eq!(result_json["role"], "user");
+        assert_eq!(result_json["call_id"], "call_1");
         assert!(
-            result_json["content"]
+            result_json["output"]
                 .as_str()
                 .unwrap()
-                .contains("[Tool `send_message` call `call_1` returned:")
+                .contains("\"ok\":true")
         );
 
         let event = timeout(Duration::from_secs(1), events.recv())
@@ -496,7 +392,7 @@ mod tests {
         assert_eq!(result.attachments[0].filename, "generated.png");
         let result_json = serde_json::to_value(result.input_item).unwrap();
         assert!(
-            result_json["content"]
+            result_json["output"]
                 .as_str()
                 .unwrap()
                 .contains("\"status\":\"ok\"")

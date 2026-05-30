@@ -5,7 +5,10 @@ use std::{
 
 use async_trait::async_trait;
 
-use crate::{message::OutboundAttachment, tools::{self, InternalTool, ToolOutput}};
+use crate::{
+    message::OutboundAttachment,
+    tools::{self, InternalTool, ToolOutput},
+};
 
 const DEFAULT_IMAGE_MODEL: &str = "black-forest-labs/FLUX.2-klein-4B";
 
@@ -102,7 +105,7 @@ impl InternalTool for ImageGenerationTool {
         let bytes = base64_decode(&data_base64)?;
         std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
         Ok(ToolOutput {
-            result: serde_json::json!({ 
+            result: serde_json::json!({
                 "status": "ok",
                 "file_id": file_id,
             }),
