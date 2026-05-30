@@ -14,7 +14,7 @@ use super::{
     },
     preamble::{files_shared_notice_input_item, system_preamble},
     utils::{
-        fill_current_destination, parse_response_output, publish_progress,
+        contains_input_media, fill_current_destination, parse_response_output, publish_progress,
         tool_result_input_item,
     },
 };
@@ -85,7 +85,12 @@ async fn run_agent_loop(
     address: &ChannelAddress,
     messages: Vec<InputItem>,
 ) -> Result<(), String> {
-    let mut input_items = system_preamble(channel, address);
+    let has_input_media = contains_input_media(&messages);
+    let mut input_items = if has_input_media {
+        Vec::new()
+    } else {
+        system_preamble(channel, address)
+    };
     let execution_plan = construct_execution_plan(&internal_tools.ai_inference, channel, &messages)
         .await
         .unwrap_or_else(|err| {
@@ -98,11 +103,15 @@ async fn run_agent_loop(
     let mut attachments: Vec<OutboundAttachment> = Vec::new();
     let mut previous_response_id: Option<String> = None;
     for round in 0..MAX_TOOL_ROUNDS {
-        let available_tools: Vec<_> = internal_tools
-            .tools
-            .iter()
-            .map(|tool| tool.responses_schema())
-            .collect();
+        let available_tools: Vec<_> = if contains_input_media(&input_items) {
+            Vec::new()
+        } else {
+            internal_tools
+                .tools
+                .iter()
+                .map(|tool| tool.responses_schema())
+                .collect()
+        };
         debug_log(format!(
             "ai_engine: round {} calling responses(input_items={}, tools={})",
             round + 1,
@@ -111,7 +120,11 @@ async fn run_agent_loop(
         ));
         let request = CreateResponse {
             input: InputParam::Items(input_items.clone()),
-            tools: Some(available_tools),
+            tools: if available_tools.is_empty() {
+                None
+            } else {
+                Some(available_tools)
+            },
             parallel_tool_calls: Some(false),
             previous_response_id: previous_response_id.take(),
             ..Default::default()
@@ -158,13 +171,8 @@ async fn run_agent_loop(
             let progress_message = format!("calling {}({})", tool_call.name, tool_call.arguments);
             debug_log(format!("ai_engine: {progress_message}"));
             publish_progress(bus, channel, address, progress_message);
-            let tool_result = execute_tool_call(
-                &internal_tools.tools,
-                tool_call,
-                channel,
-                address,
-            )
-            .await?;
+            let tool_result =
+                execute_tool_call(&internal_tools.tools, tool_call, channel, address).await?;
             let mut sent_items = Vec::new();
             for attachment in &tool_result.attachments {
                 if let Some(file_id) = attachment.file_id {
@@ -344,7 +352,9 @@ mod tests {
             conversation_id: "123".to_string(),
             thread_id: None,
         };
-        let result = execute_tool_call(&tools, tool_call, "telegram", &address).await.unwrap();
+        let result = execute_tool_call(&tools, tool_call, "telegram", &address)
+            .await
+            .unwrap();
         let result_json = serde_json::to_value(result.input_item).unwrap();
         assert_eq!(result_json["call_id"], "call_1");
         assert!(
@@ -390,7 +400,9 @@ mod tests {
             conversation_id: "123".to_string(),
             thread_id: None,
         };
-        let result = execute_tool_call(&tools, tool_call, "test", &address).await.unwrap();
+        let result = execute_tool_call(&tools, tool_call, "test", &address)
+            .await
+            .unwrap();
         assert_eq!(result.attachments.len(), 1);
         assert_eq!(result.attachments[0].filename, "generated.png");
         let result_json = serde_json::to_value(result.input_item).unwrap();

@@ -12,7 +12,7 @@ use crate::{
     tools::{self, InternalTool},
 };
 
-const DEFAULT_MODEL: &str = "Qwen/Qwen3-30B-A3B-Instruct-2507";
+const DEFAULT_MODEL: &str = "Qwen/Qwen3-VL-30B-A3B-Instruct";
 
 #[derive(Clone)]
 pub struct AiInferenceTool {

@@ -19,7 +19,10 @@ impl SendMessageTool {
         Self { bus, files_dir }
     }
 
-    pub async fn execute(&self, mut params: SendMessageParams) -> Result<SendMessageOutput, String> {
+    pub async fn execute(
+        &self,
+        mut params: SendMessageParams,
+    ) -> Result<SendMessageOutput, String> {
         for attachment in &mut params.attachments {
             if let Some(file_id) = attachment.file_id {
                 if attachment.data_base64.is_none() {
@@ -43,10 +46,7 @@ impl SendMessageTool {
             address,
             message,
         });
-        Ok(SendMessageOutput {
-            ok: true,
-            channel,
-        })
+        Ok(SendMessageOutput { ok: true, channel })
     }
 }
 
