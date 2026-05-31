@@ -7,6 +7,7 @@ use async_trait::async_trait;
 
 use crate::{
     message::OutboundAttachment,
+    openai::FunctionCallOutput,
     tools::{self, InternalTool, ToolOutput},
 };
 
@@ -105,10 +106,10 @@ impl InternalTool for ImageGenerationTool {
         let bytes = base64_decode(&data_base64)?;
         std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
         Ok(ToolOutput {
-            result: serde_json::json!({
+            model_output: FunctionCallOutput::Text(serde_json::json!({
                 "status": "ok",
                 "file_id": file_id,
-            }),
+            }).to_string()),
             files: vec![OutboundAttachment {
                 kind: "image".to_string(),
                 mime_type: "image/png".to_string(),
@@ -134,7 +135,7 @@ fn mock_image(files_dir: &PathBuf) -> Result<ToolOutput, String> {
     let bytes = std::fs::read(&src).map_err(|e| format!("mock image read error: {e}"))?;
     let data_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(ToolOutput {
-        result: serde_json::json!({ "status": "stored", "file_id": 1780086002u32 }),
+        model_output: FunctionCallOutput::Text(serde_json::json!({ "status": "stored", "file_id": 1780086002u32 }).to_string()),
         files: vec![OutboundAttachment {
             kind: "image".to_string(),
             mime_type: "image/png".to_string(),

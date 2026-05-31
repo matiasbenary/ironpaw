@@ -7,6 +7,19 @@ use crate::{
     },
 };
 
+pub(super) fn tool_result_item(
+    tool_call_id: &str,
+    output: FunctionCallOutput,
+) -> InputItem {
+    Item::from(FunctionCallOutputItemParam {
+        call_id: tool_call_id.to_string(),
+        output,
+        id: None,
+        status: None,
+    })
+    .into()
+}
+
 pub(super) struct ParsedResponseOutput {
     pub(super) function_calls: Vec<crate::openai::FunctionToolCall>,
     pub(super) text: String,
@@ -92,16 +105,6 @@ pub(super) fn fill_current_destination(
             .entry("thread_id")
             .or_insert_with(|| serde_json::Value::String(thread_id.clone()));
     }
-}
-
-pub(super) fn tool_result_input_item(tool_call_id: &str, result: impl AsRef<str>) -> InputItem {
-    Item::from(FunctionCallOutputItemParam {
-        call_id: tool_call_id.to_string(),
-        output: FunctionCallOutput::Text(result.as_ref().to_string()),
-        id: None,
-        status: None,
-    })
-    .into()
 }
 
 pub(super) fn publish_progress(

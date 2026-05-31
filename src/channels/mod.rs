@@ -72,8 +72,9 @@ pub async fn start(
         }
     }
     let addr = addr.to_string();
+    let files_dir = layout.files_dir();
     let bridge_task = tokio::spawn(async move {
-        if let Err(err) = bridge::run_server(listener, bus, &addr, token, secrets, channels).await {
+        if let Err(err) = bridge::run_server(listener, bus, &addr, token, secrets, channels, files_dir).await {
             eprintln!("channel bridge failed: {err}");
         }
     });

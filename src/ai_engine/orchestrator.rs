@@ -60,7 +60,10 @@ pub(super) async fn construct_execution_plan(
         return Ok(ExecutionPlan::default());
     }
 
+    let model = std::env::var("NEAR_MODEL")
+        .unwrap_or_else(|_| super::ai_engine::DEFAULT_MODEL.to_string());
     let request = CreateChatCompletionRequestArgs::default()
+        .model(model)
         .messages([
             ChatCompletionRequestSystemMessageArgs::default()
                 .content(format!(

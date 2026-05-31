@@ -15,11 +15,21 @@ use super::{
     preamble::{files_shared_notice_input_item, system_preamble},
     utils::{
         contains_input_media, fill_current_destination, parse_response_output, publish_progress,
-        tool_result_input_item,
+        tool_result_item,
     },
 };
 
 const MAX_TOOL_ROUNDS: usize = 8;
+pub(super) const DEFAULT_MODEL: &str = "Qwen/Qwen3.6-35B-A3B-FP8";
+const DEFAULT_VISION_MODEL: &str = "Qwen/Qwen3-VL-30B-A3B-Instruct";
+
+fn model_for(has_media: bool) -> String {
+    if has_media {
+        std::env::var("NEAR_VISION_MODEL").unwrap_or_else(|_| DEFAULT_VISION_MODEL.to_string())
+    } else {
+        std::env::var("NEAR_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string())
+    }
+}
 
 pub struct AiEngine {
     bus: Bus,
@@ -103,7 +113,8 @@ async fn run_agent_loop(
     let mut attachments: Vec<OutboundAttachment> = Vec::new();
     let mut previous_response_id: Option<String> = None;
     for round in 0..MAX_TOOL_ROUNDS {
-        let available_tools: Vec<_> = if contains_input_media(&input_items) {
+        let has_media = contains_input_media(&input_items);
+        let available_tools: Vec<_> = if has_media {
             Vec::new()
         } else {
             internal_tools
@@ -119,6 +130,7 @@ async fn run_agent_loop(
             available_tools.len()
         ));
         let request = CreateResponse {
+            model: Some(model_for(has_media)),
             input: InputParam::Items(input_items.clone()),
             tools: if available_tools.is_empty() {
                 None
@@ -272,11 +284,11 @@ async fn execute_tool_call(
             "error": format!("unknown tool: {tool_name}"),
         }))
     };
-    let result = tool_response.result;
     let attachments = tool_response.files;
+    let call_output = tool_response.model_output;
     debug_log(format!("ai_engine: tool {tool_name} finished"));
     Ok(ToolCallOutput {
-        input_item: tool_result_input_item(&tool_call_id, result.to_string()),
+        input_item: tool_result_item(&tool_call_id, call_output),
         attachments,
     })
 }
@@ -434,7 +446,9 @@ mod tests {
             _args: serde_json::Value,
         ) -> Result<crate::tools::ToolOutput, String> {
             Ok(crate::tools::ToolOutput {
-                result: serde_json::json!({ "status": "ok" }),
+                model_output: crate::openai::FunctionCallOutput::Text(
+                    serde_json::json!({ "status": "ok" }).to_string(),
+                ),
                 files: vec![OutboundAttachment {
                     kind: "image".to_string(),
                     mime_type: "image/png".to_string(),

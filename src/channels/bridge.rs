@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, io, sync::Arc};
+use std::{collections::HashMap, fs, io, path::PathBuf, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -17,8 +17,8 @@ use crate::{
         wasm::WasmChannel,
     },
     openai::{
-        EasyInputContent, EasyInputMessage, ImageDetail, InputContent, InputFileContent,
-        InputImageContent, InputItem, InputMessage, InputRole, InputTextContent, Role,
+        EasyInputContent, EasyInputMessage, InputContent, InputFileContent,
+        InputItem, InputMessage, InputRole, InputTextContent, Role,
     },
     secrets::ChannelSecrets,
 };
@@ -45,6 +45,7 @@ struct BridgeState {
     token: Arc<String>,
     secrets: ChannelSecrets,
     channels_by_path: Arc<HashMap<String, LoadedChannel>>,
+    files_dir: PathBuf,
 }
 
 pub async fn run_server(
@@ -54,6 +55,7 @@ pub async fn run_server(
     token: String,
     secrets: ChannelSecrets,
     channels: Vec<LoadedChannel>,
+    files_dir: PathBuf,
 ) -> io::Result<()> {
     let mut channels_by_path = HashMap::new();
     for channel in channels {
@@ -72,6 +74,7 @@ pub async fn run_server(
         token: Arc::new(token),
         secrets,
         channels_by_path: Arc::new(channels_by_path),
+        files_dir,
     };
     let app = Router::new()
         .route("/{*path}", post(message_channel_to_warden))
@@ -172,7 +175,7 @@ async fn message_channel_to_warden(
             channel: inbound.channel.clone(),
             sender,
             address: inbound.address,
-            message: content_to_input_item(inbound.content),
+            message: content_to_input_item(inbound.content, &state.files_dir),
         });
         accepted += 1;
     }
@@ -372,7 +375,7 @@ struct ChannelInbound {
     content: serde_json::Value,
 }
 
-fn content_to_input_item(content: serde_json::Value) -> InputItem {
+fn content_to_input_item(content: serde_json::Value, files_dir: &PathBuf) -> InputItem {
     if let Some(text) = content.as_str() {
         return EasyInputMessage {
             r#type: Default::default(),
@@ -395,7 +398,7 @@ fn content_to_input_item(content: serde_json::Value) -> InputItem {
 
     let input_parts = parts
         .iter()
-        .filter_map(content_part_to_input)
+        .filter_map(|p| content_part_to_input(p, files_dir))
         .collect::<Vec<_>>();
 
     InputMessage {
@@ -406,7 +409,8 @@ fn content_to_input_item(content: serde_json::Value) -> InputItem {
     .into()
 }
 
-fn content_part_to_input(part: &serde_json::Value) -> Option<InputContent> {
+fn content_part_to_input(part: &serde_json::Value, files_dir: &PathBuf) -> Option<InputContent> {
+    const MAX_FILE_BYTES: usize = 10 * 1024 * 1024; // 10 MB
     match part.get("type").and_then(|t| t.as_str()) {
         Some("text") => Some(InputContent::InputText(InputTextContent {
             text: part.get("text")?.as_str()?.to_string(),
@@ -417,23 +421,61 @@ fn content_part_to_input(part: &serde_json::Value) -> Option<InputContent> {
                 .and_then(|u| u.get("url"))
                 .and_then(|u| u.as_str())?
                 .to_string();
-            Some(InputContent::InputImage(InputImageContent {
-                detail: ImageDetail::Auto,
-                file_id: None,
-                image_url: Some(url),
+            // Data-URL images: store on disk and give the model a tool reference.
+            if url.starts_with("data:") {
+                let (ext, data) = parse_data_url(&url)?;
+                if data.len() > MAX_FILE_BYTES {
+                    return Some(InputContent::InputText(InputTextContent {
+                        text: "[Attached image was too large to process (> 10 MB)]".to_string(),
+                    }));
+                }
+                let file_id = format!("{}.{ext}", uuid::Uuid::new_v4());
+                store_file(files_dir, &file_id, &data);
+                return Some(InputContent::InputText(InputTextContent {
+                    text: format!(
+                        "An image is attached (file_id: '{file_id}'). \
+                        Use the read_file tool to view it."
+                    ),
+                }));
+            }
+            // Regular URL: pass through as InputText so the model can see the URL.
+            Some(InputContent::InputText(InputTextContent {
+                text: format!("Image URL: {url}"),
             }))
         }
         Some("file") => {
             let file = part.get("file")?;
-            let file_data = file.get("file_data").and_then(|d| d.as_str()).map(|d| {
-                if d.starts_with("data:") {
-                    d.to_string()
+            // Inline file_data: store on disk and give the model a tool reference.
+            if let Some(raw) = file.get("file_data").and_then(|d| d.as_str()) {
+                let data_url = if raw.starts_with("data:") {
+                    raw.to_string()
                 } else {
-                    format!("data:application/pdf;base64,{d}")
+                    format!("data:application/pdf;base64,{raw}")
+                };
+                let (ext, data) = parse_data_url(&data_url)?;
+                if data.len() > MAX_FILE_BYTES {
+                    return Some(InputContent::InputText(InputTextContent {
+                        text: "[Attached file was too large to process (> 10 MB)]".to_string(),
+                    }));
                 }
-            });
+                let base_name = file
+                    .get("filename")
+                    .and_then(|n| n.as_str())
+                    .and_then(|n| std::path::Path::new(n).file_stem())
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("file");
+                let file_id = format!("{}-{}.{ext}", base_name, uuid::Uuid::new_v4());
+                store_file(files_dir, &file_id, &data);
+                return Some(InputContent::InputText(InputTextContent {
+                    text: format!(
+                        "A file is attached (file_id: '{file_id}'). \
+                        Use the read_file tool to read it."
+                    ),
+                }));
+            }
+            // file_id / file_url reference: pass through as-is.
             Some(InputContent::InputFile(InputFileContent {
-                file_data,
+                file_data: None,
                 file_id: file
                     .get("file_id")
                     .and_then(|id| id.as_str())
@@ -450,5 +492,37 @@ fn content_part_to_input(part: &serde_json::Value) -> Option<InputContent> {
             }))
         }
         _ => None,
+    }
+}
+
+fn store_file(files_dir: &PathBuf, file_id: &str, data: &[u8]) {
+    if let Err(e) = fs::create_dir_all(files_dir) {
+        eprintln!("bridge: failed to create files_dir: {e}");
+        return;
+    }
+    if let Err(e) = fs::write(files_dir.join(file_id), data) {
+        eprintln!("bridge: failed to write file {file_id}: {e}");
+    }
+}
+
+fn parse_data_url(url: &str) -> Option<(String, Vec<u8>)> {
+    use base64::Engine as _;
+    let rest = url.strip_prefix("data:")?;
+    let (meta, b64) = rest.split_once(',')?;
+    let mime = meta.split(';').next()?;
+    let ext = ext_from_mime(mime);
+    let data = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    Some((ext.to_string(), data))
+}
+
+fn ext_from_mime(mime: &str) -> &str {
+    match mime {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "application/pdf" => "pdf",
+        "text/plain" => "txt",
+        _ => "bin",
     }
 }

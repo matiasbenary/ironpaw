@@ -1,5 +1,6 @@
 pub mod ai_inference;
 pub mod image_generation;
+pub mod read_file;
 pub mod send_message;
 
 use std::sync::Arc;
@@ -7,22 +8,21 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::message::OutboundAttachment;
-use crate::openai::{FunctionTool, Tool};
+use crate::openai::{FunctionCallOutput, FunctionTool, Tool};
 
-use self::{
-    ai_inference::AiInferenceTool, image_generation::ImageGenerationTool,
-    send_message::SendMessageTool,
-};
+use self::
+    {ai_inference::AiInferenceTool, image_generation::ImageGenerationTool,
+    read_file::ReadFileTool, send_message::SendMessageTool};
 
 pub struct ToolOutput {
-    pub result: serde_json::Value,
+    pub model_output: FunctionCallOutput,
     pub files: Vec<OutboundAttachment>,
 }
 
 impl ToolOutput {
     pub fn json(result: serde_json::Value) -> Self {
         Self {
-            result,
+            model_output: FunctionCallOutput::Text(result.to_string()),
             files: Vec::new(),
         }
     }
@@ -43,11 +43,12 @@ impl InternalTools {
         files_dir: std::path::PathBuf,
     ) -> Self {
         let send_message = Arc::new(send_message);
-        let image_generation = Arc::new(ImageGenerationTool::new(near_api_key, files_dir));
+        let image_generation = Arc::new(ImageGenerationTool::new(near_api_key, files_dir.clone()));
+        let read_file = Arc::new(ReadFileTool::new(files_dir));
         Self {
             ai_inference,
             send_message: Arc::clone(&send_message),
-            tools: vec![send_message, image_generation],
+            tools: vec![send_message, image_generation, read_file],
         }
     }
 }

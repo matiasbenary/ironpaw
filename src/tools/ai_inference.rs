@@ -12,14 +12,11 @@ use crate::{
     tools::{self, InternalTool},
 };
 
-const DEFAULT_MODEL: &str = "Qwen/Qwen3-VL-30B-A3B-Instruct";
-
 #[derive(Clone)]
 pub struct AiInferenceTool {
     client: Client,
     near_api_key: String,
     base_url: String,
-    model: String,
 }
 
 impl AiInferenceTool {
@@ -37,7 +34,6 @@ impl AiInferenceTool {
             near_api_key,
             base_url: std::env::var("NEAR_BASE_URL")
                 .unwrap_or_else(|_| "https://cloud-api.near.ai".to_string()),
-            model: std::env::var("NEAR_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
         })
     }
 
@@ -54,11 +50,8 @@ impl AiInferenceTool {
 
     pub async fn execute(
         &self,
-        mut request: CreateChatCompletionRequest,
+        request: CreateChatCompletionRequest,
     ) -> Result<CreateChatCompletionResponse, String> {
-        if request.model.is_empty() {
-            request.model = self.model.clone();
-        }
 
         let response = self
             .client
@@ -83,10 +76,7 @@ impl AiInferenceTool {
         serde_json::from_str(&body).map_err(|err| err.to_string())
     }
 
-    pub async fn execute_response(&self, mut request: CreateResponse) -> Result<Response, String> {
-        if request.model.is_none() {
-            request.model = Some(self.model.clone());
-        }
+    pub async fn execute_response(&self, request: CreateResponse) -> Result<Response, String> {
 
         if let Ok(json) = serde_json::to_string_pretty(&request) {
             let _ = std::fs::OpenOptions::new()
