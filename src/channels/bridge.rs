@@ -16,10 +16,7 @@ use crate::{
         config::{ChannelAuth, ChannelConfig, ChannelManifest},
         wasm::WasmChannel,
     },
-    openai::{
-        EasyInputContent, EasyInputMessage, InputContent, InputFileContent,
-        InputItem, InputMessage, InputRole, InputTextContent, Role,
-    },
+    openai::{InputContent, InputItem, InputMessage, InputRole, InputTextContent},
     secrets::ChannelSecrets,
 };
 
@@ -83,10 +80,6 @@ pub async fn run_server(
     println!("channel bridge listening on http://{addr}");
 
     axum::serve(listener, app).await.map_err(io::Error::other)
-}
-
-pub async fn bind(addr: &str) -> io::Result<TcpListener> {
-    TcpListener::bind(addr).await
 }
 
 pub fn load_channel(
@@ -217,6 +210,7 @@ async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, L
             continue;
         };
         let Some(channel_runtime) = channels_by_name.get(&channel) else {
+            eprintln!("bridge: no loaded channel named {channel} for message out");
             continue;
         };
         let channel_state = channel_runtime.state.lock().await.clone();
@@ -224,6 +218,10 @@ async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, L
             eprintln!("{channel} message out has no address and no default_address");
             continue;
         };
+        eprintln!(
+            "bridge: delivering message out to channel {channel} conversation_id={}",
+            address.conversation_id
+        );
 
         let message_json = match serde_json::to_string(&message) {
             Ok(message_json) => message_json,
@@ -246,7 +244,7 @@ async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, L
             &channel_state.config_json,
         );
         match handled {
-            Ok(true) => {}
+            Ok(true) => eprintln!("bridge: {channel} channel handled message out"),
             Ok(false) => eprintln!("{channel} channel did not handle message out"),
             Err(err) => eprintln!("{channel} message out failed: {err}"),
         }
@@ -372,147 +370,105 @@ struct ChannelInbound {
     channel: String,
     channel_user_id: String,
     address: ChannelAddress,
-    content: serde_json::Value,
+    content: Vec<InboundContent>,
 }
 
-fn content_to_input_item(content: serde_json::Value, files_dir: &PathBuf) -> InputItem {
-    if let Some(text) = content.as_str() {
-        return EasyInputMessage {
-            r#type: Default::default(),
-            role: Role::User,
-            content: EasyInputContent::Text(text.to_string()),
-            phase: None,
-        }
-        .into();
-    }
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+enum InboundContent {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "attachment")]
+    Attachment {
+        filename: Option<String>,
+        mime_type: String,
+        data_base64: String,
+    },
+}
 
-    let Some(parts) = content.as_array() else {
-        return EasyInputMessage {
-            r#type: Default::default(),
-            role: Role::User,
-            content: EasyInputContent::Text(content.to_string()),
-            phase: None,
-        }
-        .into();
-    };
-
-    let input_parts = parts
-        .iter()
-        .filter_map(|p| content_part_to_input(p, files_dir))
-        .collect::<Vec<_>>();
-
+fn content_to_input_item(content: Vec<InboundContent>, files_dir: &PathBuf) -> InputItem {
     InputMessage {
         role: InputRole::User,
-        content: input_parts,
+        content: content
+            .into_iter()
+            .map(|part| content_part_to_input(part, files_dir))
+            .collect(),
         status: None,
     }
     .into()
 }
 
-fn content_part_to_input(part: &serde_json::Value, files_dir: &PathBuf) -> Option<InputContent> {
+fn content_part_to_input(part: InboundContent, files_dir: &PathBuf) -> InputContent {
     const MAX_FILE_BYTES: usize = 10 * 1024 * 1024; // 10 MB
-    match part.get("type").and_then(|t| t.as_str()) {
-        Some("text") => Some(InputContent::InputText(InputTextContent {
-            text: part.get("text")?.as_str()?.to_string(),
-        })),
-        Some("image_url") => {
-            let url = part
-                .get("image_url")
-                .and_then(|u| u.get("url"))
-                .and_then(|u| u.as_str())?
-                .to_string();
-            // Data-URL images: store on disk and give the model a tool reference.
-            if url.starts_with("data:") {
-                let (ext, data) = parse_data_url(&url)?;
-                if data.len() > MAX_FILE_BYTES {
-                    return Some(InputContent::InputText(InputTextContent {
-                        text: "[Attached image was too large to process (> 10 MB)]".to_string(),
-                    }));
-                }
-                let file_id = format!("{}.{ext}", uuid::Uuid::new_v4());
-                store_file(files_dir, &file_id, &data);
-                return Some(InputContent::InputText(InputTextContent {
-                    text: format!(
-                        "An image is attached (file_id: '{file_id}'). \
-                        Use the read_file tool to view it."
-                    ),
-                }));
+    match part {
+        InboundContent::Text { text } => InputContent::InputText(InputTextContent { text }),
+        InboundContent::Attachment {
+            filename,
+            mime_type,
+            data_base64,
+        } => {
+            let Some(data) = decode_base64(&data_base64) else {
+                return InputContent::InputText(InputTextContent {
+                    text: "[Attached file was not valid base64]".to_string(),
+                });
+            };
+            if data.len() > MAX_FILE_BYTES {
+                return InputContent::InputText(InputTextContent {
+                    text: "[Attached file was too large to process (> 10 MB)]".to_string(),
+                });
             }
-            // Regular URL: pass through as InputText so the model can see the URL.
-            Some(InputContent::InputText(InputTextContent {
-                text: format!("Image URL: {url}"),
-            }))
+
+            let stored_name = stored_attachment_name(filename.as_deref(), &mime_type);
+            let file_id = received_file_id(&stored_name);
+            store_file(files_dir, &file_id, &data);
+            InputContent::InputText(InputTextContent {
+                text: format!(
+                    "A file is attached (file_id: '{file_id}', mime_type: '{mime_type}'). \
+                    Use the inspect_file tool to inspect it."
+                ),
+            })
         }
-        Some("file") => {
-            let file = part.get("file")?;
-            // Inline file_data: store on disk and give the model a tool reference.
-            if let Some(raw) = file.get("file_data").and_then(|d| d.as_str()) {
-                let data_url = if raw.starts_with("data:") {
-                    raw.to_string()
-                } else {
-                    format!("data:application/pdf;base64,{raw}")
-                };
-                let (ext, data) = parse_data_url(&data_url)?;
-                if data.len() > MAX_FILE_BYTES {
-                    return Some(InputContent::InputText(InputTextContent {
-                        text: "[Attached file was too large to process (> 10 MB)]".to_string(),
-                    }));
-                }
-                let base_name = file
-                    .get("filename")
-                    .and_then(|n| n.as_str())
-                    .and_then(|n| std::path::Path::new(n).file_stem())
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("file");
-                let file_id = format!("{}-{}.{ext}", base_name, uuid::Uuid::new_v4());
-                store_file(files_dir, &file_id, &data);
-                return Some(InputContent::InputText(InputTextContent {
-                    text: format!(
-                        "A file is attached (file_id: '{file_id}'). \
-                        Use the read_file tool to read it."
-                    ),
-                }));
-            }
-            // file_id / file_url reference: pass through as-is.
-            Some(InputContent::InputFile(InputFileContent {
-                file_data: None,
-                file_id: file
-                    .get("file_id")
-                    .and_then(|id| id.as_str())
-                    .map(str::to_string),
-                file_url: file
-                    .get("file_url")
-                    .and_then(|u| u.as_str())
-                    .map(str::to_string),
-                filename: file
-                    .get("filename")
-                    .and_then(|n| n.as_str())
-                    .map(str::to_string),
-                detail: None,
-            }))
-        }
-        _ => None,
     }
 }
 
 fn store_file(files_dir: &PathBuf, file_id: &str, data: &[u8]) {
-    if let Err(e) = fs::create_dir_all(files_dir) {
+    let path = files_dir.join(file_id);
+    let Some(parent) = path.parent() else {
+        eprintln!("bridge: file path has no parent: {file_id}");
+        return;
+    };
+    if let Err(e) = fs::create_dir_all(parent) {
         eprintln!("bridge: failed to create files_dir: {e}");
         return;
     }
-    if let Err(e) = fs::write(files_dir.join(file_id), data) {
+    if let Err(e) = fs::write(path, data) {
         eprintln!("bridge: failed to write file {file_id}: {e}");
     }
 }
 
-fn parse_data_url(url: &str) -> Option<(String, Vec<u8>)> {
+fn received_file_id(filename: &str) -> String {
+    format!("received/{filename}")
+}
+
+fn stored_attachment_name(filename: Option<&str>, mime_type: &str) -> String {
+    let ext = filename
+        .and_then(|name| std::path::Path::new(name).extension())
+        .and_then(|ext| ext.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| ext_from_mime(mime_type).to_string());
+    let base_name = filename
+        .and_then(|name| std::path::Path::new(name).file_stem())
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("file");
+    format!("{}-{}.{ext}", base_name, uuid::Uuid::new_v4())
+}
+
+fn decode_base64(data_base64: &str) -> Option<Vec<u8>> {
     use base64::Engine as _;
-    let rest = url.strip_prefix("data:")?;
-    let (meta, b64) = rest.split_once(',')?;
-    let mime = meta.split(';').next()?;
-    let ext = ext_from_mime(mime);
-    let data = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-    Some((ext.to_string(), data))
+    base64::engine::general_purpose::STANDARD
+        .decode(data_base64)
+        .ok()
 }
 
 fn ext_from_mime(mime: &str) -> &str {
@@ -524,5 +480,64 @@ fn ext_from_mime(mime: &str) -> &str {
         "application/pdf" => "pdf",
         "text/plain" => "txt",
         _ => "bin",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_attachment_is_stored_under_received() {
+        let files_dir = unique_test_files_dir();
+        let part = InboundContent::Attachment {
+            filename: Some("photo.png".to_string()),
+            mime_type: "image/png".to_string(),
+            data_base64: "aW1hZ2U=".to_string(),
+        };
+
+        let input = content_part_to_input(part, &files_dir);
+
+        assert!(mentions_received_file_id(&input));
+        let stored = stored_received_file(&files_dir);
+        assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("png"));
+        assert_eq!(fs::read(stored).unwrap(), b"image");
+    }
+
+    #[test]
+    fn file_attachment_is_stored_under_received() {
+        let files_dir = unique_test_files_dir();
+        let part = InboundContent::Attachment {
+            filename: Some("report.pdf".to_string()),
+            mime_type: "application/pdf".to_string(),
+            data_base64: "cGRm".to_string(),
+        };
+
+        let input = content_part_to_input(part, &files_dir);
+
+        assert!(mentions_received_file_id(&input));
+        let stored = stored_received_file(&files_dir);
+        assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("pdf"));
+        assert_eq!(fs::read(stored).unwrap(), b"pdf");
+    }
+
+    fn unique_test_files_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("warden-bridge-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn stored_received_file(files_dir: &PathBuf) -> PathBuf {
+        let mut entries = fs::read_dir(files_dir.join("received"))
+            .expect("received dir should exist")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("received dir should be readable");
+        assert_eq!(entries.len(), 1);
+        entries.pop().unwrap().path()
+    }
+
+    fn mentions_received_file_id(input: &InputContent) -> bool {
+        match input {
+            InputContent::InputText(text) => text.text.contains("file_id: 'received/"),
+            _ => false,
+        }
     }
 }

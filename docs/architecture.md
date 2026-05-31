@@ -392,3 +392,33 @@ Current tests cover a few core pieces, but not full channel flows. Useful next t
 - default address persistence
 - `send_message` with default Telegram address
 - generated image -> `send_message` -> Telegram attachment delivery
+
+
+## Image and File Management
+
+While building the system I came across two major limitations when handling images and files as message attachments.
+
+#### Problem 1. Image Processing / Generation
+To start with, the models that NEAR AI provides are EITHER for [text + tools + thinking] OR [text + images], but no model can handle [text + tools + images + thinking].
+
+#### Problem 2. Documents
+
+Turns out that NEAR AI never enabled the file upload API, nor the `files` field in the chat completions API, so there is no way to directly provide the LLM with a file.
+
+### Workarounds
+
+Because of problem 1, we have to choose between a tool-using model or an image-handling model. In practice, this means that we need to be constantly switching between two different models, depending on what we guess the user needs. This always leads to errors, and it is unavoidable.
+
+Because of problem 2, we can't directly provide the LLM with a file. Instead, we locally open the documents (.pdf, .txt, etc), and send the content as a string to the LLM.
+
+Right now, these workarounds have left our codebase in a state where we have a lot of ad-hoc logic for switching between models and handling files, which is not ideal.
+
+Instead, I would prefer to have a single unified approach. I was thinking: maybe we use the same approach for both images and files, which is: we store them locally, and present the LLM with tools to query metadata about the files, and to retrieve their content.
+
+Again, this is how we are handling pdf files right now. We store the file in `./files`, and there is a `read_file` tool that knows how to open the pdf and present the LLM with the data.
+
+The only thing is that, when dealing with `images`, we do not want to just dump the base64 data into the LLM. Instead, we want the model to be able to "see" the image, and query visual features about it.
+
+This means that maybe `read_file(picture.png)` is not the best approach for images. Maybe we have a `query_file(file, query)` tool, that can handle both images and documents? But then, do we expose both `read_file` and `query_file`? or just `query_file`? Is it `query_file` a good name (maybe `inspect_file(file, query)` or `ask_file(file, query)`?
+
+I am sure somebody has already run into this problem and solved it, so we just need to so some research and find out what is the best approach here.

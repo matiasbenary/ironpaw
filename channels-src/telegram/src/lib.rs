@@ -79,7 +79,7 @@ impl Guest for TelegramChannel {
         if text.is_empty() && attachments.is_empty() {
             return Ok(None);
         }
-        let content = openai_user_content(text, attachments, &config)?;
+        let content = warden_user_content(text, attachments, &config)?;
 
         let event = serde_json::json!({
             "channel": "telegram",
@@ -359,13 +359,18 @@ fn send_image(
     Ok(())
 }
 
-fn openai_user_content(
+fn warden_user_content(
     text: String,
     attachments: Vec<TelegramAttachment>,
     config: &RuntimeConfig,
 ) -> Result<serde_json::Value, String> {
     if attachments.is_empty() {
-        return Ok(serde_json::Value::String(text));
+        return Ok(serde_json::json!([
+            {
+                "type": "text",
+                "text": text,
+            }
+        ]));
     }
 
     let mut parts = Vec::new();
@@ -378,23 +383,12 @@ fn openai_user_content(
 
     for attachment in attachments {
         let file_path = telegram_file_path(&attachment.file_id, config)?;
-        let file_data = telegram_file_base64(&file_path, config)?;
-        if attachment.mime_type.starts_with("image/") {
-            parts.push(serde_json::json!({
-                "type": "image_url",
-                "image_url": {
-                    "url": format!("data:{};base64,{}", attachment.mime_type, file_data)
-                }
-            }));
-        } else if attachment.mime_type == "application/pdf" {
-            parts.push(serde_json::json!({
-                "type": "file",
-                "file": {
-                    "filename": attachment.filename,
-                    "file_data": file_data
-                }
-            }));
-        }
+        parts.push(serde_json::json!({
+            "type": "attachment",
+            "filename": attachment.filename,
+            "mime_type": attachment.mime_type,
+            "data_base64": telegram_file_base64(&file_path, config)?,
+        }));
     }
 
     Ok(serde_json::Value::Array(parts))

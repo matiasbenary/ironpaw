@@ -26,17 +26,24 @@ impl Guest for TuiChannel {
             return Err("message content cannot be empty".to_string());
         }
 
-        Ok(Some(serde_json::json!({
-            "channel": "tui",
-            "channel_user_id": "local",
-            "address": {
+        Ok(Some(
+            serde_json::json!({
                 "channel": "tui",
-                "conversation_id": incoming.callback_url,
-                "thread_id": null
-            },
-            "content": incoming.content
-        })
-        .to_string()))
+                "channel_user_id": "local",
+                "address": {
+                    "channel": "tui",
+                    "conversation_id": incoming.callback_url,
+                    "thread_id": null
+                },
+                "content": [
+                    {
+                        "type": "text",
+                        "text": incoming.content
+                    }
+                ]
+            })
+            .to_string(),
+        ))
     }
 
     fn on_message_out(

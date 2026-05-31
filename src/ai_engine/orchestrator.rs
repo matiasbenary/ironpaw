@@ -5,6 +5,7 @@ use async_openai::types::chat::{
 
 use crate::{
     message::OutboundAttachment,
+    models,
     openai::{EasyInputContent, EasyInputMessage, InputItem, Role},
     tools::{
         ai_inference::AiInferenceTool,
@@ -60,10 +61,8 @@ pub(super) async fn construct_execution_plan(
         return Ok(ExecutionPlan::default());
     }
 
-    let model = std::env::var("NEAR_MODEL")
-        .unwrap_or_else(|_| super::ai_engine::DEFAULT_MODEL.to_string());
     let request = CreateChatCompletionRequestArgs::default()
-        .model(model)
+        .model(models::text_model())
         .messages([
             ChatCompletionRequestSystemMessageArgs::default()
                 .content(format!(

@@ -7,10 +7,7 @@ use crate::{
     },
 };
 
-pub(super) fn tool_result_item(
-    tool_call_id: &str,
-    output: FunctionCallOutput,
-) -> InputItem {
+pub(super) fn tool_result_item(tool_call_id: &str, output: FunctionCallOutput) -> InputItem {
     Item::from(FunctionCallOutputItemParam {
         call_id: tool_call_id.to_string(),
         output,
@@ -55,30 +52,6 @@ pub(super) fn parse_response_output(response: crate::openai::Response) -> Parsed
     ParsedResponseOutput {
         function_calls,
         text: text_parts.join("\n\n"),
-    }
-}
-
-pub(super) fn contains_input_media(input_items: &[InputItem]) -> bool {
-    input_items
-        .iter()
-        .filter_map(|item| serde_json::to_value(item).ok())
-        .any(|value| value_contains_input_media(&value))
-}
-
-fn value_contains_input_media(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::Object(object) => {
-            if object
-                .get("type")
-                .and_then(|value| value.as_str())
-                .is_some_and(|r#type| matches!(r#type, "input_image" | "input_file"))
-            {
-                return true;
-            }
-            object.values().any(value_contains_input_media)
-        }
-        serde_json::Value::Array(values) => values.iter().any(value_contains_input_media),
-        _ => false,
     }
 }
 

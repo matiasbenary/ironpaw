@@ -52,7 +52,6 @@ impl AiInferenceTool {
         &self,
         request: CreateChatCompletionRequest,
     ) -> Result<CreateChatCompletionResponse, String> {
-
         let response = self
             .client
             .post(self.chat_completions_url())
@@ -77,7 +76,6 @@ impl AiInferenceTool {
     }
 
     pub async fn execute_response(&self, request: CreateResponse) -> Result<Response, String> {
-
         if let Ok(json) = serde_json::to_string_pretty(&request) {
             let _ = std::fs::OpenOptions::new()
                 .create(true)
@@ -111,7 +109,63 @@ impl AiInferenceTool {
             return Err(format!("request failed with {status}: {body}"));
         }
 
-        serde_json::from_str(&body).map_err(|err| err.to_string())
+        let response = parse_response_body(&body)?;
+        if response.status != crate::openai::Status::Completed {
+            return Err(format!("response status was {:?}", response.status));
+        }
+        Ok(response)
+    }
+}
+
+fn parse_response_body(body: &str) -> Result<Response, String> {
+    match serde_json::from_str(body) {
+        Ok(response) => Ok(response),
+        Err(original_err) => {
+            let mut value = serde_json::from_str(body).map_err(|value_err| {
+                format!("failed to parse response JSON: {value_err}; typed error: {original_err}")
+            })?;
+            normalize_near_response(&mut value);
+            serde_json::from_value(value).map_err(|normalized_err| {
+                format!(
+                    "failed to parse response: {original_err}; after NEAR compatibility normalization: {normalized_err}"
+                )
+            })
+        }
+    }
+}
+
+fn normalize_near_response(value: &mut serde_json::Value) {
+    let Some(output) = value
+        .get_mut("output")
+        .and_then(|output| output.as_array_mut())
+    else {
+        return;
+    };
+
+    for item in output {
+        if item.get("type").and_then(|value| value.as_str()) != Some("reasoning") {
+            continue;
+        }
+
+        if let Some(summary) = item.get_mut("summary") {
+            if let Some(text) = summary.as_str() {
+                *summary = if text.is_empty() {
+                    serde_json::Value::Array(Vec::new())
+                } else {
+                    serde_json::json!([{ "type": "summary_text", "text": text }])
+                };
+            }
+        }
+
+        if let Some(content) = item.get_mut("content") {
+            if let Some(text) = content.as_str() {
+                *content = if text.is_empty() {
+                    serde_json::Value::Array(Vec::new())
+                } else {
+                    serde_json::json!([{ "type": "reasoning_text", "text": text }])
+                };
+            }
+        }
     }
 }
 

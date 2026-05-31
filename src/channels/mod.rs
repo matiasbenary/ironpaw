@@ -30,7 +30,7 @@ pub async fn start(
     addr: &str,
     token: String,
 ) -> io::Result<ChannelRuntime> {
-    let listener = bridge::bind(addr).await.map_err(|err| {
+    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|err| {
         io::Error::new(
             err.kind(),
             format!("failed to bind channel bridge at {addr}: {err}"),
@@ -74,7 +74,9 @@ pub async fn start(
     let addr = addr.to_string();
     let files_dir = layout.files_dir();
     let bridge_task = tokio::spawn(async move {
-        if let Err(err) = bridge::run_server(listener, bus, &addr, token, secrets, channels, files_dir).await {
+        if let Err(err) =
+            bridge::run_server(listener, bus, &addr, token, secrets, channels, files_dir).await
+        {
             eprintln!("channel bridge failed: {err}");
         }
     });
