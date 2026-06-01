@@ -6,7 +6,7 @@ The current implementation is intentionally small, and is composed by:
 
 - `Channels`: WASM components that allow messages to flow from and towards the outside world.
 - An `AI Engine`, which reacts to incoming messages and runs them through an LLM with access to tools.
-- `Tools` (currently `ai_inference`, `generate_image`, and `send_message`) that the model can call to perform effects.
+- `Tools` (currently `ai_inference`, `image_generation`, `inspect_file`, and `send_message`) that the model can call to perform effects.
 - A `Bus` that the different components use to interact with each-other by publishing and subscribing to typed events.
 - A `secrets` system for storing and handling credentials (e.g. the NEAR API key used by `ai_inference`).
 
@@ -37,7 +37,7 @@ Implemented event types are:
 <details>
 
 <summary> OpenAI Message Payload </summary>
-Message payloads use **OpenAI-compatible chat message types**, this is important as it helps us to use a well defined and popular standard. 
+Message payloads use **OpenAI-compatible Responses API message types**, this is important as it helps us to use a well defined and popular standard. 
 
 </details>
 
@@ -72,6 +72,7 @@ Attachments currently support enough metadata for generated or remote images:
 - `kind`
 - `mime_type`
 - `filename`
+- `file_id`
 - `data_base64`
 - `url`
 
@@ -108,7 +109,8 @@ Inbound flow:
 1. A channel provider/client posts to the bridge route configured by the channel.
 2. The bridge authorizes the request according to channel config.
 3. The bridge calls the WASM channel `handle_http(path, body, config_json)`.
-4. The WASM channel emits zero or more channel messages.
+4. The WASM channel emits zero or more channel messages with the host-provided
+   `emit_message(message_json)` import.
 5. The bridge validates ownership and channel identity.
 6. Accepted messages become `Event::MessageIn`.
 7. The bridge remembers the sender address as the channel `default_address`.
@@ -136,9 +138,14 @@ When started, the engine subscribes to the bus and reacts to:
 Event::MessageIn { sender: Sender::User, ... }
 ```
 
-For each accepted user message, the engine runs a bounded OpenAI tool loop:
+For each accepted user message, the engine first asks the model for a compact
+execution plan. The plan is used to track cross-channel delivery obligations,
+such as "create an image and send it to Telegram", while leaving the normal
+tool loop in control of tool execution.
 
-1. Build a `CreateChatCompletionRequest` from the current messages.
+Then the engine runs a bounded OpenAI Responses API tool loop:
+
+1. Build a `CreateResponse` from the current messages.
 2. Attach schemas for all internal tools.
 3. Use the tool `ai_inference.execute(request)` to call the model.
 4. If the model returns no tool calls, send the assistant message back.
@@ -155,7 +162,7 @@ tool calls are rejected with a tool-result error message.
 Internal tools are async and model-callable. Every internal tool exposes:
 
 - `name()`
-- `openai_schema()`
+- `responses_schema()`
 - `execute(args).await`
 
 Each concrete tool follows the same shape:
@@ -166,7 +173,7 @@ Each concrete tool follows the same shape:
 
 The shared tool helpers are:
 
-- `tools::openai_tool_schema::<Params>(name, description)`
+- `tools::responses_tool_schema::<Params>(name, description)`
 - `tools::execute_typed(args, |params| Tool::execute(self, params)).await`
 
 This means adding a new internal tool should usually require:
@@ -179,9 +186,10 @@ This means adding a new internal tool should usually require:
 
 Implemented internal tools:
 
-- `ai_inference`: calls an OpenAI-compatible chat completion endpoint using the
+- `ai_inference`: calls an OpenAI-compatible Responses API endpoint using the
   configured NEAR API key.
-- `generate_image`: calls an OpenAI-compatible image generation endpoint and returns image data for later delivery.
+- `image_generation`: calls an OpenAI-compatible image generation endpoint and returns image data for later delivery.
+- `inspect_file`: inspects a locally stored file by numeric `file_id`, using text extraction for documents and a vision model for images.
 - `send_message`: publishes a message to a user through a channel.
 
 `ai_inference` is both the engine's model-call primitive and a model-callable
@@ -222,14 +230,11 @@ from `secrets.tools`.
 
 ## OpenAI Types
 
-`openai.rs` re-exports the OpenAI-compatible chat types used by Warden and
-contains small constructors/converters for common message shapes:
+`openai.rs` re-exports the OpenAI-compatible Responses API types used by Warden
+and contains shared response parsing helpers:
 
-- assistant response messages
-- user request messages
-- tool result messages
-- response-message to request-message conversion
-- first assistant response extraction
+- response text extraction
+- function tool call extraction
 
 The goal is to keep OpenAI compatibility visible while avoiding scattered
 one-off JSON message constructors across the codebase.
@@ -268,12 +273,13 @@ message, so its `default_address` has been stored in
 
 5. `AiEngine` receives `MessageIn` and starts the tool loop.
 
-6. The engine calls `ai_inference.execute(CreateChatCompletionRequest { ... })`.
+6. The engine calls `ai_inference.execute(CreateResponse { ... })`.
    The model receives schemas for all internal tools, including:
 
    ```text
    ai_inference
-   generate_image
+   image_generation
+   inspect_file
    send_message
    ```
 
@@ -379,9 +385,9 @@ The model can call the internal tools exposed by `InternalTools`. There is not y
 
 `openai.rs` still mostly re-exports `async-openai` types. Warden may eventually want its own wrapper types so we can implement local traits, schemas, and constructors without scattering adapter types such as `AiInferenceParams`.
 
-### Outbound Attachments In Telegram
+### Outbound Documents In Telegram
 
-The bus and `send_message` tool support outbound attachments, and `generate_image` can produce base64 image data. Telegram still needs complete outbound attachment delivery, such as `sendPhoto` for images and document delivery for files.
+The bus and `send_message` tool support outbound image attachments, `image_generation` can produce base64 image data, and Telegram can deliver images with `sendPhoto`. Telegram still needs document delivery for non-image files.
 
 ### More Tests
 
@@ -403,7 +409,7 @@ To start with, the models that NEAR AI provides are EITHER for [text + tools + t
 
 #### Problem 2. Documents
 
-Turns out that NEAR AI never enabled the file upload API, nor the `files` field in the chat completions API, so there is no way to directly provide the LLM with a file.
+Turns out that NEAR AI never enabled the file upload API, nor the `files` field in the Responses API, so there is no way to directly provide the LLM with a file.
 
 ### Workarounds
 
@@ -415,10 +421,10 @@ Right now, these workarounds have left our codebase in a state where we have a l
 
 Instead, I would prefer to have a single unified approach. I was thinking: maybe we use the same approach for both images and files, which is: we store them locally, and present the LLM with tools to query metadata about the files, and to retrieve their content.
 
-Again, this is how we are handling pdf files right now. We store the file in `./files`, and there is a `read_file` tool that knows how to open the pdf and present the LLM with the data.
+Again, this is how we are handling pdf files right now. We store the file in `./files`, and there is an `inspect_file` tool that knows how to open the pdf and present the LLM with the data.
 
 The only thing is that, when dealing with `images`, we do not want to just dump the base64 data into the LLM. Instead, we want the model to be able to "see" the image, and query visual features about it.
 
-This means that maybe `read_file(picture.png)` is not the best approach for images. Maybe we have a `query_file(file, query)` tool, that can handle both images and documents? But then, do we expose both `read_file` and `query_file`? or just `query_file`? Is it `query_file` a good name (maybe `inspect_file(file, query)` or `ask_file(file, query)`?
+This is why Warden exposes one `inspect_file(file_id, query)` tool for both images and documents instead of separate document and image tools.
 
 I am sure somebody has already run into this problem and solved it, so we just need to so some research and find out what is the best approach here.

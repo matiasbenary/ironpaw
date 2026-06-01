@@ -3,8 +3,8 @@ use std::{collections::HashSet, sync::Arc};
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
     message::{OutboundAttachment, OutboundMessage},
-    openai::{CreateResponse, InputItem, InputParam},
     models,
+    openai::{CreateResponse, InputItem, InputParam, parse_response_output},
     tools::{InternalTool, InternalTools, ToolOutput},
 };
 
@@ -15,8 +15,7 @@ use super::{
     },
     preamble::{files_shared_notice_input_item, system_preamble},
     utils::{
-        fill_current_destination, parse_response_output, publish_progress, summarize_tool_args,
-        tool_result_input_item,
+        fill_current_destination, publish_progress, summarize_tool_args, tool_result_input_item,
     },
 };
 

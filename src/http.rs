@@ -1,7 +1,7 @@
 use std::{fmt, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use reqwest::{Client, Method, blocking::multipart};
+use reqwest::{Method, blocking::multipart};
 
 pub trait SecretLookup: Clone + Send + Sync + 'static {
     fn get_secret(&self, name: &str) -> Option<String>;
@@ -17,16 +17,6 @@ pub struct CredentialInjection {
 }
 
 impl CredentialInjection {
-    pub fn bearer(host: impl Into<String>, secret: impl Into<String>) -> Self {
-        Self {
-            host: host.into(),
-            secret: secret.into(),
-            header: "Authorization".to_string(),
-            prefix: "Bearer ".to_string(),
-            placeholder: None,
-        }
-    }
-
     pub fn url_placeholder(
         host: impl Into<String>,
         placeholder: impl Into<String>,
@@ -63,7 +53,6 @@ impl std::error::Error for HttpError {}
 
 #[derive(Clone)]
 pub struct HttpTool<S> {
-    client: Client,
     secrets: S,
     credentials: Vec<CredentialInjection>,
 }
@@ -72,61 +61,11 @@ impl<S> HttpTool<S>
 where
     S: SecretLookup,
 {
-    pub fn new(secrets: S, credentials: Vec<CredentialInjection>) -> Result<Self, HttpError> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(60))
-            .build()
-            .map_err(sanitize_reqwest_error)?;
-
-        Ok(Self {
-            client,
+    pub fn new(secrets: S, credentials: Vec<CredentialInjection>) -> Self {
+        Self {
             secrets,
             credentials,
-        })
-    }
-
-    pub async fn post_json<T>(&self, url: &str, body: &T) -> Result<String, HttpError>
-    where
-        T: serde::Serialize + ?Sized,
-    {
-        let url = self.inject_url_credentials(url)?;
-        let parsed = reqwest::Url::parse(&url)
-            .map_err(|err| HttpError::InvalidRequest(format!("invalid URL: {err}")))?;
-
-        if parsed.scheme() != "https" && !is_loopback_http(&parsed) {
-            return Err(HttpError::InvalidRequest(
-                "only https URLs are allowed, except loopback http".to_string(),
-            ));
         }
-        self.ensure_allowed_host(&parsed)?;
-
-        let mut request = self.client.post(parsed.clone()).json(body);
-
-        for credential in self.credentials_for(&parsed) {
-            if credential.placeholder.is_some() {
-                continue;
-            }
-            let value = self
-                .secrets
-                .get_secret(&credential.secret)
-                .ok_or_else(|| HttpError::MissingCredential(credential.secret.clone()))?;
-            request = request.header(
-                credential.header.as_str(),
-                format!("{}{}", credential.prefix, value),
-            );
-        }
-
-        let response = request.send().await.map_err(sanitize_reqwest_error)?;
-        let status = response.status();
-        let body = response.text().await.map_err(sanitize_reqwest_error)?;
-
-        if !status.is_success() {
-            return Err(HttpError::Http(format!(
-                "request failed with {status}: {body}"
-            )));
-        }
-
-        Ok(body)
     }
 
     pub fn post_json_blocking<T>(&self, url: &str, body: &T) -> Result<String, HttpError>
@@ -378,10 +317,6 @@ where
             "host is not allowed: {host}"
         )))
     }
-}
-
-fn sanitize_reqwest_error(err: reqwest::Error) -> HttpError {
-    HttpError::Http(err.without_url().to_string())
 }
 
 fn sanitize_blocking_reqwest_error(err: reqwest::Error) -> HttpError {

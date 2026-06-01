@@ -14,11 +14,7 @@ impl Guest for TuiChannel {
         Ok(())
     }
 
-    fn handle_http(
-        _path: String,
-        body_json: String,
-        _config_json: String,
-    ) -> Result<Option<String>, String> {
+    fn handle_http(_path: String, body_json: String, _config_json: String) -> Result<(), String> {
         let incoming: IncomingMessage =
             serde_json::from_str(&body_json).map_err(|err| err.to_string())?;
 
@@ -26,24 +22,23 @@ impl Guest for TuiChannel {
             return Err("message content cannot be empty".to_string());
         }
 
-        Ok(Some(
-            serde_json::json!({
+        let event = serde_json::json!({
+            "channel": "tui",
+            "channel_user_id": "local",
+            "address": {
                 "channel": "tui",
-                "channel_user_id": "local",
-                "address": {
-                    "channel": "tui",
-                    "conversation_id": incoming.callback_url,
-                    "thread_id": null
-                },
-                "content": [
-                    {
-                        "type": "text",
-                        "text": incoming.content
-                    }
-                ]
-            })
-            .to_string(),
-        ))
+                "conversation_id": incoming.callback_url,
+                "thread_id": null
+            },
+            "content": [
+                {
+                    "type": "text",
+                    "text": incoming.content
+                }
+            ]
+        })
+        .to_string();
+        channel_host::emit_message(&event)
     }
 
     fn on_message_out(

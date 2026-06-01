@@ -3,12 +3,11 @@ use async_openai::types::responses::{ResponseTextParam, TextResponseFormatConfig
 use crate::{
     message::OutboundAttachment,
     models,
-    openai::{CreateResponse, EasyInputContent, EasyInputMessage, InputItem, InputParam, Role},
-    tools::{
-        InternalTools,
-        ai_inference::AiInferenceTool,
-        send_message::SendMessageParams,
+    openai::{
+        CreateResponse, EasyInputContent, EasyInputMessage, InputItem, InputParam, Role,
+        response_text,
     },
+    tools::{InternalTools, ai_inference::AiInferenceTool, send_message::SendMessageParams},
 };
 
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -92,24 +91,10 @@ pub(super) async fn construct_execution_plan(
         ..Default::default()
     };
 
-    let response = ai_inference.execute(request).await?;
-    let content = response
-        .output
-        .into_iter()
-        .find_map(|item| {
-            if let crate::openai::OutputItem::Message(msg) = item {
-                msg.content.into_iter().find_map(|c| {
-                    if let crate::openai::OutputMessageContent::OutputText(t) = c {
-                        Some(t.text)
-                    } else {
-                        None
-                    }
-                })
-            } else {
-                None
-            }
-        })
-        .ok_or_else(|| "plan response missing content".to_string())?;
+    let content = response_text(ai_inference.execute(request).await?);
+    if content.trim().is_empty() {
+        return Err("plan response missing content".to_string());
+    }
     let mut plan: ExecutionPlan = serde_json::from_str(&content).map_err(|err| err.to_string())?;
     normalize_execution_plan(&mut plan);
     Ok(plan)
@@ -196,13 +181,12 @@ pub(super) async fn fulfill_pending_deliveries(
                     thread_id: None,
                 })
                 .await?;
-        } else if matches!(
-            requirement.action.as_str(),
-            "deliver" | "reply"
-        ) && matches!(
-            requirement.object.kind.as_str(),
-            "text" | "reply" | "unknown" | ""
-        ) {
+        } else if matches!(requirement.action.as_str(), "deliver" | "reply")
+            && matches!(
+                requirement.object.kind.as_str(),
+                "text" | "reply" | "unknown" | ""
+            )
+        {
             let Some(text) = response_text.filter(|t| !t.is_empty()) else {
                 continue;
             };

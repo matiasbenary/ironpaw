@@ -89,8 +89,6 @@ impl InternalTool for ImageGenerationTool {
     }
 
     async fn execute(&self, _args: serde_json::Value) -> Result<ToolOutput, String> {
-        return mock_image(&self.files_dir); // DELETE THIS LINE TO USE REAL IMAGE GENERATION
-        #[allow(unreachable_code)]
         let params: ImageGenerationParams =
             serde_json::from_value(_args).map_err(|err| err.to_string())?;
         let data_base64 = self.generate(&params.prompt).await?;
@@ -124,22 +122,4 @@ fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|e| e.to_string())
-}
-
-fn mock_image(files_dir: &PathBuf) -> Result<ToolOutput, String> {
-    use base64::Engine as _;
-    let src = files_dir.join("1780086002.png");
-    let bytes = std::fs::read(&src).map_err(|e| format!("mock image read error: {e}"))?;
-    let data_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok(ToolOutput {
-        result: serde_json::json!({ "status": "stored", "file_id": 1780086002u32 }),
-        files: vec![OutboundAttachment {
-            kind: "image".to_string(),
-            mime_type: "image/png".to_string(),
-            filename: "1780086002.png".to_string(),
-            file_id: Some(1780086002u32),
-            data_base64: Some(data_base64),
-            url: None,
-        }],
-    })
 }

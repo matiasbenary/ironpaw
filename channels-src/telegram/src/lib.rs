@@ -48,24 +48,20 @@ impl Guest for TelegramChannel {
         .map(|_| ())
     }
 
-    fn handle_http(
-        _path: String,
-        body_json: String,
-        config_json: String,
-    ) -> Result<Option<String>, String> {
+    fn handle_http(_path: String, body_json: String, config_json: String) -> Result<(), String> {
         let config: RuntimeConfig =
             serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
         let update: TelegramUpdate =
             serde_json::from_str(&body_json).map_err(|err| err.to_string())?;
         let Some(message) = update.message.or(update.edited_message) else {
-            return Ok(None);
+            return Ok(());
         };
         let Some(from) = &message.from else {
-            return Ok(None);
+            return Ok(());
         };
 
         if from.is_bot {
-            return Ok(None);
+            return Ok(());
         }
 
         let text = message
@@ -77,7 +73,7 @@ impl Guest for TelegramChannel {
             .to_string();
         let attachments = message.attachments();
         if text.is_empty() && attachments.is_empty() {
-            return Ok(None);
+            return Ok(());
         }
         let content = warden_user_content(text, attachments, &config)?;
 
@@ -92,8 +88,7 @@ impl Guest for TelegramChannel {
             "content": content,
         })
         .to_string();
-        channel_host::emit_message(&event)?;
-        Ok(None)
+        channel_host::emit_message(&event)
     }
 
     fn on_message_out(

@@ -74,7 +74,9 @@ impl AiInferenceTool {
 }
 
 fn log_entry(label: &str, content: &impl serde::Serialize) {
-    let Ok(body) = serde_json::to_string_pretty(content) else { return };
+    let Ok(body) = serde_json::to_string_pretty(content) else {
+        return;
+    };
     write_log_entry(label, &body);
 }
 
@@ -161,14 +163,14 @@ impl InternalTool for AiInferenceTool {
     fn responses_schema(&self) -> crate::openai::Tool {
         tools::responses_tool_schema::<AiInferenceParams>(
             self.name(),
-            "Call an OpenAI-compatible chat completion model with a chat completion request.",
+            "Call an OpenAI-compatible model with a Responses API request.",
         )
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<tools::ToolOutput, String> {
         tools::execute_typed(args, |params: AiInferenceParams| async {
-            let request: CreateResponse = serde_json::from_value(params.0)
-                .map_err(|err| err.to_string())?;
+            let request: CreateResponse =
+                serde_json::from_value(params.0).map_err(|err| err.to_string())?;
             AiInferenceTool::execute(self, request).await
         })
         .await

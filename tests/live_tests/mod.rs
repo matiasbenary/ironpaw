@@ -5,9 +5,8 @@ use warden::{
     ai_engine::AiEngine,
     bus::{Bus, ChannelAddress, Event, Sender},
     openai::{
-        EasyInputContent, EasyInputMessage, InputContent, InputItem,
-        InputMessage, InputRole, InputTextContent,
-        Role,
+        EasyInputContent, EasyInputMessage, InputContent, InputItem, InputMessage, InputRole,
+        InputTextContent, Role,
     },
     tools::{InternalTools, ai_inference::AiInferenceTool, send_message::SendMessageTool},
 };
@@ -261,12 +260,11 @@ async fn agent_reads_pdf_content() {
         "/tests/live_tests/files/test.pdf"
     );
     let pdf_bytes = std::fs::read(pdf_path).expect("test PDF should be readable");
-    let secs = std::time::SystemTime::now()
+    let file_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as u32;
-    let file_id = format!("{secs}.pdf");
-    std::fs::write(files_dir.join(&file_id), &pdf_bytes).unwrap();
+    std::fs::write(files_dir.join(format!("{file_id}.pdf")), &pdf_bytes).unwrap();
 
     let message: InputItem = InputMessage {
         role: InputRole::User,
@@ -339,10 +337,9 @@ async fn agent_identifies_dog_image() {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/live_tests/files/test.jpg"
     );
-    let file_id = "received/live-test-dog.jpg";
-    std::fs::create_dir_all(files_dir.join("received")).unwrap();
+    let file_id = 123456789u32;
     std::fs::write(
-        files_dir.join(file_id),
+        files_dir.join(format!("{file_id}.jpg")),
         std::fs::read(image_path).expect("test image should be readable"),
     )
     .unwrap();

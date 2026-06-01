@@ -128,13 +128,9 @@ async fn message_channel_to_warden(
     let body = String::from_utf8(body.to_vec())
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let mut wasm = channel.wasm.lock().await;
-    let event_json = wasm
-        .handle_http(&path, &body, &channel_state.config_json)
+    wasm.handle_http(&path, &body, &channel_state.config_json)
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
-    let mut emitted_messages = wasm.take_emitted_messages();
-    if let Some(event_json) = event_json {
-        emitted_messages.push(event_json);
-    }
+    let emitted_messages = wasm.take_emitted_messages();
     drop(wasm);
 
     if emitted_messages.is_empty() {
@@ -418,9 +414,9 @@ fn content_part_to_input(part: InboundContent, files_dir: &PathBuf) -> InputCont
                 });
             }
 
-            let stored_name = stored_attachment_name(filename.as_deref(), &mime_type);
-            let file_id = received_file_id(&stored_name);
-            store_file(files_dir, &file_id, &data);
+            let ext = attachment_ext(filename.as_deref(), &mime_type);
+            let file_id = received_file_id();
+            store_file(files_dir, file_id, &ext, &data);
             InputContent::InputText(InputTextContent {
                 text: format!(
                     "A file is attached (file_id: '{file_id}', mime_type: '{mime_type}'). \
@@ -431,13 +427,9 @@ fn content_part_to_input(part: InboundContent, files_dir: &PathBuf) -> InputCont
     }
 }
 
-fn store_file(files_dir: &PathBuf, file_id: &str, data: &[u8]) {
-    let path = files_dir.join(file_id);
-    let Some(parent) = path.parent() else {
-        eprintln!("bridge: file path has no parent: {file_id}");
-        return;
-    };
-    if let Err(e) = fs::create_dir_all(parent) {
+fn store_file(files_dir: &PathBuf, file_id: u32, ext: &str, data: &[u8]) {
+    let path = files_dir.join(format!("{file_id}.{ext}"));
+    if let Err(e) = fs::create_dir_all(files_dir) {
         eprintln!("bridge: failed to create files_dir: {e}");
         return;
     }
@@ -446,22 +438,17 @@ fn store_file(files_dir: &PathBuf, file_id: &str, data: &[u8]) {
     }
 }
 
-fn received_file_id(filename: &str) -> String {
-    format!("received/{filename}")
+fn received_file_id() -> u32 {
+    let bytes = *uuid::Uuid::new_v4().as_bytes();
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
-fn stored_attachment_name(filename: Option<&str>, mime_type: &str) -> String {
-    let ext = filename
+fn attachment_ext(filename: Option<&str>, mime_type: &str) -> String {
+    filename
         .and_then(|name| std::path::Path::new(name).extension())
         .and_then(|ext| ext.to_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| ext_from_mime(mime_type).to_string());
-    let base_name = filename
-        .and_then(|name| std::path::Path::new(name).file_stem())
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or("file");
-    format!("{}-{}.{ext}", base_name, uuid::Uuid::new_v4())
+        .unwrap_or_else(|| ext_from_mime(mime_type))
+        .to_string()
 }
 
 fn decode_base64(data_base64: &str) -> Option<Vec<u8>> {
@@ -488,7 +475,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn image_attachment_is_stored_under_received() {
+    fn image_attachment_is_stored_with_numeric_id() {
         let files_dir = unique_test_files_dir();
         let part = InboundContent::Attachment {
             filename: Some("photo.png".to_string()),
@@ -498,14 +485,14 @@ mod tests {
 
         let input = content_part_to_input(part, &files_dir);
 
-        assert!(mentions_received_file_id(&input));
-        let stored = stored_received_file(&files_dir);
+        let file_id = mentioned_file_id(&input);
+        let stored = files_dir.join(format!("{file_id}.png"));
         assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("png"));
         assert_eq!(fs::read(stored).unwrap(), b"image");
     }
 
     #[test]
-    fn file_attachment_is_stored_under_received() {
+    fn file_attachment_is_stored_with_numeric_id() {
         let files_dir = unique_test_files_dir();
         let part = InboundContent::Attachment {
             filename: Some("report.pdf".to_string()),
@@ -515,8 +502,8 @@ mod tests {
 
         let input = content_part_to_input(part, &files_dir);
 
-        assert!(mentions_received_file_id(&input));
-        let stored = stored_received_file(&files_dir);
+        let file_id = mentioned_file_id(&input);
+        let stored = files_dir.join(format!("{file_id}.pdf"));
         assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("pdf"));
         assert_eq!(fs::read(stored).unwrap(), b"pdf");
     }
@@ -525,19 +512,16 @@ mod tests {
         std::env::temp_dir().join(format!("warden-bridge-test-{}", uuid::Uuid::new_v4()))
     }
 
-    fn stored_received_file(files_dir: &PathBuf) -> PathBuf {
-        let mut entries = fs::read_dir(files_dir.join("received"))
-            .expect("received dir should exist")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("received dir should be readable");
-        assert_eq!(entries.len(), 1);
-        entries.pop().unwrap().path()
-    }
-
-    fn mentions_received_file_id(input: &InputContent) -> bool {
+    fn mentioned_file_id(input: &InputContent) -> u32 {
         match input {
-            InputContent::InputText(text) => text.text.contains("file_id: 'received/"),
-            _ => false,
+            InputContent::InputText(text) => text
+                .text
+                .split("file_id: '")
+                .nth(1)
+                .and_then(|text| text.split('\'').next())
+                .and_then(|file_id| file_id.parse().ok())
+                .expect("input should mention numeric file_id"),
+            _ => panic!("expected input text"),
         }
     }
 }

@@ -45,8 +45,7 @@ impl WasmChannel {
             StoreData {
                 ctx: WasiCtxBuilder::new().build(),
                 table: ResourceTable::new(),
-                http: HttpTool::new(secrets, credentials)
-                    .map_err(|err| WasmChannelError::Load(err.to_string()))?,
+                http: HttpTool::new(secrets, credentials),
                 emitted_messages: Vec::new(),
             },
         );
@@ -68,7 +67,7 @@ impl WasmChannel {
         path: &str,
         body_json: &str,
         config_json: &str,
-    ) -> Result<Option<String>, WasmChannelError> {
+    ) -> Result<(), WasmChannelError> {
         self.bindings
             .call_handle_http(&mut self.store, path, body_json, config_json)
             .map_err(|err| WasmChannelError::Call(err.to_string()))?

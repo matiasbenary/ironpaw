@@ -9,8 +9,8 @@ use crate::{
     models,
     openai::{
         CreateResponse, EasyInputContent, EasyInputMessage, ImageDetail, InputContent,
-        InputImageContent, InputItem, InputMessage, InputParam, InputRole, InputTextContent,
-        OutputItem, OutputMessageContent, Role,
+        InputImageContent, InputItem, InputMessage, InputParam, InputRole, InputTextContent, Role,
+        response_text,
     },
     tools::{self, InternalTool, ToolOutput, ai_inference::AiInferenceTool},
 };
@@ -31,7 +31,7 @@ impl InspectFileTool {
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct InspectFileParams {
-    file_id: String,
+    file_id: u32,
     #[serde(default)]
     query: Option<String>,
 }
@@ -46,7 +46,8 @@ impl JsonSchema for InspectFileParams {
             "type": "object",
             "properties": {
                 "file_id": {
-                    "type": "string",
+                    "type": "integer",
+                    "format": "uint32",
                     "description": "The file_id of the attached file to inspect."
                 },
                 "query": {
@@ -76,7 +77,7 @@ impl InternalTool for InspectFileTool {
     async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput, String> {
         let params: InspectFileParams = serde_json::from_value(args).map_err(|e| e.to_string())?;
 
-        let path = self.files_dir.join(&params.file_id);
+        let path = file_path(&self.files_dir, params.file_id)?;
         let data =
             std::fs::read(&path).map_err(|_| format!("file not found: {}", params.file_id))?;
 
@@ -90,7 +91,7 @@ impl InternalTool for InspectFileTool {
 
         if mime.starts_with("image/") {
             let answer = self.inspect_image(mime, &data, query).await?;
-            return Ok(inspection_output(&params.file_id, query, answer));
+            return Ok(inspection_output(params.file_id, query, answer));
         }
 
         let text = if ext == "pdf" {
@@ -106,7 +107,7 @@ impl InternalTool for InspectFileTool {
         };
 
         let answer = self.inspect_text(&text, query).await?;
-        Ok(inspection_output(&params.file_id, query, answer))
+        Ok(inspection_output(params.file_id, query, answer))
     }
 }
 
@@ -186,33 +187,28 @@ fn text_item(text: String) -> InputItem {
     .into()
 }
 
-fn inspection_output(file_id: &str, query: &str, answer: String) -> ToolOutput {
+fn file_path(files_dir: &PathBuf, file_id: u32) -> Result<PathBuf, String> {
+    let prefix = format!("{file_id}.");
+    let entries = std::fs::read_dir(files_dir).map_err(|_| format!("file not found: {file_id}"))?;
+    for entry in entries {
+        let path = entry.map_err(|err| err.to_string())?.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(&prefix))
+        {
+            return Ok(path);
+        }
+    }
+    Err(format!("file not found: {file_id}"))
+}
+
+fn inspection_output(file_id: u32, query: &str, answer: String) -> ToolOutput {
     ToolOutput::json(serde_json::json!({
         "file_id": file_id,
         "query": query,
         "answer": answer,
     }))
-}
-
-fn response_text(response: crate::openai::Response) -> String {
-    let mut text_parts = Vec::new();
-    for item in response.output {
-        if let OutputItem::Message(message) = item {
-            for content in message.content {
-                match content {
-                    OutputMessageContent::OutputText(text) => {
-                        if !text.text.trim().is_empty() {
-                            text_parts.push(text.text);
-                        }
-                    }
-                    OutputMessageContent::Refusal(refusal) => {
-                        text_parts.push(refusal.refusal);
-                    }
-                }
-            }
-        }
-    }
-    text_parts.join("\n\n")
 }
 
 pub fn ext_to_mime(ext: &str) -> &str {
