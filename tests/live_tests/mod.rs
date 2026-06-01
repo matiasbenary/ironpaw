@@ -4,11 +4,10 @@ use tokio::time::timeout;
 use warden::{
     ai_engine::AiEngine,
     bus::{Bus, ChannelAddress, Event, Sender},
-    models,
     openai::{
-        CreateResponse, EasyInputContent, EasyInputMessage, FunctionTool, InputContent, InputItem,
-        InputMessage, InputParam, InputRole, InputTextContent, OutputItem, OutputMessageContent,
-        Role, Tool,
+        EasyInputContent, EasyInputMessage, InputContent, InputItem,
+        InputMessage, InputRole, InputTextContent,
+        Role,
     },
     tools::{InternalTools, ai_inference::AiInferenceTool, send_message::SendMessageTool},
 };

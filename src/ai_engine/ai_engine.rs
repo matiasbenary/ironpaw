@@ -4,6 +4,7 @@ use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
     message::{OutboundAttachment, OutboundMessage},
     openai::{CreateResponse, InputItem, InputParam},
+    models,
     tools::{InternalTool, InternalTools, ToolOutput},
 };
 
@@ -112,6 +113,7 @@ async fn run_agent_loop(
             available_tools.len()
         ));
         let request = CreateResponse {
+            model: Some(models::text_model()),
             input: InputParam::Items(input_items.clone()),
             tools: Some(available_tools),
             parallel_tool_calls: Some(false),
@@ -121,7 +123,7 @@ async fn run_agent_loop(
 
         let response = internal_tools
             .ai_inference
-            .execute_response(request)
+            .execute(request)
             .await
             .map_err(|err| err.to_string())?;
         previous_response_id = Some(response.id.clone());
@@ -135,6 +137,15 @@ async fn run_agent_loop(
                 "ai_engine: round {} finished with assistant text",
                 round + 1
             ));
+            fulfill_pending_deliveries(
+                internal_tools,
+                channel,
+                &execution_plan,
+                &generated_files,
+                &mut fulfilled_requirements,
+                Some(&output.text),
+            )
+            .await?;
             publish_current_channel_output(
                 bus,
                 channel,
@@ -175,6 +186,7 @@ async fn run_agent_loop(
                 &execution_plan,
                 &generated_files,
                 &mut fulfilled_requirements,
+                None,
             )
             .await?;
             let new_attachments = tool_result.attachments;
@@ -424,6 +436,7 @@ mod tests {
                     kind: "image".to_string(),
                     mime_type: "image/png".to_string(),
                     filename: "generated.png".to_string(),
+                    file_id: None,
                     data_base64: Some("abc".to_string()),
                     url: None,
                 }],

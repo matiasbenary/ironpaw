@@ -4,8 +4,6 @@ use async_trait::async_trait;
 use reqwest::Client;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 
-use async_openai::types::chat::{CreateChatCompletionRequest, CreateChatCompletionResponse};
-
 use crate::{
     http::HttpError,
     openai::{CreateResponse, Response},
@@ -37,57 +35,12 @@ impl AiInferenceTool {
         })
     }
 
-    fn chat_completions_url(&self) -> String {
-        format!(
-            "{}/v1/chat/completions",
-            self.base_url.trim_end_matches('/')
-        )
-    }
-
     fn responses_url(&self) -> String {
         format!("{}/v1/responses", self.base_url.trim_end_matches('/'))
     }
 
-    pub async fn execute(
-        &self,
-        request: CreateChatCompletionRequest,
-    ) -> Result<CreateChatCompletionResponse, String> {
-        let response = self
-            .client
-            .post(self.chat_completions_url())
-            .bearer_auth(&self.near_api_key)
-            .json(&request)
-            .send()
-            .await
-            .map_err(sanitize_reqwest_error)
-            .map_err(|err| err.to_string())?;
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(sanitize_reqwest_error)
-            .map_err(|err| err.to_string())?;
-
-        if !status.is_success() {
-            return Err(format!("request failed with {status}: {body}"));
-        }
-
-        serde_json::from_str(&body).map_err(|err| err.to_string())
-    }
-
-    pub async fn execute_response(&self, request: CreateResponse) -> Result<Response, String> {
-        if let Ok(json) = serde_json::to_string_pretty(&request) {
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("llm_requests.log")
-                .and_then(|mut f| {
-                    use std::io::Write as _;
-                    writeln!(f, "=== request ===")?;
-                    writeln!(f, "{json}")?;
-                    writeln!(f, "===============")
-                });
-        }
+    pub async fn execute(&self, request: CreateResponse) -> Result<Response, String> {
+        log_entry("request", &request);
 
         let response = self
             .client
@@ -106,25 +59,52 @@ impl AiInferenceTool {
             .map_err(|err| err.to_string())?;
 
         if !status.is_success() {
+            write_log_entry(&format!("error {status}"), &body);
             return Err(format!("request failed with {status}: {body}"));
         }
 
         let response = parse_response_body(&body)?;
-        if response.status != crate::openai::Status::Completed {
+        log_entry("response", &response);
+
+        if response.status == crate::openai::Status::Failed {
             return Err(format!("response status was {:?}", response.status));
         }
         Ok(response)
     }
 }
 
+fn log_entry(label: &str, content: &impl serde::Serialize) {
+    let Ok(body) = serde_json::to_string_pretty(content) else { return };
+    write_log_entry(label, &body);
+}
+
+fn write_log_entry(label: &str, content: &str) {
+    static INITIALIZED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    let path = "/Users/gagdiez/tmp/miniclaw/release/llm_requests.log";
+    let first = INITIALIZED.set(()).is_ok();
+    let header = format!("=== {label} ===");
+    let sep = "=".repeat(header.len());
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(first)
+        .append(!first)
+        .open(path)
+        .and_then(|mut f| {
+            use std::io::Write as _;
+            writeln!(f, "{header}")?;
+            writeln!(f, "{content}")?;
+            writeln!(f, "{sep}")
+        });
+}
+
 fn parse_response_body(body: &str) -> Result<Response, String> {
     match serde_json::from_str(body) {
         Ok(response) => Ok(response),
         Err(original_err) => {
-            let mut value = serde_json::from_str(body).map_err(|value_err| {
+            let value = serde_json::from_str(body).map_err(|value_err| {
                 format!("failed to parse response JSON: {value_err}; typed error: {original_err}")
             })?;
-            normalize_near_response(&mut value);
             serde_json::from_value(value).map_err(|normalized_err| {
                 format!(
                     "failed to parse response: {original_err}; after NEAR compatibility normalization: {normalized_err}"
@@ -134,44 +114,9 @@ fn parse_response_body(body: &str) -> Result<Response, String> {
     }
 }
 
-fn normalize_near_response(value: &mut serde_json::Value) {
-    let Some(output) = value
-        .get_mut("output")
-        .and_then(|output| output.as_array_mut())
-    else {
-        return;
-    };
-
-    for item in output {
-        if item.get("type").and_then(|value| value.as_str()) != Some("reasoning") {
-            continue;
-        }
-
-        if let Some(summary) = item.get_mut("summary") {
-            if let Some(text) = summary.as_str() {
-                *summary = if text.is_empty() {
-                    serde_json::Value::Array(Vec::new())
-                } else {
-                    serde_json::json!([{ "type": "summary_text", "text": text }])
-                };
-            }
-        }
-
-        if let Some(content) = item.get_mut("content") {
-            if let Some(text) = content.as_str() {
-                *content = if text.is_empty() {
-                    serde_json::Value::Array(Vec::new())
-                } else {
-                    serde_json::json!([{ "type": "reasoning_text", "text": text }])
-                };
-            }
-        }
-    }
-}
-
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(transparent)]
-pub struct AiInferenceParams(pub CreateChatCompletionRequest);
+pub struct AiInferenceParams(pub serde_json::Value);
 
 impl JsonSchema for AiInferenceParams {
     fn schema_name() -> Cow<'static, str> {
@@ -181,15 +126,15 @@ impl JsonSchema for AiInferenceParams {
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
         Schema::try_from(serde_json::json!({
             "type": "object",
-            "description": "OpenAI-compatible CreateChatCompletionRequest.",
+            "description": "OpenAI-compatible CreateResponse request body (responses API).",
             "properties": {
                 "model": {
                     "type": "string",
                     "description": "Optional model name. If omitted, Warden uses its configured default."
                 },
-                "messages": {
+                "input": {
                     "type": "array",
-                    "description": "OpenAI-compatible chat messages.",
+                    "description": "Responses API input items.",
                     "items": { "type": "object" }
                 },
                 "tools": {
@@ -200,7 +145,7 @@ impl JsonSchema for AiInferenceParams {
                     "description": "Optional OpenAI-compatible tool choice."
                 }
             },
-            "required": ["messages"],
+            "required": ["input"],
             "additionalProperties": true
         }))
         .expect("ai_inference schema should be valid")
@@ -222,7 +167,9 @@ impl InternalTool for AiInferenceTool {
 
     async fn execute(&self, args: serde_json::Value) -> Result<tools::ToolOutput, String> {
         tools::execute_typed(args, |params: AiInferenceParams| async {
-            AiInferenceTool::execute(self, params.0).await
+            let request: CreateResponse = serde_json::from_value(params.0)
+                .map_err(|err| err.to_string())?;
+            AiInferenceTool::execute(self, request).await
         })
         .await
         .map(tools::ToolOutput::json)

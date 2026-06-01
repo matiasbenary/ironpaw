@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::message::OutboundAttachment;
-use crate::openai::{FunctionCallOutput, FunctionTool, Tool};
+use crate::openai::{FunctionTool, Tool};
 
 use self::{
     ai_inference::AiInferenceTool, image_generation::ImageGenerationTool,
@@ -16,14 +16,14 @@ use self::{
 };
 
 pub struct ToolOutput {
-    pub model_output: FunctionCallOutput,
+    pub result: serde_json::Value,
     pub files: Vec<OutboundAttachment>,
 }
 
 impl ToolOutput {
     pub fn json(result: serde_json::Value) -> Self {
         Self {
-            model_output: FunctionCallOutput::Text(result.to_string()),
+            result,
             files: Vec::new(),
         }
     }
@@ -49,7 +49,7 @@ impl InternalTools {
         Self {
             ai_inference,
             send_message: Arc::clone(&send_message),
-            tools: vec![send_message /*, image_generation, inspect_file*/],
+            tools: vec![send_message, image_generation, inspect_file],
         }
     }
 }

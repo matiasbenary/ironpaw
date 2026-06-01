@@ -148,7 +148,7 @@ impl InspectFileTool {
     async fn call_model(&self, model: String, input: Vec<InputItem>) -> Result<String, String> {
         let response = self
             .ai_inference
-            .execute_response(CreateResponse {
+            .execute(CreateResponse {
                 model: Some(model),
                 input: InputParam::Items(input),
                 parallel_tool_calls: Some(false),

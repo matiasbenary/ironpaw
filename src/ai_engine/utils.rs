@@ -7,14 +7,23 @@ use crate::{
     },
 };
 
-pub(super) fn tool_result_item(tool_call_id: &str, output: FunctionCallOutput) -> InputItem {
+pub(super) fn tool_result_input_item(tool_call_id: &str, result: impl AsRef<str>) -> InputItem {
     Item::from(FunctionCallOutputItemParam {
         call_id: tool_call_id.to_string(),
-        output,
+        output: FunctionCallOutput::Text(result.as_ref().to_string()),
         id: None,
         status: None,
     })
     .into()
+}
+
+pub(super) fn summarize_tool_args(arguments: &str) -> String {
+    const MAX_LEN: usize = 600;
+    if arguments.len() <= MAX_LEN {
+        arguments.to_string()
+    } else {
+        format!("{}\u{2026}", &arguments[..MAX_LEN])
+    }
 }
 
 pub(super) struct ParsedResponseOutput {
@@ -57,9 +66,11 @@ pub(super) fn parse_response_output(response: crate::openai::Response) -> Parsed
 
 pub(super) fn fill_current_destination(
     args: &mut serde_json::Value,
-    channel: &str,
-    address: &ChannelAddress,
+    progress: Option<(&Bus, &str, &ChannelAddress)>,
 ) {
+    let Some((_bus, channel, address)) = progress else {
+        return;
+    };
     let Some(object) = args.as_object_mut() else {
         return;
     };
