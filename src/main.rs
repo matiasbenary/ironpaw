@@ -21,8 +21,7 @@ async fn main() -> std::io::Result<()> {
         .get("NEAR_API_KEY")
         .ok_or_else(|| std::io::Error::other("missing tool secret: NEAR_API_KEY"))?;
     let history = Arc::new(
-        SqliteHistory::new(layout.data_dir().join("history.db"))
-            .map_err(std::io::Error::other)?,
+        SqliteHistory::new(layout.data_dir().join("history.db")).map_err(std::io::Error::other)?,
     );
     let tools = InternalTools::new(
         AiInferenceTool::new(near_api_key.clone()).map_err(std::io::Error::other)?,

@@ -3,8 +3,8 @@ use std::{path::PathBuf, sync::Mutex};
 use rusqlite::{Connection, params};
 
 use crate::openai::{
-    EasyInputContent, EasyInputMessage, FunctionCallOutput, InputContent, InputItem,
-    Item, MessageItem, OutputMessageContent, Role,
+    EasyInputContent, EasyInputMessage, FunctionCallOutput, InputContent, InputItem, Item,
+    MessageItem, OutputMessageContent, Role,
 };
 
 use super::History;
@@ -48,7 +48,9 @@ impl SqliteHistory {
         )
         .map_err(|e| e.to_string())?;
 
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 }
 
@@ -170,10 +172,12 @@ impl History for SqliteHistory {
                  LIMIT 20",
             )
             .expect("prepare search");
-        stmt.query_map(params![query, conversation_id], |row| row.get::<_, String>(0))
-            .expect("query search")
-            .filter_map(|r| r.ok())
-            .filter_map(|json| serde_json::from_str(&json).ok())
-            .collect()
+        stmt.query_map(params![query, conversation_id], |row| {
+            row.get::<_, String>(0)
+        })
+        .expect("query search")
+        .filter_map(|r| r.ok())
+        .filter_map(|json| serde_json::from_str(&json).ok())
+        .collect()
     }
 }

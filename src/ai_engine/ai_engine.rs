@@ -5,7 +5,7 @@ use crate::{
     message::OutboundMessage,
     models,
     openai::{
-        CreateResponse, EasyInputContent, EasyInputMessage, InputItem, InputParam, Item, Role,
+        CreateResponse, EasyInputContent, EasyInputMessage, InputItem, InputParam, Role,
         parse_response_output,
     },
     tools::{self, InternalTool, InternalTools, ToolOutput},
@@ -91,6 +91,7 @@ async fn run_agent_loop(
 
     // Entries accumulated this turn, to be persisted after the loop.
     let mut new_entries: Vec<InputItem> = messages.clone();
+    let mut previous_response_id: Option<String> = None;
 
     for round in 0..MAX_TOOL_ROUNDS {
         let available_tools: Vec<_> = internal_tools
@@ -109,6 +110,7 @@ async fn run_agent_loop(
             input: InputParam::Items(input_items.clone()),
             tools: Some(available_tools),
             parallel_tool_calls: Some(false),
+            previous_response_id: previous_response_id.take(),
             ..Default::default()
         };
 
@@ -117,8 +119,11 @@ async fn run_agent_loop(
             .execute(request)
             .await
             .map_err(|err| err.to_string())?;
+        previous_response_id = Some(response.id.clone());
         let output = parse_response_output(response);
         let function_calls = output.function_calls;
+        // On subsequent rounds the provider has the prior response; send only tool results.
+        input_items = Vec::new();
 
         if function_calls.is_empty() {
             debug_log(format!(
@@ -136,7 +141,9 @@ async fn run_agent_loop(
                     .into(),
                 );
             }
-            internal_tools.history.append(&address.conversation_id, &new_entries);
+            internal_tools
+                .history
+                .append(&address.conversation_id, &new_entries);
             publish_current_channel_output(
                 bus,
                 channel,
@@ -157,11 +164,6 @@ async fn run_agent_loop(
             round + 1,
             function_calls.len()
         ));
-        for call in &function_calls {
-            let item: InputItem = Item::FunctionCall(call.clone()).into();
-            new_entries.push(item.clone());
-            input_items.push(item);
-        }
         for tool_call in function_calls {
             let tool_result = execute_tool_call(
                 &internal_tools.tools,
@@ -169,12 +171,13 @@ async fn run_agent_loop(
                 Some((bus, channel, address)),
             )
             .await?;
-            new_entries.push(tool_result.input_item.clone());
             input_items.push(tool_result.input_item);
         }
     }
 
-    internal_tools.history.append(&address.conversation_id, &new_entries);
+    internal_tools
+        .history
+        .append(&address.conversation_id, &new_entries);
     publish_current_channel_output(
         bus,
         channel,
@@ -334,9 +337,7 @@ mod tests {
             status: None,
         };
 
-        let result = execute_tool_call(&tools, tool_call, None)
-            .await
-            .unwrap();
+        let result = execute_tool_call(&tools, tool_call, None).await.unwrap();
         let result_json = serde_json::to_value(result.input_item).unwrap();
         assert_eq!(result_json["call_id"], "call_1");
         assert!(

@@ -14,8 +14,8 @@ use warden::{
 };
 
 fn temp_history() -> Arc<SqliteHistory> {
-    let path = std::env::temp_dir()
-        .join(format!("warden-test-history-{}.db", uuid::Uuid::new_v4()));
+    let path =
+        std::env::temp_dir().join(format!("warden-test-history-{}.db", uuid::Uuid::new_v4()));
     Arc::new(SqliteHistory::new(path).expect("temp history"))
 }
 
