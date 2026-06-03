@@ -2,6 +2,7 @@ pub mod ai_engine;
 pub mod bus;
 pub mod channels;
 pub mod config;
+pub mod history;
 pub mod http;
 pub mod message;
 pub mod models;

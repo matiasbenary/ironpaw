@@ -6,7 +6,6 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    message::OutboundAttachment,
     models,
     tools::{self, InternalTool, ToolOutput},
 };
@@ -84,11 +83,13 @@ impl InternalTool for ImageGenerationTool {
     fn responses_schema(&self) -> crate::openai::Tool {
         tools::responses_tool_schema::<ImageGenerationParams>(
             self.name(),
-            "Generate an image from a text description. The image is automatically delivered to the current channel. To also send it to a different channel, call send_message with the returned file_id.",
+            "Generate an image from a text description and return a file_id. To deliver the image, call send_message with that file_id.",
         )
     }
 
     async fn execute(&self, _args: serde_json::Value) -> Result<ToolOutput, String> {
+        return mock_image(&self.files_dir); // DELETE THIS LINE TO USE REAL IMAGE GENERATION
+        #[allow(unreachable_code)]
         let params: ImageGenerationParams =
             serde_json::from_value(_args).map_err(|err| err.to_string())?;
         let data_base64 = self.generate(&params.prompt).await?;
@@ -100,20 +101,10 @@ impl InternalTool for ImageGenerationTool {
         let path = self.files_dir.join(format!("{file_id}.png"));
         let bytes = base64_decode(&data_base64)?;
         std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-        Ok(ToolOutput {
-            result: serde_json::json!({
-                "status": "ok",
-                "file_id": file_id,
-            }),
-            files: vec![OutboundAttachment {
-                kind: "image".to_string(),
-                mime_type: "image/png".to_string(),
-                filename: format!("{file_id}.png"),
-                file_id: Some(file_id),
-                data_base64: Some(data_base64),
-                url: None,
-            }],
-        })
+        Ok(ToolOutput::json(serde_json::json!({
+            "status": "ok",
+            "file_id": file_id,
+        })))
     }
 }
 
@@ -122,4 +113,12 @@ fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|e| e.to_string())
+}
+
+fn mock_image(files_dir: &PathBuf) -> Result<ToolOutput, String> {
+    let src = files_dir.join("1780086002.png");
+    std::fs::read(&src).map_err(|e| format!("mock image read error: {e}"))?;
+    Ok(ToolOutput::json(
+        serde_json::json!({ "status": "stored", "file_id": 1780086002u32 }),
+    ))
 }

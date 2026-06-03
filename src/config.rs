@@ -27,6 +27,10 @@ impl RuntimeLayout {
     pub fn files_dir(&self) -> PathBuf {
         self.root.join("files")
     }
+
+    pub fn data_dir(&self) -> PathBuf {
+        self.root.join("data")
+    }
 }
 
 fn default_runtime_root() -> PathBuf {

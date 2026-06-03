@@ -146,11 +146,19 @@ tool loop in control of tool execution.
 Then the engine runs a bounded OpenAI Responses API tool loop:
 
 1. Build a `CreateResponse` from the current messages.
-2. Attach schemas for all internal tools.
+2. Attach schemas for all internal tools. Before schemas are sent to the model,
+   Warden injects optional `agent_step.fulfills` metadata into each tool schema.
 3. Use the tool `ai_inference.execute(request)` to call the model.
 4. If the model returns no tool calls, send the assistant message back.
-5. If the model returns tool calls, execute them, append tool result messages, and ask the model again.
+5. If the model returns tool calls, strip `agent_step` before executing the
+   tool, validate any `fulfills` ids against the execution plan, append tool
+   result messages, and ask the model again.
 6. Stop after `MAX_TOOL_ROUNDS`.
+
+`agent_step.fulfills` lets the model say which planned requirements a
+successful tool call satisfies without leaking Warden-specific fields into the
+tool implementation. Invalid requirement ids are rejected as tool-result errors
+with the current plan included so the model can retry.
 
 The engine sends the final assistant response through the `send_message` tool.
 
@@ -188,7 +196,7 @@ Implemented internal tools:
 
 - `ai_inference`: calls an OpenAI-compatible Responses API endpoint using the
   configured NEAR API key.
-- `image_generation`: calls an OpenAI-compatible image generation endpoint and returns image data for later delivery.
+- `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image, and returns a `file_id` for later delivery.
 - `inspect_file`: inspects a locally stored file by numeric `file_id`, using text extraction for documents and a vision model for images.
 - `send_message`: publishes a message to a user through a channel.
 
@@ -387,7 +395,7 @@ The model can call the internal tools exposed by `InternalTools`. There is not y
 
 ### Outbound Documents In Telegram
 
-The bus and `send_message` tool support outbound image attachments, `image_generation` can produce base64 image data, and Telegram can deliver images with `sendPhoto`. Telegram still needs document delivery for non-image files.
+The bus and `send_message` tool support outbound image attachments, `image_generation` stores generated images as files, and Telegram can deliver images with `sendPhoto`. Telegram still needs document delivery for non-image files.
 
 ### More Tests
 

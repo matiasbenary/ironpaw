@@ -2,30 +2,26 @@ pub mod ai_inference;
 pub mod image_generation;
 pub mod inspect_file;
 pub mod send_message;
+pub mod todo;
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::message::OutboundAttachment;
-use crate::openai::{FunctionTool, Tool};
+use crate::{history::History, openai::{FunctionTool, Tool}};
 
 use self::{
     ai_inference::AiInferenceTool, image_generation::ImageGenerationTool,
-    inspect_file::InspectFileTool, send_message::SendMessageTool,
+    inspect_file::InspectFileTool, send_message::SendMessageTool, todo::TodoTool,
 };
 
 pub struct ToolOutput {
     pub result: serde_json::Value,
-    pub files: Vec<OutboundAttachment>,
 }
 
 impl ToolOutput {
     pub fn json(result: serde_json::Value) -> Self {
-        Self {
-            result,
-            files: Vec::new(),
-        }
+        Self { result }
     }
 }
 
@@ -33,6 +29,7 @@ impl ToolOutput {
 pub struct InternalTools {
     pub ai_inference: AiInferenceTool,
     pub send_message: Arc<SendMessageTool>,
+    pub history: Arc<dyn History>,
     pub tools: Vec<Arc<dyn InternalTool>>,
 }
 
@@ -42,14 +39,17 @@ impl InternalTools {
         send_message: SendMessageTool,
         near_api_key: String,
         files_dir: std::path::PathBuf,
+        history: Arc<dyn History>,
     ) -> Self {
         let send_message = Arc::new(send_message);
         let image_generation = Arc::new(ImageGenerationTool::new(near_api_key, files_dir.clone()));
         let inspect_file = Arc::new(InspectFileTool::new(files_dir, ai_inference.clone()));
+        let todo = Arc::new(TodoTool::new());
         Self {
             ai_inference,
             send_message: Arc::clone(&send_message),
-            tools: vec![send_message, image_generation, inspect_file],
+            history,
+            tools: vec![send_message, image_generation, inspect_file, todo],
         }
     }
 }
@@ -83,7 +83,7 @@ where
 {
     let mut parameters =
         serde_json::to_value(schemars::schema_for!(P)).expect("tool schema should serialize");
-    sanitize_tool_schema(&mut parameters);
+    sanitize_schema(&mut parameters);
 
     Tool::Function(FunctionTool {
         name: name.to_string(),
@@ -94,7 +94,20 @@ where
     })
 }
 
-fn sanitize_tool_schema(value: &mut serde_json::Value) {
+pub fn schema_for_model(tool: &dyn InternalTool) -> Tool {
+    let mut schema = tool.responses_schema();
+    if let Tool::Function(function) = &mut schema {
+        let parameters = function
+            .parameters
+            .get_or_insert_with(|| serde_json::json!({ "type": "object" }));
+        if let Some(root) = parameters.as_object_mut() {
+            root.insert("type".to_string(), "object".into());
+        }
+    }
+    schema
+}
+
+fn sanitize_schema(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {
             object.remove("$schema");
@@ -115,12 +128,12 @@ fn sanitize_tool_schema(value: &mut serde_json::Value) {
             }
 
             for value in object.values_mut() {
-                sanitize_tool_schema(value);
+                sanitize_schema(value);
             }
         }
         serde_json::Value::Array(values) => {
             for value in values {
-                sanitize_tool_schema(value);
+                sanitize_schema(value);
             }
         }
         _ => {}

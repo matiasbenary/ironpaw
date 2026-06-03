@@ -1,15 +1,23 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::timeout;
 use warden::{
     ai_engine::AiEngine,
     bus::{Bus, ChannelAddress, Event, Sender},
+    history::SqliteHistory,
     openai::{
         EasyInputContent, EasyInputMessage, InputContent, InputItem, InputMessage, InputRole,
         InputTextContent, Role,
     },
     tools::{InternalTools, ai_inference::AiInferenceTool, send_message::SendMessageTool},
 };
+
+fn temp_history() -> Arc<SqliteHistory> {
+    let path = std::env::temp_dir()
+        .join(format!("warden-test-history-{}.db", uuid::Uuid::new_v4()));
+    Arc::new(SqliteHistory::new(path).expect("temp history"))
+}
 
 /// Verify the agent can answer a minimal text message.
 ///
@@ -32,6 +40,7 @@ async fn agent_replies_to_hi() {
         SendMessageTool::new(bus.clone(), files_dir.clone()),
         near_api_key,
         files_dir,
+        temp_history(),
     );
 
     let engine = AiEngine::new(bus.clone(), tools);
@@ -96,6 +105,7 @@ async fn send_message_routes_to_telegram() {
         SendMessageTool::new(bus.clone(), files_dir.clone()),
         near_api_key,
         files_dir.clone(),
+        temp_history(),
     );
 
     let engine = AiEngine::new(bus.clone(), tools);
@@ -167,6 +177,7 @@ async fn image_generation_routes_to_telegram() {
         SendMessageTool::new(bus.clone(), files_dir.clone()),
         near_api_key,
         files_dir.clone(),
+        temp_history(),
     );
 
     let engine = AiEngine::new(bus.clone(), tools);
@@ -243,6 +254,7 @@ async fn agent_reads_pdf_content() {
         SendMessageTool::new(bus.clone(), files_dir.clone()),
         near_api_key,
         files_dir.clone(),
+        temp_history(),
     );
 
     let engine = AiEngine::new(bus.clone(), tools);
@@ -328,6 +340,7 @@ async fn agent_identifies_dog_image() {
         SendMessageTool::new(bus.clone(), files_dir.clone()),
         near_api_key,
         files_dir.clone(),
+        temp_history(),
     );
 
     let engine = AiEngine::new(bus.clone(), tools);

@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 use warden::{
     ai_engine::AiEngine,
     bus::Bus,
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
+    history::SqliteHistory,
     secrets::Secrets,
     tools::{InternalTools, ai_inference::AiInferenceTool, send_message::SendMessageTool},
 };
@@ -17,11 +20,16 @@ async fn main() -> std::io::Result<()> {
         .tools
         .get("NEAR_API_KEY")
         .ok_or_else(|| std::io::Error::other("missing tool secret: NEAR_API_KEY"))?;
+    let history = Arc::new(
+        SqliteHistory::new(layout.data_dir().join("history.db"))
+            .map_err(std::io::Error::other)?,
+    );
     let tools = InternalTools::new(
         AiInferenceTool::new(near_api_key.clone()).map_err(std::io::Error::other)?,
         SendMessageTool::new(bus.clone(), layout.files_dir()),
         near_api_key.clone(),
         layout.files_dir(),
+        history,
     );
     let engine = AiEngine::new(bus.clone(), tools);
     let _engine_task = engine.start();

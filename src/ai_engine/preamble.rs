@@ -26,15 +26,3 @@ pub(super) fn system_preamble(channel: &str, address: &ChannelAddress) -> Vec<In
         .into(),
     ]
 }
-
-pub(super) fn files_shared_notice_input_item(count: usize, channel: &str) -> InputItem {
-    EasyInputMessage {
-        r#type: Default::default(),
-        role: Role::System,
-        content: EasyInputContent::Text(format!(
-            "{count} file(s) automatically shared with the user on channel '{channel}'."
-        )),
-        phase: None,
-    }
-    .into()
-}
