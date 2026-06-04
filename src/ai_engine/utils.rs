@@ -1,18 +1,7 @@
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
     message::OutboundMessage,
-    openai::{FunctionCallOutput, FunctionCallOutputItemParam, InputItem, Item},
 };
-
-pub(super) fn tool_result_input_item(tool_call_id: &str, result: impl AsRef<str>) -> InputItem {
-    Item::from(FunctionCallOutputItemParam {
-        call_id: tool_call_id.to_string(),
-        output: FunctionCallOutput::Text(result.as_ref().to_string()),
-        id: None,
-        status: None,
-    })
-    .into()
-}
 
 pub(super) fn summarize_tool_args(arguments: &str) -> String {
     const MAX_LEN: usize = 600;

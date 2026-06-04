@@ -138,29 +138,34 @@ When started, the engine subscribes to the bus and reacts to:
 Event::MessageIn { sender: Sender::User, ... }
 ```
 
-For each accepted user message, the engine first asks the model for a compact
-execution plan. The plan is used to track cross-channel delivery obligations,
-such as "create an image and send it to Telegram", while leaving the normal
-tool loop in control of tool execution.
+For each accepted user message, the engine records the message in conversation
+history and lets the model run a bounded tool loop.
 
 Then the engine runs a bounded OpenAI Responses API tool loop:
 
-1. Build a `CreateResponse` from the current messages.
-2. Attach schemas for all internal tools. Before schemas are sent to the model,
-   Warden injects optional `agent_step.fulfills` metadata into each tool schema.
-3. Use the tool `ai_inference.execute(request)` to call the model.
-4. If the model returns no tool calls, send the assistant message back.
-5. If the model returns tool calls, strip `agent_step` before executing the
-   tool, validate any `fulfills` ids against the execution plan, append tool
-   result messages, and ask the model again.
-6. Stop after `MAX_TOOL_ROUNDS`.
+1. Append the incoming user message to durable history.
+2. Build the first `CreateResponse` from the system preamble and Warden's
+   replayable conversation history.
+3. Attach schemas for all internal tools.
+4. Use the tool `ai_inference.execute(request)` to call the model.
+5. If the model returns no tool calls, append the assistant message to history
+   and send it back through the current channel.
+6. If the model returns tool calls, append simple assistant-readable tool
+   transcript entries to history, execute the tools, and ask the model again
+   with full tool response observations.
+7. Stop after `MAX_TOOL_ROUNDS`.
 
-`agent_step.fulfills` lets the model say which planned requirements a
-successful tool call satisfies without leaking Warden-specific fields into the
-tool implementation. Invalid requirement ids are rejected as tool-result errors
-with the current plan included so the model can retry.
+Warden intentionally does not use `previous_response_id` or
+`function_call_output` for tool continuations. NEAR AI requires strict provider
+ordering for those protocol items, while Warden needs to replay its own history
+so the model can see the user's request and cross-tool obligations. Instead,
+tool results are converted into normal user-role observation messages for the
+next model call. Durable history stores compact assistant-readable tool status
+lines rather than full tool response payloads.
 
-The engine sends the final assistant response through the `send_message` tool.
+The engine publishes the final assistant response back through the current
+channel. The model can use the `send_message` tool when it needs to send a
+message through another channel.
 
 The AI engine currently handles OpenAI-compatible function tool calls. Custom
 tool calls are rejected with a tool-result error message.

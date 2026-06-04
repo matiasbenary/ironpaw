@@ -13,9 +13,7 @@ use crate::{
 
 use super::{
     preamble::system_preamble,
-    utils::{
-        fill_current_destination, publish_progress, summarize_tool_args, tool_result_input_item,
-    },
+    utils::{fill_current_destination, publish_progress, summarize_tool_args},
 };
 
 const MAX_TOOL_ROUNDS: usize = 8;
@@ -83,16 +81,11 @@ async fn run_agent_loop(
     address: &ChannelAddress,
     messages: Vec<InputItem>,
 ) -> Result<(), String> {
-    // Load cross-turn history and build the initial context.
-    let past = internal_tools.history.load(&address.conversation_id);
-    let mut input_items = system_preamble(channel, address);
-    input_items.extend(past);
-    input_items.extend(messages.clone());
     internal_tools
         .history
         .append(&address.conversation_id, &messages);
 
-    let mut previous_response_id: Option<String> = None;
+    let mut pending_tool_results: Vec<InputItem> = Vec::new();
 
     for round in 0..MAX_TOOL_ROUNDS {
         let available_tools: Vec<_> = internal_tools
@@ -100,6 +93,12 @@ async fn run_agent_loop(
             .iter()
             .map(|tool| tools::schema_for_model(tool.as_ref()))
             .collect();
+        let input_items = model_input_items(
+            internal_tools,
+            channel,
+            address,
+            pending_tool_results.clone(),
+        );
         debug_log(format!(
             "ai_engine: round {} calling responses(input_items={}, tools={})",
             round + 1,
@@ -111,7 +110,6 @@ async fn run_agent_loop(
             input: InputParam::Items(input_items.clone()),
             tools: Some(available_tools),
             parallel_tool_calls: Some(false),
-            previous_response_id: previous_response_id.take(),
             ..Default::default()
         };
 
@@ -120,11 +118,9 @@ async fn run_agent_loop(
             .execute(request)
             .await
             .map_err(|err| err.to_string())?;
-        previous_response_id = Some(response.id.clone());
         let output = parse_response_output(response);
         let function_calls = output.function_calls;
-        // On subsequent rounds the provider has the prior response; send only tool results.
-        input_items = Vec::new();
+        pending_tool_results = Vec::new();
 
         if function_calls.is_empty() {
             debug_log(format!(
@@ -179,7 +175,7 @@ async fn run_agent_loop(
                     tool_result.status
                 ))],
             );
-            input_items.push(tool_result.input_item);
+            pending_tool_results.push(tool_result.input_item);
         }
     }
 
@@ -198,6 +194,18 @@ async fn run_agent_loop(
         },
     );
     Ok(())
+}
+
+fn model_input_items(
+    internal_tools: &InternalTools,
+    channel: &str,
+    address: &ChannelAddress,
+    pending_tool_results: Vec<InputItem>,
+) -> Vec<InputItem> {
+    let mut input_items = system_preamble(channel, address);
+    input_items.extend(internal_tools.history.load(&address.conversation_id));
+    input_items.extend(pending_tool_results);
+    input_items
 }
 
 struct AgentLoopOutput {
@@ -234,7 +242,6 @@ async fn execute_tool_call(
     tool_call: crate::openai::FunctionToolCall,
     progress: Option<(&Bus, &str, &ChannelAddress)>,
 ) -> Result<ToolCallOutput, String> {
-    let tool_call_id = tool_call.call_id.clone();
     let tool_name = tool_call.name.clone();
     let args_summary = summarize_tool_args(&tool_call.arguments);
     let progress_message = format!("calling {tool_name}({args_summary})");
@@ -283,7 +290,10 @@ async fn execute_tool_call(
     let result = tool_response.result;
     debug_log(format!("ai_engine: tool {tool_name} finished"));
     Ok(ToolCallOutput {
-        input_item: tool_result_input_item(&tool_call_id, result.to_string()),
+        input_item: user_history_input_item(format!(
+            "[tool response] {tool_name} returned: {}",
+            result
+        )),
         status,
     })
 }
@@ -292,6 +302,16 @@ fn assistant_history_input_item(text: String) -> InputItem {
     EasyInputMessage {
         r#type: Default::default(),
         role: Role::Assistant,
+        content: EasyInputContent::Text(text),
+        phase: None,
+    }
+    .into()
+}
+
+fn user_history_input_item(text: String) -> InputItem {
+    EasyInputMessage {
+        r#type: Default::default(),
+        role: Role::User,
         content: EasyInputContent::Text(text),
         phase: None,
     }
@@ -368,9 +388,15 @@ mod tests {
 
         let result = execute_tool_call(&tools, tool_call, None).await.unwrap();
         let result_json = serde_json::to_value(result.input_item).unwrap();
-        assert_eq!(result_json["call_id"], "call_1");
+        assert_eq!(result_json["role"], "user");
         assert!(
-            result_json["output"]
+            result_json["content"]
+                .as_str()
+                .unwrap()
+                .contains("[tool response] send_message returned")
+        );
+        assert!(
+            result_json["content"]
                 .as_str()
                 .unwrap()
                 .contains("\"ok\":true")

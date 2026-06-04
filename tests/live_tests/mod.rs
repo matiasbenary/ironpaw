@@ -206,8 +206,8 @@ async fn image_generation_routes_to_telegram() {
         message,
     });
 
-    // Collect MessageOut events for up to 15 s, looking for a telegram delivery with attachment.
-    let deadline = Duration::from_secs(15);
+    // Collect MessageOut events for up to 30 s, looking for a telegram delivery with attachment.
+    let deadline = Duration::from_secs(30);
     let result = timeout(deadline, async {
         loop {
             let event = events.recv().await.expect("bus closed");
@@ -229,7 +229,7 @@ async fn image_generation_routes_to_telegram() {
 
     assert!(
         result.is_ok(),
-        "timed out: LLM did not send an image to telegram within 15 s"
+        "timed out: LLM did not send an image to telegram within 30 s"
     );
 }
 
