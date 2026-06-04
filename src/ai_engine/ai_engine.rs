@@ -88,9 +88,10 @@ async fn run_agent_loop(
     let mut input_items = system_preamble(channel, address);
     input_items.extend(past);
     input_items.extend(messages.clone());
+    internal_tools
+        .history
+        .append(&address.conversation_id, &messages);
 
-    // Entries accumulated this turn, to be persisted after the loop.
-    let mut new_entries: Vec<InputItem> = messages.clone();
     let mut previous_response_id: Option<String> = None;
 
     for round in 0..MAX_TOOL_ROUNDS {
@@ -131,19 +132,11 @@ async fn run_agent_loop(
                 round + 1
             ));
             if !output.text.is_empty() {
-                new_entries.push(
-                    EasyInputMessage {
-                        r#type: Default::default(),
-                        role: Role::Assistant,
-                        content: EasyInputContent::Text(output.text.clone()),
-                        phase: None,
-                    }
-                    .into(),
+                internal_tools.history.append(
+                    &address.conversation_id,
+                    &[assistant_history_input_item(output.text.clone())],
                 );
             }
-            internal_tools
-                .history
-                .append(&address.conversation_id, &new_entries);
             publish_current_channel_output(
                 bus,
                 channel,
@@ -165,19 +158,37 @@ async fn run_agent_loop(
             function_calls.len()
         ));
         for tool_call in function_calls {
+            let tool_name = tool_call.name.clone();
+            let args = tool_call.arguments.clone();
+            internal_tools.history.append(
+                &address.conversation_id,
+                &[assistant_history_input_item(format!(
+                    "[tool use] calling {tool_name} with arguments: {args}"
+                ))],
+            );
             let tool_result = execute_tool_call(
                 &internal_tools.tools,
                 tool_call,
                 Some((bus, channel, address)),
             )
             .await?;
+            internal_tools.history.append(
+                &address.conversation_id,
+                &[assistant_history_input_item(format!(
+                    "[tool use] {tool_name} {}",
+                    tool_result.status
+                ))],
+            );
             input_items.push(tool_result.input_item);
         }
     }
 
-    internal_tools
-        .history
-        .append(&address.conversation_id, &new_entries);
+    internal_tools.history.append(
+        &address.conversation_id,
+        &[assistant_history_input_item(
+            "[tool use] stopped after too many tool calls".to_string(),
+        )],
+    );
     publish_current_channel_output(
         bus,
         channel,
@@ -215,6 +226,7 @@ fn publish_current_channel_output(
 
 struct ToolCallOutput {
     input_item: InputItem,
+    status: String,
 }
 
 async fn execute_tool_call(
@@ -232,7 +244,7 @@ async fn execute_tool_call(
     }
     let mut args: serde_json::Value =
         serde_json::from_str(&tool_call.arguments).map_err(|err| err.to_string())?;
-    let tool_response = if let Some(tool) = tools.iter().find(|t| t.name() == tool_name) {
+    let (tool_response, status) = if let Some(tool) = tools.iter().find(|t| t.name() == tool_name) {
         if tool_name == "send_message" {
             fill_current_destination(&mut args, progress);
         }
@@ -247,26 +259,43 @@ async fn execute_tool_call(
             }
         }
         match tool.execute(args).await {
-            Ok(response) => response,
+            Ok(response) => (response, "succeeded".to_string()),
             Err(err) => {
                 debug_log(format!("ai_engine: tool {tool_name} failed: {err}"));
-                ToolOutput::json(serde_json::json!({
-                    "ok": false,
-                    "error": err,
-                }))
+                (
+                    ToolOutput::json(serde_json::json!({
+                        "ok": false,
+                        "error": err,
+                    })),
+                    format!("failed: {err}"),
+                )
             }
         }
     } else {
-        ToolOutput::json(serde_json::json!({
-            "ok": false,
-            "error": format!("unknown tool: {tool_name}"),
-        }))
+        (
+            ToolOutput::json(serde_json::json!({
+                "ok": false,
+                "error": format!("unknown tool: {tool_name}"),
+            })),
+            "failed: unknown tool".to_string(),
+        )
     };
     let result = tool_response.result;
     debug_log(format!("ai_engine: tool {tool_name} finished"));
     Ok(ToolCallOutput {
         input_item: tool_result_input_item(&tool_call_id, result.to_string()),
+        status,
     })
+}
+
+fn assistant_history_input_item(text: String) -> InputItem {
+    EasyInputMessage {
+        r#type: Default::default(),
+        role: Role::Assistant,
+        content: EasyInputContent::Text(text),
+        phase: None,
+    }
+    .into()
 }
 
 fn debug_log(message: impl AsRef<str>) {
@@ -346,6 +375,7 @@ mod tests {
                 .unwrap()
                 .contains("\"ok\":true")
         );
+        assert_eq!(result.status, "succeeded");
 
         let event = timeout(Duration::from_secs(1), events.recv())
             .await
