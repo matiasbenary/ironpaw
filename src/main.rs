@@ -6,6 +6,7 @@ use warden::{
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
     history::SqliteHistory,
+    message::Attachment,
     secrets::Secrets,
     tools::{InternalTools, ai_inference::AiInferenceTool, send_message::SendMessageTool},
 };
@@ -25,7 +26,10 @@ async fn main() -> std::io::Result<()> {
     );
     let tools = InternalTools::new(
         AiInferenceTool::new(near_api_key.clone()).map_err(std::io::Error::other)?,
-        SendMessageTool::new(bus.clone(), layout.files_dir()),
+        SendMessageTool::new(bus.clone(), {
+            let files_dir = layout.files_dir();
+            move |file_id| Attachment::from_file_id(&files_dir, file_id)
+        }),
         near_api_key.clone(),
         layout.files_dir(),
         history,

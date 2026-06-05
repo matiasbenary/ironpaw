@@ -8,15 +8,51 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 use crate::{
     http::HttpError,
     message::{Attachment, Message, ToolCall, ToolDefinition},
+    models,
     tools::{self, InternalTool},
 };
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct AiInferenceRequest {
+    #[serde(default = "models::text_model")]
     pub model: String,
     pub messages: Vec<Message>,
+    #[serde(default)]
     pub tools: Vec<ToolDefinition>,
+    #[serde(default)]
     pub parallel_tool_calls: bool,
+}
+
+impl JsonSchema for AiInferenceRequest {
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("AiInferenceRequest")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        Schema::try_from(serde_json::json!({
+            "type": "object",
+            "description": "Warden-native model inference request.",
+            "properties": {
+                "model": {
+                    "type": "string",
+                    "description": "Optional model name. If omitted, Warden uses its configured default."
+                },
+                "messages": {
+                    "type": "array",
+                    "description": "Warden message list.",
+                    "items": { "type": "object" }
+                },
+                "tools": {
+                    "type": "array",
+                    "description": "Optional Warden tool definitions."
+                },
+                "parallel_tool_calls": { "type": "boolean" }
+            },
+            "required": ["messages"],
+            "additionalProperties": false
+        }))
+        .expect("ai_inference schema should be valid")
+    }
 }
 
 #[derive(Clone)]
@@ -45,7 +81,10 @@ impl AiInferenceTool {
     }
 
     fn chat_completions_url(&self) -> String {
-        format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'))
+        format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        )
     }
 
     pub async fn execute(&self, request: AiInferenceRequest) -> Result<Message, String> {
@@ -118,16 +157,13 @@ impl AiInferenceTool {
                 "role": "user",
                 "content": self.user_content(text, attachments)?,
             })),
-            Message::Assistant { text, tool_calls, .. } => {
+            Message::Assistant {
+                text, tool_calls, ..
+            } => {
                 let tool_calls = if tool_calls.is_empty() {
                     None
                 } else {
-                    Some(
-                        tool_calls
-                            .iter()
-                            .map(tool_call_to_chat)
-                            .collect::<Vec<_>>(),
-                    )
+                    Some(tool_calls.iter().map(tool_call_to_chat).collect::<Vec<_>>())
                 };
                 Ok(serde_json::json!({
                     "role": "assistant",
@@ -288,42 +324,6 @@ fn user_text_with_attachment_hints(text: &str, attachments: &[Attachment]) -> St
     result
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(transparent)]
-pub struct AiInferenceParams(pub serde_json::Value);
-
-impl JsonSchema for AiInferenceParams {
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("AiInferenceParams")
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        Schema::try_from(serde_json::json!({
-            "type": "object",
-            "description": "Warden-native model inference request.",
-            "properties": {
-                "model": {
-                    "type": "string",
-                    "description": "Optional model name. If omitted, Warden uses its configured default."
-                },
-                "messages": {
-                    "type": "array",
-                    "description": "Warden message list.",
-                    "items": { "type": "object" }
-                },
-                "tools": {
-                    "type": "array",
-                    "description": "Optional Warden tool definitions."
-                },
-                "parallel_tool_calls": { "type": "boolean" }
-            },
-            "required": ["messages"],
-            "additionalProperties": true
-        }))
-        .expect("ai_inference schema should be valid")
-    }
-}
-
 #[async_trait]
 impl InternalTool for AiInferenceTool {
     fn name(&self) -> &'static str {
@@ -331,16 +331,14 @@ impl InternalTool for AiInferenceTool {
     }
 
     fn tool_definition(&self) -> crate::message::ToolDefinition {
-        tools::tool_definition::<AiInferenceParams>(
+        tools::tool_definition::<AiInferenceRequest>(
             self.name(),
             "Call the configured model with Warden-native messages.",
         )
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<tools::ToolOutput, String> {
-        tools::execute_typed(args, |params: AiInferenceParams| async {
-            let request: AiInferenceRequest =
-                serde_json::from_value(params.0).map_err(|err| err.to_string())?;
+        tools::execute_typed(args, |request: AiInferenceRequest| async {
             AiInferenceTool::execute(self, request).await
         })
         .await

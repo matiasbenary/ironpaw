@@ -16,9 +16,30 @@ use crate::{
         config::{ChannelAuth, ChannelConfig, ChannelManifest},
         wasm::WasmChannel,
     },
-    message::{Attachment, Message, OutboundAttachment, OutboundMessage},
+    message::{Attachment, Message},
     secrets::ChannelSecrets,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+struct OutboundAttachment {
+    kind: String,
+    mime_type: String,
+    filename: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    file_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data_base64: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct OutboundMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    attachments: Vec<OutboundAttachment>,
+}
 
 pub const DEFAULT_ADDR: &str = "127.0.0.1:7878";
 
@@ -463,7 +484,9 @@ fn content_part_to_message(part: InboundContent, files_dir: &PathBuf) -> Inbound
             data_base64,
         } => {
             let Some(data) = decode_base64(&data_base64) else {
-                return InboundMessagePart::Text("[Attached file was not valid base64]".to_string());
+                return InboundMessagePart::Text(
+                    "[Attached file was not valid base64]".to_string(),
+                );
             };
             if data.len() > MAX_FILE_BYTES {
                 return InboundMessagePart::Text(

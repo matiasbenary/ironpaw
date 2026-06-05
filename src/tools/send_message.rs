@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -8,36 +8,37 @@ use crate::{
     tools::{self, InternalTool},
 };
 
+type AttachmentResolver = Arc<dyn Fn(u32) -> Result<Attachment, String> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct SendMessageTool {
     bus: Bus,
-    files_dir: PathBuf,
+    attachment_resolver: AttachmentResolver,
 }
 
 impl SendMessageTool {
-    pub fn new(bus: Bus, files_dir: PathBuf) -> Self {
-        Self { bus, files_dir }
+    pub fn new(
+        bus: Bus,
+        attachment_resolver: impl Fn(u32) -> Result<Attachment, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            bus,
+            attachment_resolver: Arc::new(attachment_resolver),
+        }
     }
 
-    pub async fn execute(
-        &self,
-        mut params: SendMessageParams,
-    ) -> Result<SendMessageOutput, String> {
-        for attachment in &mut params.attachments {
-            if attachment.source.as_os_str().is_empty() {
-                attachment.source = self.files_dir.join(
-                    attachment
-                        .filename
-                        .clone()
-                        .unwrap_or_else(|| format!("{}.png", attachment.file_id)),
-                );
-            }
-        }
-        let channel = params.channel.clone();
-        let address = params.address();
+    pub async fn execute(&self, input: SendMessageToolInput) -> Result<SendMessageOutput, String> {
+        let attachments = input
+            .file_id
+            .map(|file_id| (self.attachment_resolver)(file_id))
+            .transpose()?
+            .into_iter()
+            .collect();
+        let channel = input.channel.unwrap_or_default();
+        let address = message_address(&channel, input.conversation_id, input.thread_id);
         let message = Message::Assistant {
-            text: Some(params.content),
-            attachments: params.attachments,
+            text: Some(input.content.unwrap_or_default()),
+            attachments,
             tool_calls: Vec::new(),
         };
         self.bus.publish(Event::MessageOut {
@@ -66,7 +67,7 @@ impl InternalTool for SendMessageTool {
     async fn execute(&self, args: serde_json::Value) -> Result<tools::ToolOutput, String> {
         let input: SendMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let output = SendMessageTool::execute(self, SendMessageParams::from(input)).await?;
+        let output = SendMessageTool::execute(self, input).await?;
         Ok(tools::ToolOutput::json(
             serde_json::to_value(output).map_err(|err| err.to_string())?,
         ))
@@ -87,7 +88,9 @@ pub struct SendMessageToolInput {
     )]
     pub file_id: Option<u32>,
     #[serde(default)]
-    #[schemars(description = "Optional message text to send. Omit this when sending only a generated file.")]
+    #[schemars(
+        description = "Optional message text to send. Omit this when sending only a generated file."
+    )]
     pub content: Option<String>,
     #[serde(default)]
     #[schemars(
@@ -99,42 +102,16 @@ pub struct SendMessageToolInput {
     pub thread_id: Option<String>,
 }
 
-pub struct SendMessageParams {
-    pub channel: String,
-    pub content: String,
-    pub attachments: Vec<Attachment>,
-    pub conversation_id: Option<String>,
-    pub thread_id: Option<String>,
-}
-
-impl SendMessageParams {
-    fn address(&self) -> Option<ChannelAddress> {
-        self.conversation_id
-            .as_ref()
-            .map(|conversation_id| ChannelAddress {
-                channel: self.channel.clone(),
-                conversation_id: conversation_id.clone(),
-                thread_id: self.thread_id.clone(),
-            })
-    }
-}
-
-impl From<SendMessageToolInput> for SendMessageParams {
-    fn from(input: SendMessageToolInput) -> Self {
-        let attachments = input.file_id.map(|file_id| Attachment {
-            file_id,
-            mime_type: "image/png".to_string(),
-            filename: Some(format!("{file_id}.png")),
-            source: std::path::PathBuf::new(),
-        });
-        Self {
-            channel: input.channel.unwrap_or_default(),
-            content: input.content.unwrap_or_default(),
-            attachments: attachments.into_iter().collect(),
-            conversation_id: input.conversation_id,
-            thread_id: input.thread_id,
-        }
-    }
+fn message_address(
+    channel: &str,
+    conversation_id: Option<String>,
+    thread_id: Option<String>,
+) -> Option<ChannelAddress> {
+    conversation_id.map(|conversation_id| ChannelAddress {
+        channel: channel.to_string(),
+        conversation_id,
+        thread_id,
+    })
 }
 
 #[derive(serde::Serialize)]

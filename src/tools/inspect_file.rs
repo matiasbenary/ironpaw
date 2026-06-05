@@ -75,22 +75,21 @@ impl InternalTool for InspectFileTool {
     async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput, String> {
         let params: InspectFileParams = serde_json::from_value(args).map_err(|e| e.to_string())?;
 
-        let path = file_path(&self.files_dir, params.file_id)?;
+        let attachment = Attachment::from_file_id(&self.files_dir, params.file_id)?;
+        let path = attachment.source.clone();
         let data =
             std::fs::read(&path).map_err(|_| format!("file not found: {}", params.file_id))?;
 
-        let ext = path
+        let ext = attachment
+            .source
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let mime = ext_to_mime(&ext);
         let query = params.query.as_deref().unwrap_or("describe this file");
 
-        if mime.starts_with("image/") {
-            let answer = self
-                .inspect_image(params.file_id, mime, path.clone(), query)
-                .await?;
+        if attachment.mime_type.starts_with("image/") {
+            let answer = self.inspect_image(attachment, query).await?;
             return Ok(inspection_output(params.file_id, query, answer));
         }
 
@@ -120,29 +119,18 @@ impl InspectFileTool {
             .await
     }
 
-    async fn inspect_image(
-        &self,
-        file_id: u32,
-        mime: &str,
-        source: PathBuf,
-        query: &str,
-    ) -> Result<String, String> {
+    async fn inspect_image(&self, attachment: Attachment, query: &str) -> Result<String, String> {
         self.call_model(
             models::vision_model(),
             vec![
                 system_item(),
                 Message::User {
                     text: query.to_string(),
-                    attachments: vec![Attachment {
-                        file_id,
-                        mime_type: mime.to_string(),
-                        filename: None,
-                        source,
-                    }],
+                    attachments: vec![attachment],
                 },
             ],
         )
-            .await
+        .await
     }
 
     async fn call_model(&self, model: String, input: Vec<Message>) -> Result<String, String> {
@@ -179,38 +167,10 @@ fn text_item(text: String) -> Message {
     }
 }
 
-fn file_path(files_dir: &PathBuf, file_id: u32) -> Result<PathBuf, String> {
-    let prefix = format!("{file_id}.");
-    let entries = std::fs::read_dir(files_dir).map_err(|_| format!("file not found: {file_id}"))?;
-    for entry in entries {
-        let path = entry.map_err(|err| err.to_string())?.path();
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(&prefix))
-        {
-            return Ok(path);
-        }
-    }
-    Err(format!("file not found: {file_id}"))
-}
-
 fn inspection_output(file_id: u32, query: &str, answer: String) -> ToolOutput {
     ToolOutput::json(serde_json::json!({
         "file_id": file_id,
         "query": query,
         "answer": answer,
     }))
-}
-
-pub fn ext_to_mime(ext: &str) -> &str {
-    match ext {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "pdf" => "application/pdf",
-        "txt" => "text/plain",
-        _ => "application/octet-stream",
-    }
 }

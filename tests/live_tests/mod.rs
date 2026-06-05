@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::time::Duration;
+use std::{path::PathBuf, sync::Arc};
 
 use tokio::time::timeout;
 use warden::{
@@ -14,6 +14,12 @@ fn temp_history() -> Arc<SqliteHistory> {
     let path =
         std::env::temp_dir().join(format!("warden-test-history-{}.db", uuid::Uuid::new_v4()));
     Arc::new(SqliteHistory::new(path).expect("temp history"))
+}
+
+fn send_message_tool(bus: &Bus, files_dir: PathBuf) -> SendMessageTool {
+    SendMessageTool::new(bus.clone(), move |file_id| {
+        Attachment::from_file_id(&files_dir, file_id)
+    })
 }
 
 /// Verify the agent can answer a minimal text message.
@@ -34,7 +40,7 @@ async fn agent_replies_to_hi() {
 
     let tools = InternalTools::new(
         AiInferenceTool::new(near_api_key.clone()).unwrap(),
-        SendMessageTool::new(bus.clone(), files_dir.clone()),
+        send_message_tool(&bus, files_dir.clone()),
         near_api_key,
         files_dir,
         temp_history(),
@@ -61,7 +67,8 @@ async fn agent_replies_to_hi() {
             let event = events.recv().await.expect("bus closed");
             if let Event::MessageOut { message, .. } = event {
                 let Message::Assistant {
-                    text: Some(content), ..
+                    text: Some(content),
+                    ..
                 } = message
                 else {
                     continue;
@@ -99,7 +106,7 @@ async fn send_message_routes_to_telegram() {
 
     let tools = InternalTools::new(
         AiInferenceTool::new(near_api_key.clone()).unwrap(),
-        SendMessageTool::new(bus.clone(), files_dir.clone()),
+        send_message_tool(&bus, files_dir.clone()),
         near_api_key,
         files_dir.clone(),
         temp_history(),
@@ -163,7 +170,7 @@ async fn image_generation_routes_to_telegram() {
 
     let tools = InternalTools::new(
         AiInferenceTool::new(near_api_key.clone()).unwrap(),
-        SendMessageTool::new(bus.clone(), files_dir.clone()),
+        send_message_tool(&bus, files_dir.clone()),
         near_api_key,
         files_dir.clone(),
         temp_history(),
@@ -235,7 +242,7 @@ async fn agent_reads_pdf_content() {
 
     let tools = InternalTools::new(
         AiInferenceTool::new(near_api_key.clone()).unwrap(),
-        SendMessageTool::new(bus.clone(), files_dir.clone()),
+        send_message_tool(&bus, files_dir.clone()),
         near_api_key,
         files_dir.clone(),
         temp_history(),
@@ -287,7 +294,8 @@ async fn agent_reads_pdf_content() {
             let event = events.recv().await.expect("bus closed");
             if let Event::MessageOut { message, .. } = event {
                 let Message::Assistant {
-                    text: Some(content), ..
+                    text: Some(content),
+                    ..
                 } = &message
                 else {
                     continue;
@@ -327,7 +335,7 @@ async fn agent_identifies_dog_image() {
 
     let tools = InternalTools::new(
         AiInferenceTool::new(near_api_key.clone()).unwrap(),
-        SendMessageTool::new(bus.clone(), files_dir.clone()),
+        send_message_tool(&bus, files_dir.clone()),
         near_api_key,
         files_dir.clone(),
         temp_history(),
@@ -374,7 +382,8 @@ async fn agent_identifies_dog_image() {
             let event = events.recv().await.expect("bus closed");
             if let Event::MessageOut { message, .. } = event {
                 let Message::Assistant {
-                    text: Some(content), ..
+                    text: Some(content),
+                    ..
                 } = message
                 else {
                     continue;

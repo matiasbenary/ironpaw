@@ -90,12 +90,8 @@ async fn run_agent_loop(
             .iter()
             .map(|tool| tools::definition_for_model(tool.as_ref()))
             .collect();
-        let model_messages = model_messages(
-            internal_tools,
-            channel,
-            address,
-            transient_messages.clone(),
-        );
+        let model_messages =
+            model_messages(internal_tools, channel, address, transient_messages.clone());
         debug_log(format!(
             "ai_engine: round {} calling chat_completions(messages={}, tools={})",
             round + 1,
@@ -377,7 +373,7 @@ mod tests {
         let mut events = bus.subscribe();
         let tools = vec![Arc::new(crate::tools::send_message::SendMessageTool::new(
             bus.clone(),
-            std::path::PathBuf::from("/tmp/warden-test-images"),
+            |_| Err("unexpected attachment lookup".to_string()),
         )) as Arc<dyn InternalTool>];
         let tool_call = ToolCall {
             id: "call_1".to_string(),

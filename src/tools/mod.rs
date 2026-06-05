@@ -8,10 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::{
-    history::History,
-    message::ToolDefinition,
-};
+use crate::{history::History, message::ToolDefinition};
 
 use self::{
     ai_inference::AiInferenceTool, image_generation::ImageGenerationTool,

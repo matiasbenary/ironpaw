@@ -99,8 +99,10 @@ Outbound flow:
 2. It listens for `Event::MessageOut` addressed to `Sender::User`.
 3. It resolves the explicit address or falls back to the channel
    `default_address`.
-4. It calls WASM `on_message_out(message_json, address_json, config_json)`.
-5. The WASM channel performs the provider-specific send.
+4. It converts Warden's internal `Message` into the outbound channel payload,
+   including reading any local attachments and encoding them for the channel.
+5. It calls WASM `on_message_out(message_json, address_json, config_json)`.
+6. The WASM channel performs the provider-specific send.
 
 Channels do not receive raw secrets directly. They use the host-provided
 `http_request`, `http_request_base64`, and `http_multipart_base64` imports. The host wraps them with `HttpTool<ChannelSecrets>`,
@@ -174,8 +176,7 @@ Implemented internal tools:
 `ai_inference` is both the engine's model-call primitive and a model-callable tool. This allows future model-to-model delegation while keeping inference
 credential handling centralized.
 
-`send_message` publishes `Event::MessageOut`. If no explicit channel address is provided, the channel bridge can use that channel's stored `default_address`.
-It can also include outbound image attachments using a public image URL or base64 image data.
+`send_message` publishes `Event::MessageOut` with a Warden `Message`. If no explicit channel address is provided, the channel bridge can use that channel's stored `default_address`.
 
 ## HTTP And Secrets
 
@@ -213,12 +214,12 @@ Warden's bus, history, and AI engine use Warden-owned message types:
 enum Message {
     System(String),
     User { text, attachments },
-    Assistant { text, tool_calls },
+    Assistant { text, attachments, tool_calls },
     ToolResult { tool_call_id, tool_name, result },
 }
 ```
 
-Attachments are arbitrary files, that the user can send to the LLM.
+Attachments are local files identified by `file_id`, with metadata such as MIME type, optional filename, and local source path. They can appear on user messages received from channels and assistant messages produced for outbound delivery. The bus carries the same `Message` type in both directions; channel-specific outbound payloads are only produced by the channel bridge.
 
 ## Example Flow: TUI Asks For A Telegram Message
 
@@ -284,7 +285,7 @@ message, so its `default_address` has been stored in
        channel: "telegram",
        recipient: User,
        address: None,
-       message: OutboundMessage { ... }
+       message: Message::Assistant { ... }
    }
    ```
 
@@ -375,13 +376,15 @@ Current tests cover a few core pieces, but not full channel flows. Useful next t
 
 ## Image and File Management
 
-Warden should handle user-provided files as first-class message attachments: images, PDFs, text files, and eventually other documents. The core agent should not need a separate ad-hoc path for each channel or file type.
+Warden should handle files as first-class message attachments: images, PDFs, text files, and eventually other documents. The core agent should see the same shape regardless of whether a file came from Telegram, TUI, image generation, or another channel.
 
-NEAR AI currently has no model that supports both vision and tool us. Because of that, we ended up storing inbound files locally, and exposing a single `inspect_file(file_id, query)` tool that can extract text from documents or call a vision model for images. This keeps the main agent loop simpler by letting the model call the same tool for both images and documents, rather than special-casing images with a separate `vision_inference` tool. 
+NEAR AI currently has no single model path that supports tool use, reasoning, arbitrary file uploads, and vision in the way Warden needs. It also does not currently give Warden a usable file-upload path for directly passing arbitrary local files to the tool-using model.
 
-Generated images follow the same file path. `image_generation` stores the image locally and returns a `file_id`; `send_message` can later deliver that `file_id` as an outbound channel attachment.
+Because of that, Warden stores files locally and passes around typed attachments containing a numeric `file_id`, MIME type, optional filename, and source path. User messages and assistant messages both use the same attachment type on the bus; channels translate their provider-specific payloads into attachments on the way in, and the bridge translates attachments back into provider-ready outbound payloads on the way out.
 
-Note: All file ids are `u32` values for now, so we do not need to worry about name collisions or file-name sanitation.
+The model interacts with stored files through tools. `inspect_file(file_id, query)` can extract text from documents or call a vision model for images. `image_generation` stores the generated image locally and returns a `file_id`; `send_message` can then publish an assistant message with that attachment for channel delivery.
+
+All file ids are `u32` values for now. The current architecture treats that as the stable attachment identifier.
 
 ---
 
