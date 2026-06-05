@@ -60,7 +60,13 @@ async fn agent_replies_to_hi() {
         loop {
             let event = events.recv().await.expect("bus closed");
             if let Event::MessageOut { message, .. } = event {
-                if let Some(content) = message.content {
+                let Message::Assistant {
+                    text: Some(content), ..
+                } = message
+                else {
+                    continue;
+                };
+                {
                     eprintln!("[live_test] agent replied: {content}");
                     if !content.trim().is_empty() {
                         return content;
@@ -190,11 +196,14 @@ async fn image_generation_routes_to_telegram() {
                 channel, message, ..
             } = event
             {
+                let Message::Assistant { attachments, .. } = message else {
+                    continue;
+                };
                 eprintln!(
                     "[live_test] MessageOut → channel={channel}, attachments={}",
-                    message.attachments.len()
+                    attachments.len()
                 );
-                if channel == "telegram" && !message.attachments.is_empty() {
+                if channel == "telegram" && !attachments.is_empty() {
                     return;
                 }
             }
@@ -277,7 +286,13 @@ async fn agent_reads_pdf_content() {
         loop {
             let event = events.recv().await.expect("bus closed");
             if let Event::MessageOut { message, .. } = event {
-                if let Some(content) = &message.content {
+                let Message::Assistant {
+                    text: Some(content), ..
+                } = &message
+                else {
+                    continue;
+                };
+                {
                     eprintln!("[live_test] agent replied: {content}");
                     if content.to_lowercase().contains("blue") {
                         return;
@@ -358,7 +373,13 @@ async fn agent_identifies_dog_image() {
         loop {
             let event = events.recv().await.expect("bus closed");
             if let Event::MessageOut { message, .. } = event {
-                if let Some(content) = message.content {
+                let Message::Assistant {
+                    text: Some(content), ..
+                } = message
+                else {
+                    continue;
+                };
+                {
                     eprintln!("[live_test] agent replied: {content}");
                     return content;
                 }

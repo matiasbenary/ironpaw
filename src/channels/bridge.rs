@@ -16,7 +16,7 @@ use crate::{
         config::{ChannelAuth, ChannelConfig, ChannelManifest},
         wasm::WasmChannel,
     },
-    message::{Attachment, Message},
+    message::{Attachment, Message, OutboundAttachment, OutboundMessage},
     secrets::ChannelSecrets,
 };
 
@@ -219,7 +219,11 @@ async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, L
             address.conversation_id
         );
 
-        let message_json = match serde_json::to_string(&message) {
+        let Some(outbound_message) = channel_outbound_message(message) else {
+            eprintln!("{channel} message out was not deliverable to a channel");
+            continue;
+        };
+        let message_json = match serde_json::to_string(&outbound_message) {
             Ok(message_json) => message_json,
             Err(err) => {
                 eprintln!("failed to serialize {channel} message out: {err}");
@@ -244,6 +248,53 @@ async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, L
             Ok(false) => eprintln!("{channel} channel did not handle message out"),
             Err(err) => eprintln!("{channel} message out failed: {err}"),
         }
+    }
+}
+
+fn channel_outbound_message(message: Message) -> Option<OutboundMessage> {
+    let Message::Assistant {
+        text, attachments, ..
+    } = message
+    else {
+        return None;
+    };
+    Some(OutboundMessage {
+        content: text,
+        attachments: attachments
+            .into_iter()
+            .map(channel_outbound_attachment)
+            .collect(),
+    })
+}
+
+fn channel_outbound_attachment(attachment: Attachment) -> OutboundAttachment {
+    let Attachment {
+        file_id,
+        mime_type,
+        filename,
+        source,
+    } = attachment;
+    let data_base64 = fs::read(&source).ok().map(|bytes| {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    });
+    OutboundAttachment {
+        kind: if mime_type.starts_with("image/") {
+            "image".to_string()
+        } else {
+            "file".to_string()
+        },
+        mime_type,
+        filename: filename.unwrap_or_else(|| {
+            source
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| file_id.to_string())
+        }),
+        file_id: Some(file_id),
+        data_base64,
+        url: None,
     }
 }
 

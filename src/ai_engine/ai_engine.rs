@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
-    message::{Message, OutboundMessage, ToolCall},
+    message::{Message, ToolCall},
     models,
     tools::{self, InternalTool, InternalTools, ToolOutput},
 };
@@ -114,7 +114,10 @@ async fn run_agent_loop(
             .execute(request)
             .await
             .map_err(|err| err.to_string())?;
-        let Message::Assistant { text, tool_calls } = output.clone() else {
+        let Message::Assistant {
+            text, tool_calls, ..
+        } = output.clone()
+        else {
             return Err("model did not return an assistant message".to_string());
         };
         transient_messages.clear();
@@ -177,6 +180,7 @@ async fn run_agent_loop(
         &address.conversation_id,
         &[Message::Assistant {
             text: Some("[tool use] stopped after too many tool calls".to_string()),
+            attachments: Vec::new(),
             tool_calls: Vec::new(),
         }],
     );
@@ -204,11 +208,17 @@ fn model_messages(
 }
 
 fn assistant_message_for_history(message: Message) -> Message {
-    let Message::Assistant { text, tool_calls } = message else {
+    let Message::Assistant {
+        text,
+        attachments,
+        tool_calls,
+    } = message
+    else {
         return message;
     };
     Message::Assistant {
         text,
+        attachments,
         tool_calls: tool_calls
             .into_iter()
             .map(|mut tool_call| {
@@ -238,9 +248,10 @@ fn publish_current_channel_output(
         channel: channel.to_string(),
         recipient: Sender::User,
         address: Some(address.clone()),
-        message: OutboundMessage {
-            content: output.content,
+        message: Message::Assistant {
+            text: output.content,
             attachments: Vec::new(),
+            tool_calls: Vec::new(),
         },
     });
 }
@@ -407,7 +418,10 @@ mod tests {
         };
         assert_eq!(channel, "telegram");
         assert!(address.is_none());
-        assert_eq!(message.content.as_deref(), Some("hi"));
+        let Message::Assistant { text, .. } = message else {
+            panic!("expected assistant message");
+        };
+        assert_eq!(text.as_deref(), Some("hi"));
     }
 
     #[tokio::test]
@@ -443,6 +457,7 @@ mod tests {
     fn malformed_tool_arguments_are_sanitized_for_history() {
         let message = Message::Assistant {
             text: None,
+            attachments: Vec::new(),
             tool_calls: vec![ToolCall {
                 id: "call_bad".to_string(),
                 name: "send_message".to_string(),

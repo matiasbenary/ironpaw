@@ -14,6 +14,8 @@ pub enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<ToolCall>,
     },
     ToolResult {

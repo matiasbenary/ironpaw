@@ -1,6 +1,6 @@
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
-    message::OutboundMessage,
+    message::Message,
 };
 
 pub(super) fn summarize_tool_args(arguments: &str) -> String {
@@ -57,9 +57,10 @@ pub(super) fn publish_progress(
         channel: channel.to_string(),
         recipient: Sender::User,
         address: Some(address.clone()),
-        message: OutboundMessage {
-            content: Some(content),
+        message: Message::Assistant {
+            text: Some(content),
             attachments: Vec::new(),
+            tool_calls: Vec::new(),
         },
     });
 }

@@ -6,16 +6,15 @@ The current implementation is intentionally small, and is composed by:
 
 - `Channels`: WASM components that allow messages to flow from and towards the outside world.
 - An `AI Engine`, which reacts to incoming messages and runs them through an LLM with access to tools.
-- `Tools` (currently `ai_inference`, `image_generation`, `inspect_file`, and `send_message`) that the model can call to perform effects.
-- A `Bus` that the different components use to interact with each-other by publishing and subscribing to typed events.
+- A small set of internal `Tools` exposed both to the LLM and system components.
+- A `Bus` that all components use to interact with each-other by publishing and subscribing to typed events.
 - A `secrets` system for storing and handling credentials (e.g. the NEAR API key used by `ai_inference`).
 
 ---
 
 ## Main
 
-`src/main.rs` discovers the runtime layout, loads 
-secrets, creates the bus, constructs internal tools, starts the AI engine, then starts the channel runtime.
+`src/main.rs` scaffolds the agent: it discovers the runtime layout, loads secrets, creates the bus, constructs internal tools, starts the AI engine, then starts the channel runtime.
 
 It also creates the per-start bridge token printed to stdout for local clients such as `warden-tui`.
 
@@ -33,13 +32,6 @@ Implemented event types are:
 - `MessageIn { channel, sender, address, message }`
 - `MessageOut { channel, recipient, address, message }`
 - `CronTick { schedule }`
-
-<details>
-
-<summary> OpenAI Message Payload </summary>
-Message payloads use **OpenAI-compatible Responses API message types**, this is important as it helps us to use a well defined and popular standard. 
-
-</details>
 
 <details>
 
@@ -63,20 +55,6 @@ For Telegram, `conversation_id` maps to the chat id and `thread_id` maps to the 
 
 <details>
 
-<summary> Outbound Attachments </summary>
-
-Outbound messages are `OutboundMessage`, which wraps an OpenAI-compatible assistant message and an optional list of attachments.
-
-Attachments currently support enough metadata for generated or remote images:
-
-- `kind`
-- `mime_type`
-- `filename`
-- `file_id`
-- `data_base64`
-- `url`
-
-</details>
 
 ---
 
@@ -138,44 +116,38 @@ When started, the engine subscribes to the bus and reacts to:
 Event::MessageIn { sender: Sender::User, ... }
 ```
 
-For each accepted user message, the engine records the message in conversation
-history and lets the model run a bounded tool loop.
+For each accepted user message, the engine records the message in conversation history and lets the model run a bounded tool loop.
 
-Then the engine runs a bounded OpenAI Responses API tool loop:
+Then the engine runs a bounded chat-completions tool loop:
 
 1. Append the incoming user message to durable history.
-2. Build the first `CreateResponse` from the system preamble and Warden's
-   replayable conversation history.
+2. Build model input from the system preamble and Warden's replayable
+   conversation history.
 3. Attach schemas for all internal tools.
 4. Use the tool `ai_inference.execute(request)` to call the model.
 5. If the model returns no tool calls, append the assistant message to history
    and send it back through the current channel.
-6. If the model returns tool calls, append simple assistant-readable tool
-   transcript entries to history, execute the tools, and ask the model again
-   with full tool response observations.
+6. If the model returns tool calls, append the assistant tool-call message,
+   execute the tools, append tool-result messages, and ask the model again.
 7. Stop after `MAX_TOOL_ROUNDS`.
 
-Warden intentionally does not use `previous_response_id` or
-`function_call_output` for tool continuations. NEAR AI requires strict provider
-ordering for those protocol items, while Warden needs to replay its own history
-so the model can see the user's request and cross-tool obligations. Instead,
-tool results are converted into normal user-role observation messages for the
-next model call. Durable history stores compact assistant-readable tool status
-lines rather than full tool response payloads.
+## History
 
-The engine publishes the final assistant response back through the current
-channel. The model can use the `send_message` tool when it needs to send a
-message through another channel.
+Warden keeps a "short term" hot memory, and a "long term" cold memory. The short memory keeps the latests messages in the current conversation, but goes offloading older messages as the conversation grows.
 
-The AI engine currently handles OpenAI-compatible function tool calls. Custom
-tool calls are rejected with a tool-result error message.
+The memory module exposes 4 methods:
+
+- `load(conversation_id) -> Vec<Message>` - load the active conversation history
+- `append(conversation_id, items)`
+- `compact(conversation_id, summary)` - replace all active items with a compacted summary item
+- `search(conversation_id, query) -> Vec<Message>`
 
 ## Tools
 
 Internal tools are async and model-callable. Every internal tool exposes:
 
 - `name()`
-- `responses_schema()`
+- `tool_definition()`
 - `execute(args).await`
 
 Each concrete tool follows the same shape:
@@ -184,12 +156,7 @@ Each concrete tool follows the same shape:
 - typed async `execute(params).await`
 - `InternalTool` impl that uses shared adapters
 
-The shared tool helpers are:
-
-- `tools::responses_tool_schema::<Params>(name, description)`
-- `tools::execute_typed(args, |params| Tool::execute(self, params)).await`
-
-This means adding a new internal tool should usually require:
+Adding a new internal tool requires:
 
 1. Define a params type with `serde::Deserialize` and `schemars::JsonSchema`.
 2. Define an output type with `serde::Serialize`.
@@ -199,18 +166,15 @@ This means adding a new internal tool should usually require:
 
 Implemented internal tools:
 
-- `ai_inference`: calls an OpenAI-compatible Responses API endpoint using the
-  configured NEAR API key.
+- `ai_inference`: Calls `/v1/chat/completions` using the configured NEAR API key.
 - `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image, and returns a `file_id` for later delivery.
 - `inspect_file`: inspects a locally stored file by numeric `file_id`, using text extraction for documents and a vision model for images.
 - `send_message`: publishes a message to a user through a channel.
 
-`ai_inference` is both the engine's model-call primitive and a model-callable
-tool. This allows future model-to-model delegation while keeping inference
+`ai_inference` is both the engine's model-call primitive and a model-callable tool. This allows future model-to-model delegation while keeping inference
 credential handling centralized.
 
-`send_message` publishes `Event::MessageOut`. If no explicit channel address is
-provided, the channel bridge can use that channel's stored `default_address`.
+`send_message` publishes `Event::MessageOut`. If no explicit channel address is provided, the channel bridge can use that channel's stored `default_address`.
 It can also include outbound image attachments using a public image URL or base64 image data.
 
 ## HTTP And Secrets
@@ -241,16 +205,20 @@ Channels use this through the WASM host HTTP imports. The internal
 `ai_inference` tool is trusted code and directly owns the NEAR API key supplied
 from `secrets.tools`.
 
-## OpenAI Types
+## Message Types
 
-`openai.rs` re-exports the OpenAI-compatible Responses API types used by Warden
-and contains shared response parsing helpers:
+Warden's bus, history, and AI engine use Warden-owned message types:
 
-- response text extraction
-- function tool call extraction
+```rust
+enum Message {
+    System(String),
+    User { text, attachments },
+    Assistant { text, tool_calls },
+    ToolResult { tool_call_id, tool_name, result },
+}
+```
 
-The goal is to keep OpenAI compatibility visible while avoiding scattered
-one-off JSON message constructors across the codebase.
+Attachments are arbitrary files, that the user can send to the LLM.
 
 ## Example Flow: TUI Asks For A Telegram Message
 
@@ -280,13 +248,13 @@ message, so its `default_address` has been stored in
        channel: "tui",
        sender: User,
        address: <tui address>,
-       message: <OpenAI user message>
+       message: Message::User { ... }
    }
    ```
 
 5. `AiEngine` receives `MessageIn` and starts the tool loop.
 
-6. The engine calls `ai_inference.execute(CreateResponse { ... })`.
+6. The engine calls `ai_inference.execute(AiInferenceRequest { ... })`.
    The model receives schemas for all internal tools, including:
 
    ```text
@@ -316,7 +284,7 @@ message, so its `default_address` has been stored in
        channel: "telegram",
        recipient: User,
        address: None,
-       message: <OpenAI assistant message>
+       message: OutboundMessage { ... }
    }
    ```
 
@@ -346,10 +314,6 @@ special-case code paths.
 ## To Be Implemented
 
 The implemented system is enough for the current MVP, but these pieces are still missing or incomplete.
-
-### Conversation Memory
-
-Each inbound message is currently handled as a fresh model request. Warden still needs durable conversation history keyed by channel and address, plus the rules for how much history the AI engine should include in each request.
 
 ### Automations
 
@@ -394,10 +358,6 @@ The model can call the internal tools exposed by `InternalTools`. There is not y
 - confirmation before sensitive actions
 - audit logs of tool execution
 
-### OpenAI Type Boundary
-
-`openai.rs` still mostly re-exports `async-openai` types. Warden may eventually want its own wrapper types so we can implement local traits, schemas, and constructors without scattering adapter types such as `AiInferenceParams`.
-
 ### Outbound Documents In Telegram
 
 The bus and `send_message` tool support outbound image attachments, `image_generation` stores generated images as files, and Telegram can deliver images with `sendPhoto`. Telegram still needs document delivery for non-image files.
@@ -415,29 +375,27 @@ Current tests cover a few core pieces, but not full channel flows. Useful next t
 
 ## Image and File Management
 
-While building the system I came across two major limitations when handling images and files as message attachments.
+Warden should handle user-provided files as first-class message attachments: images, PDFs, text files, and eventually other documents. The core agent should not need a separate ad-hoc path for each channel or file type.
 
-#### Problem 1. Image Processing / Generation
-To start with, the models that NEAR AI provides are EITHER for [text + tools + thinking] OR [text + images], but no model can handle [text + tools + images + thinking].
+NEAR AI currently has no model that supports both vision and tool us. Because of that, we ended up storing inbound files locally, and exposing a single `inspect_file(file_id, query)` tool that can extract text from documents or call a vision model for images. This keeps the main agent loop simpler by letting the model call the same tool for both images and documents, rather than special-casing images with a separate `vision_inference` tool. 
 
-#### Problem 2. Documents
+Generated images follow the same file path. `image_generation` stores the image locally and returns a `file_id`; `send_message` can later deliver that `file_id` as an outbound channel attachment.
 
-Turns out that NEAR AI never enabled the file upload API, nor the `files` field in the Responses API, so there is no way to directly provide the LLM with a file.
+Note: All file ids are `u32` values for now, so we do not need to worry about name collisions or file-name sanitation.
 
-### Workarounds
+---
 
-Because of problem 1, we have to choose between a tool-using model or an image-handling model. In practice, this means that we need to be constantly switching between two different models, depending on what we guess the user needs. This always leads to errors, and it is unavoidable.
+## Appendix: Things We Tried But Didn't Work 
 
-Because of problem 2, we can't directly provide the LLM with a file. Instead, we locally open the documents (.pdf, .txt, etc), and send the content as a string to the LLM.
+### Processing images through the model
 
-Right now, these workarounds have left our codebase in a state where we have a lot of ad-hoc logic for switching between models and handling files, which is not ideal.
+We ended up having multiple "if" to handle images vs other type of media, the engine ended up being too complex without any clear benefits.
 
-Instead, I would prefer to have a single unified approach. I was thinking: maybe we use the same approach for both images and files, which is: we store them locally, and present the LLM with tools to query metadata about the files, and to retrieve their content.
+The model seams to take well using a `inspect_file` tool to "see" the image, so we went with that simpler approach.
 
-Again, this is how we are handling pdf files right now. We store the file in `./files`, and there is an `inspect_file` tool that knows how to open the pdf and present the LLM with the data.
 
-The only thing is that, when dealing with `images`, we do not want to just dump the base64 data into the LLM. Instead, we want the model to be able to "see" the image, and query visual features about it.
+### Responses API
 
-This is why Warden exposes one `inspect_file(file_id, query)` tool for both images and documents instead of separate document and image tools.
+Tried using the `/responses` API, but NEAR AI's `previous_response_id` does not load conversation history into the model.
 
-I am sure somebody has already run into this problem and solved it, so we just need to so some research and find out what is the best approach here.
+The engine therefore does not rely on `previous_response_id` or `function_call_output` for its main agent loop.

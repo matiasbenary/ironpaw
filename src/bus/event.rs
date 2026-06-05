@@ -1,4 +1,4 @@
-use crate::message::{Message, OutboundMessage};
+use crate::message::Message;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,7 +29,7 @@ pub enum Event {
         recipient: Sender,
         #[serde(default)]
         address: Option<ChannelAddress>,
-        message: OutboundMessage,
+        message: Message,
     },
     CronTick {
         schedule: String,

@@ -66,8 +66,20 @@ fn extract_search_text(item: &Message) -> String {
             }));
             parts.join(" ")
         }
-        Message::Assistant { text, tool_calls } => {
+        Message::Assistant {
+            text,
+            attachments,
+            tool_calls,
+        } => {
             let mut parts = text.clone().into_iter().collect::<Vec<_>>();
+            parts.extend(attachments.iter().map(|attachment| {
+                format!(
+                    "file_id:{} mime_type:{} {}",
+                    attachment.file_id,
+                    attachment.mime_type,
+                    attachment.filename.as_deref().unwrap_or("")
+                )
+            }));
             parts.extend(
                 tool_calls
                     .iter()

@@ -118,7 +118,7 @@ impl AiInferenceTool {
                 "role": "user",
                 "content": self.user_content(text, attachments)?,
             })),
-            Message::Assistant { text, tool_calls } => {
+            Message::Assistant { text, tool_calls, .. } => {
                 let tool_calls = if tool_calls.is_empty() {
                     None
                 } else {
@@ -222,7 +222,11 @@ fn response_to_message(response: serde_json::Value) -> Result<Message, String> {
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-    Ok(Message::Assistant { text, tool_calls })
+    Ok(Message::Assistant {
+        text,
+        attachments: Vec::new(),
+        tool_calls,
+    })
 }
 
 fn chat_tool_call_to_warden(value: &serde_json::Value) -> Result<Option<ToolCall>, String> {

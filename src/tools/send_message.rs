@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
-    message::{OutboundAttachment, OutboundMessage},
+    message::{Attachment, Message},
     tools::{self, InternalTool},
 };
 
@@ -24,21 +24,21 @@ impl SendMessageTool {
         mut params: SendMessageParams,
     ) -> Result<SendMessageOutput, String> {
         for attachment in &mut params.attachments {
-            if let Some(file_id) = attachment.file_id {
-                if attachment.data_base64.is_none() {
-                    let path = self.files_dir.join(format!("{file_id}.png"));
-                    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-                    use base64::Engine as _;
-                    attachment.data_base64 =
-                        Some(base64::engine::general_purpose::STANDARD.encode(&bytes));
-                }
+            if attachment.source.as_os_str().is_empty() {
+                attachment.source = self.files_dir.join(
+                    attachment
+                        .filename
+                        .clone()
+                        .unwrap_or_else(|| format!("{}.png", attachment.file_id)),
+                );
             }
         }
         let channel = params.channel.clone();
         let address = params.address();
-        let message = OutboundMessage {
-            content: Some(params.content),
+        let message = Message::Assistant {
+            text: Some(params.content),
             attachments: params.attachments,
+            tool_calls: Vec::new(),
         };
         self.bus.publish(Event::MessageOut {
             channel: channel.clone(),
@@ -102,7 +102,7 @@ pub struct SendMessageToolInput {
 pub struct SendMessageParams {
     pub channel: String,
     pub content: String,
-    pub attachments: Vec<OutboundAttachment>,
+    pub attachments: Vec<Attachment>,
     pub conversation_id: Option<String>,
     pub thread_id: Option<String>,
 }
@@ -121,13 +121,11 @@ impl SendMessageParams {
 
 impl From<SendMessageToolInput> for SendMessageParams {
     fn from(input: SendMessageToolInput) -> Self {
-        let attachments = input.file_id.map(|file_id| OutboundAttachment {
-            kind: "image".to_string(),
+        let attachments = input.file_id.map(|file_id| Attachment {
+            file_id,
             mime_type: "image/png".to_string(),
-            filename: format!("{file_id}.png"),
-            file_id: Some(file_id),
-            data_base64: None,
-            url: None,
+            filename: Some(format!("{file_id}.png")),
+            source: std::path::PathBuf::new(),
         });
         Self {
             channel: input.channel.unwrap_or_default(),
