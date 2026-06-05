@@ -2,17 +2,15 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use base64::Engine as _;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 use crate::{
+    message::{Attachment, Message},
     models,
-    openai::{
-        CreateResponse, EasyInputContent, EasyInputMessage, ImageDetail, InputContent,
-        InputImageContent, InputItem, InputMessage, InputParam, InputRole, InputTextContent, Role,
-        response_text,
+    tools::{
+        self, InternalTool, ToolOutput,
+        ai_inference::{AiInferenceRequest, AiInferenceTool},
     },
-    tools::{self, InternalTool, ToolOutput, ai_inference::AiInferenceTool},
 };
 
 pub struct InspectFileTool {
@@ -67,8 +65,8 @@ impl InternalTool for InspectFileTool {
         "inspect_file"
     }
 
-    fn responses_schema(&self) -> crate::openai::Tool {
-        tools::responses_tool_schema::<InspectFileParams>(
+    fn tool_definition(&self) -> crate::message::ToolDefinition {
+        tools::tool_definition::<InspectFileParams>(
             self.name(),
             "Inspect an attached file by file_id. If query is omitted, it defaults to 'describe this file'. For documents and PDFs, the tool extracts readable text. For images, the tool shows the image with the query.",
         )
@@ -90,7 +88,9 @@ impl InternalTool for InspectFileTool {
         let query = params.query.as_deref().unwrap_or("describe this file");
 
         if mime.starts_with("image/") {
-            let answer = self.inspect_image(mime, &data, query).await?;
+            let answer = self
+                .inspect_image(params.file_id, mime, path.clone(), query)
+                .await?;
             return Ok(inspection_output(params.file_id, query, answer));
         }
 
@@ -120,43 +120,45 @@ impl InspectFileTool {
             .await
     }
 
-    async fn inspect_image(&self, mime: &str, data: &[u8], query: &str) -> Result<String, String> {
-        let data_url = format!(
-            "data:{};base64,{}",
-            mime,
-            base64::engine::general_purpose::STANDARD.encode(data)
-        );
-        let item = InputMessage {
-            role: InputRole::User,
-            content: vec![
-                InputContent::InputText(InputTextContent {
+    async fn inspect_image(
+        &self,
+        file_id: u32,
+        mime: &str,
+        source: PathBuf,
+        query: &str,
+    ) -> Result<String, String> {
+        self.call_model(
+            models::vision_model(),
+            vec![
+                system_item(),
+                Message::User {
                     text: query.to_string(),
-                }),
-                InputContent::InputImage(InputImageContent {
-                    detail: ImageDetail::Auto,
-                    file_id: None,
-                    image_url: Some(data_url),
-                }),
+                    attachments: vec![Attachment {
+                        file_id,
+                        mime_type: mime.to_string(),
+                        filename: None,
+                        source,
+                    }],
+                },
             ],
-            status: None,
-        }
-        .into();
-
-        self.call_model(models::vision_model(), vec![system_item(), item])
+        )
             .await
     }
 
-    async fn call_model(&self, model: String, input: Vec<InputItem>) -> Result<String, String> {
+    async fn call_model(&self, model: String, input: Vec<Message>) -> Result<String, String> {
         let response = self
             .ai_inference
-            .execute(CreateResponse {
-                model: Some(model),
-                input: InputParam::Items(input),
-                parallel_tool_calls: Some(false),
-                ..Default::default()
+            .execute(AiInferenceRequest {
+                model,
+                messages: input,
+                tools: Vec::new(),
+                parallel_tool_calls: false,
             })
             .await?;
-        let answer = response_text(response);
+        let Message::Assistant { text, .. } = response else {
+            return Err("file inspection model response was not an assistant message".to_string());
+        };
+        let answer = text.unwrap_or_default();
         if answer.trim().is_empty() {
             return Err("file inspection response was empty".to_string());
         }
@@ -164,27 +166,17 @@ impl InspectFileTool {
     }
 }
 
-fn system_item() -> InputItem {
-    EasyInputMessage {
-        r#type: Default::default(),
-        role: Role::System,
-        content: EasyInputContent::Text(
-            "You inspect user-provided files and answer concisely from the file evidence."
-                .to_string(),
-        ),
-        phase: None,
-    }
-    .into()
+fn system_item() -> Message {
+    Message::System(
+        "You inspect user-provided files and answer concisely from the file evidence.".to_string(),
+    )
 }
 
-fn text_item(text: String) -> InputItem {
-    EasyInputMessage {
-        r#type: Default::default(),
-        role: Role::User,
-        content: EasyInputContent::Text(text),
-        phase: None,
+fn text_item(text: String) -> Message {
+    Message::User {
+        text,
+        attachments: Vec::new(),
     }
-    .into()
 }
 
 fn file_path(files_dir: &PathBuf, file_id: u32) -> Result<PathBuf, String> {

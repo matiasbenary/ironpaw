@@ -80,15 +80,14 @@ impl InternalTool for ImageGenerationTool {
         "image_generation"
     }
 
-    fn responses_schema(&self) -> crate::openai::Tool {
-        tools::responses_tool_schema::<ImageGenerationParams>(
+    fn tool_definition(&self) -> crate::message::ToolDefinition {
+        tools::tool_definition::<ImageGenerationParams>(
             self.name(),
             "Generate an image from a text description and return a file_id. To deliver the image, call send_message with that file_id.",
         )
     }
 
     async fn execute(&self, _args: serde_json::Value) -> Result<ToolOutput, String> {
-        return mock_image(&self.files_dir); // DELETE THIS LINE TO USE REAL IMAGE GENERATION
         #[allow(unreachable_code)]
         let params: ImageGenerationParams =
             serde_json::from_value(_args).map_err(|err| err.to_string())?;
@@ -113,12 +112,4 @@ fn base64_decode(data: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(data)
         .map_err(|e| e.to_string())
-}
-
-fn mock_image(files_dir: &PathBuf) -> Result<ToolOutput, String> {
-    let src = files_dir.join("1780086002.png");
-    std::fs::read(&src).map_err(|e| format!("mock image read error: {e}"))?;
-    Ok(ToolOutput::json(
-        serde_json::json!({ "status": "stored", "file_id": 1780086002u32 }),
-    ))
 }

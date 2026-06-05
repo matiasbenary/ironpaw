@@ -2,10 +2,7 @@ use std::{path::PathBuf, sync::Mutex};
 
 use rusqlite::{Connection, params};
 
-use crate::openai::{
-    EasyInputContent, EasyInputMessage, FunctionCallOutput, InputContent, InputItem, Item,
-    MessageItem, OutputMessageContent, Role,
-};
+use crate::message::Message;
 
 use super::History;
 
@@ -14,7 +11,7 @@ use super::History;
 /// Schema:
 ///   entries(id, conversation_id, item_json, search_text, compacted)
 ///
-/// `item_json`    — full serialised `InputItem`
+/// `item_json`    — full serialised `Message`
 /// `search_text`  — plain text extracted from the item, used for FTS5
 /// `compacted`    — 1 when this entry has been replaced by a summary but is
 ///                  retained for `search()`. `load()` skips compacted entries.
@@ -54,58 +51,38 @@ impl SqliteHistory {
     }
 }
 
-fn extract_search_text(item: &InputItem) -> String {
+fn extract_search_text(item: &Message) -> String {
     match item {
-        InputItem::EasyMessage(m) => match &m.content {
-            EasyInputContent::Text(t) => t.clone(),
-            EasyInputContent::ContentList(parts) => parts
-                .iter()
-                .filter_map(|p| {
-                    if let InputContent::InputText(t) = p {
-                        Some(t.text.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
-        },
-        InputItem::Item(item) => match item {
-            Item::FunctionCall(call) => {
-                format!("{}({})", call.name, call.arguments)
-            }
-            Item::FunctionCallOutput(out) => match &out.output {
-                FunctionCallOutput::Text(t) => t.clone(),
-                FunctionCallOutput::Content(_) => String::new(),
-            },
-            Item::Message(msg) => match msg {
-                MessageItem::Output(m) => m
-                    .content
+        Message::System(text) => text.clone(),
+        Message::User { text, attachments } => {
+            let mut parts = vec![text.clone()];
+            parts.extend(attachments.iter().map(|attachment| {
+                format!(
+                    "file_id:{} mime_type:{} {}",
+                    attachment.file_id,
+                    attachment.mime_type,
+                    attachment.filename.as_deref().unwrap_or("")
+                )
+            }));
+            parts.join(" ")
+        }
+        Message::Assistant { text, tool_calls } => {
+            let mut parts = text.clone().into_iter().collect::<Vec<_>>();
+            parts.extend(
+                tool_calls
                     .iter()
-                    .filter_map(|c| match c {
-                        OutputMessageContent::OutputText(t) => Some(t.text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                MessageItem::Input(m) => m
-                    .content
-                    .iter()
-                    .filter_map(|c| match c {
-                        InputContent::InputText(t) => Some(t.text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            },
-            _ => String::new(),
-        },
-        InputItem::ItemReference(_) => String::new(),
+                    .map(|call| format!("{}({})", call.name, call.arguments)),
+            );
+            parts.join(" ")
+        }
+        Message::ToolResult {
+            tool_name, result, ..
+        } => format!("{tool_name}: {result}"),
     }
 }
 
 impl History for SqliteHistory {
-    fn load(&self, conversation_id: &str) -> Vec<InputItem> {
+    fn load(&self, conversation_id: &str) -> Vec<Message> {
         let conn = self.conn.lock().expect("history mutex poisoned");
         let mut stmt = conn
             .prepare(
@@ -121,10 +98,10 @@ impl History for SqliteHistory {
             .collect()
     }
 
-    fn append(&self, conversation_id: &str, items: &[InputItem]) {
+    fn append(&self, conversation_id: &str, items: &[Message]) {
         let conn = self.conn.lock().expect("history mutex poisoned");
         for item in items {
-            let json = serde_json::to_string(item).expect("serialize InputItem");
+            let json = serde_json::to_string(item).expect("serialize Message");
             let text = extract_search_text(item);
             conn.execute(
                 "INSERT INTO entries(conversation_id, item_json, search_text)
@@ -143,13 +120,7 @@ impl History for SqliteHistory {
             params![conversation_id],
         )
         .expect("compact update");
-        let summary_item: InputItem = EasyInputMessage {
-            r#type: Default::default(),
-            role: Role::System,
-            content: EasyInputContent::Text(format!("[conversation summary] {summary}")),
-            phase: None,
-        }
-        .into();
+        let summary_item = Message::System(format!("[conversation summary] {summary}"));
         let json = serde_json::to_string(&summary_item).expect("serialize summary");
         conn.execute(
             "INSERT INTO entries(conversation_id, item_json, search_text)
@@ -159,7 +130,7 @@ impl History for SqliteHistory {
         .expect("insert summary");
     }
 
-    fn search(&self, conversation_id: &str, query: &str) -> Vec<InputItem> {
+    fn search(&self, conversation_id: &str, query: &str) -> Vec<Message> {
         let conn = self.conn.lock().expect("history mutex poisoned");
         let mut stmt = conn
             .prepare(

@@ -7,10 +7,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    openai::Tool,
-    tools::{self, InternalTool, ToolOutput},
-};
+use crate::tools::{self, InternalTool, ToolOutput};
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -59,8 +56,8 @@ impl InternalTool for TodoTool {
         "todo"
     }
 
-    fn responses_schema(&self) -> Tool {
-        tools::responses_tool_schema::<TodoInput>(
+    fn tool_definition(&self) -> crate::message::ToolDefinition {
+        tools::tool_definition::<TodoInput>(
             "todo",
             "Track the task list for this session. \
             Call this proactively for any multi-step task (3+ steps). \

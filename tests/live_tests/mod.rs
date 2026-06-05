@@ -6,10 +6,7 @@ use warden::{
     ai_engine::AiEngine,
     bus::{Bus, ChannelAddress, Event, Sender},
     history::SqliteHistory,
-    openai::{
-        EasyInputContent, EasyInputMessage, InputContent, InputItem, InputMessage, InputRole,
-        InputTextContent, Role,
-    },
+    message::{Attachment, Message},
     tools::{InternalTools, ai_inference::AiInferenceTool, send_message::SendMessageTool},
 };
 
@@ -46,13 +43,7 @@ async fn agent_replies_to_hi() {
     let engine = AiEngine::new(bus.clone(), tools);
     let _task = engine.start();
 
-    let message: InputItem = EasyInputMessage {
-        r#type: Default::default(),
-        role: Role::User,
-        content: EasyInputContent::Text("hi".to_string()),
-        phase: None,
-    }
-    .into();
+    let message = user_message("hi");
 
     bus.publish(Event::MessageIn {
         channel: "tui".to_string(),
@@ -117,15 +108,7 @@ async fn send_message_routes_to_telegram() {
         thread_id: None,
     };
 
-    let message: InputItem = EasyInputMessage {
-        r#type: Default::default(),
-        role: Role::User,
-        content: EasyInputContent::Text(
-            "Please send me a message on telegram saying hello.".to_string(),
-        ),
-        phase: None,
-    }
-    .into();
+    let message = user_message("Please send me a message on telegram saying hello.");
 
     bus.publish(Event::MessageIn {
         channel: "tui".to_string(),
@@ -189,15 +172,7 @@ async fn image_generation_routes_to_telegram() {
         thread_id: None,
     };
 
-    let message: InputItem = EasyInputMessage {
-        r#type: Default::default(),
-        role: Role::User,
-        content: EasyInputContent::Text(
-            "Create an image of a dog and send it to me in telegram.".to_string(),
-        ),
-        phase: None,
-    }
-    .into();
+    let message = user_message("Create an image of a dog and send it to me in telegram.");
 
     bus.publish(Event::MessageIn {
         channel: "tui".to_string(),
@@ -276,19 +251,19 @@ async fn agent_reads_pdf_content() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as u32;
-    std::fs::write(files_dir.join(format!("{file_id}.pdf")), &pdf_bytes).unwrap();
+    let source = files_dir.join(format!("{file_id}.pdf"));
+    std::fs::write(&source, &pdf_bytes).unwrap();
 
-    let message: InputItem = InputMessage {
-        role: InputRole::User,
-        content: vec![InputContent::InputText(InputTextContent {
-            text: format!(
-                "A PDF file is attached (file_id: '{file_id}'). \
-                    Call the inspect_file tool to read it, then tell me what text it contains."
-            ),
-        })],
-        status: None,
-    }
-    .into();
+    let message = Message::User {
+        text: "Call the inspect_file tool to read the attached PDF, then tell me what text it contains."
+            .to_string(),
+        attachments: vec![Attachment {
+            file_id,
+            mime_type: "application/pdf".to_string(),
+            filename: Some("test.pdf".to_string()),
+            source,
+        }],
+    };
 
     bus.publish(Event::MessageIn {
         channel: "tui".to_string(),
@@ -351,22 +326,22 @@ async fn agent_identifies_dog_image() {
         "/tests/live_tests/files/test.jpg"
     );
     let file_id = 123456789u32;
+    let source = files_dir.join(format!("{file_id}.jpg"));
     std::fs::write(
-        files_dir.join(format!("{file_id}.jpg")),
+        &source,
         std::fs::read(image_path).expect("test image should be readable"),
     )
     .unwrap();
-    let message: InputItem = InputMessage {
-        role: InputRole::User,
-        content: vec![InputContent::InputText(InputTextContent {
-            text: format!(
-                "An image is attached (file_id: '{file_id}', mime_type: 'image/jpeg'). \
-                Use inspect_file with query 'What animal is in this image? Answer with one word.'"
-            ),
-        })],
-        status: None,
-    }
-    .into();
+    let message = Message::User {
+        text: "Use inspect_file with query 'What animal is in this image? Answer with one word.'"
+            .to_string(),
+        attachments: vec![Attachment {
+            file_id,
+            mime_type: "image/jpeg".to_string(),
+            filename: Some("test.jpg".to_string()),
+            source,
+        }],
+    };
 
     bus.publish(Event::MessageIn {
         channel: "tui".to_string(),
@@ -397,4 +372,11 @@ async fn agent_identifies_dog_image() {
         reply.to_lowercase().contains("dog"),
         "agent did not identify the test image as a dog; reply was: {reply}"
     );
+}
+
+fn user_message(text: &str) -> Message {
+    Message::User {
+        text: text.to_string(),
+        attachments: Vec::new(),
+    }
 }

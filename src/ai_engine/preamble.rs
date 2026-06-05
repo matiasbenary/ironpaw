@@ -1,9 +1,6 @@
-use crate::{
-    bus::ChannelAddress,
-    openai::{EasyInputContent, EasyInputMessage, InputItem, Role},
-};
+use crate::{bus::ChannelAddress, message::Message};
 
-pub(super) fn system_preamble(channel: &str, address: &ChannelAddress) -> Vec<InputItem> {
+pub(super) fn system_preamble(channel: &str, address: &ChannelAddress) -> Vec<Message> {
     let mut text = format!(
         "You are a personal assistant. \
         The user is communicating with you through the '{channel}' channel \
@@ -16,13 +13,5 @@ pub(super) fn system_preamble(channel: &str, address: &ChannelAddress) -> Vec<In
     text.push(')');
     text.push('.');
 
-    vec![
-        EasyInputMessage {
-            r#type: Default::default(),
-            role: Role::System,
-            content: EasyInputContent::Text(text),
-            phase: None,
-        }
-        .into(),
-    ]
+    vec![Message::System(text)]
 }

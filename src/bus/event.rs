@@ -1,4 +1,4 @@
-use crate::{message::OutboundMessage, openai::InputItem};
+use crate::message::{Message, OutboundMessage};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,7 +22,7 @@ pub enum Event {
         channel: String,
         sender: Sender,
         address: ChannelAddress,
-        message: InputItem,
+        message: Message,
     },
     MessageOut {
         channel: String,

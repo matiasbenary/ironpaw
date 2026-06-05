@@ -16,7 +16,7 @@ use crate::{
         config::{ChannelAuth, ChannelConfig, ChannelManifest},
         wasm::WasmChannel,
     },
-    openai::{InputContent, InputItem, InputMessage, InputRole, InputTextContent},
+    message::{Attachment, Message},
     secrets::ChannelSecrets,
 };
 
@@ -382,60 +382,67 @@ enum InboundContent {
     },
 }
 
-fn content_to_input_item(content: Vec<InboundContent>, files_dir: &PathBuf) -> InputItem {
-    InputMessage {
-        role: InputRole::User,
-        content: content
-            .into_iter()
-            .map(|part| content_part_to_input(part, files_dir))
-            .collect(),
-        status: None,
+fn content_to_input_item(content: Vec<InboundContent>, files_dir: &PathBuf) -> Message {
+    let mut text_parts = Vec::new();
+    let mut attachments = Vec::new();
+    for part in content {
+        match content_part_to_message(part, files_dir) {
+            InboundMessagePart::Text(text) => text_parts.push(text),
+            InboundMessagePart::Attachment(attachment) => attachments.push(attachment),
+        }
     }
-    .into()
+    Message::User {
+        text: text_parts.join("\n\n"),
+        attachments,
+    }
 }
 
-fn content_part_to_input(part: InboundContent, files_dir: &PathBuf) -> InputContent {
+enum InboundMessagePart {
+    Text(String),
+    Attachment(Attachment),
+}
+
+fn content_part_to_message(part: InboundContent, files_dir: &PathBuf) -> InboundMessagePart {
     const MAX_FILE_BYTES: usize = 10 * 1024 * 1024; // 10 MB
     match part {
-        InboundContent::Text { text } => InputContent::InputText(InputTextContent { text }),
+        InboundContent::Text { text } => InboundMessagePart::Text(text),
         InboundContent::Attachment {
             filename,
             mime_type,
             data_base64,
         } => {
             let Some(data) = decode_base64(&data_base64) else {
-                return InputContent::InputText(InputTextContent {
-                    text: "[Attached file was not valid base64]".to_string(),
-                });
+                return InboundMessagePart::Text("[Attached file was not valid base64]".to_string());
             };
             if data.len() > MAX_FILE_BYTES {
-                return InputContent::InputText(InputTextContent {
-                    text: "[Attached file was too large to process (> 10 MB)]".to_string(),
-                });
+                return InboundMessagePart::Text(
+                    "[Attached file was too large to process (> 10 MB)]".to_string(),
+                );
             }
 
             let ext = attachment_ext(filename.as_deref(), &mime_type);
             let file_id = received_file_id();
-            store_file(files_dir, file_id, &ext, &data);
-            InputContent::InputText(InputTextContent {
-                text: format!(
-                    "A file is attached (file_id: '{file_id}', mime_type: '{mime_type}'). \
-                    Use the inspect_file tool to inspect it."
-                ),
+            let source = store_file(files_dir, file_id, &ext, &data);
+            InboundMessagePart::Attachment(Attachment {
+                file_id,
+                mime_type,
+                filename,
+                source,
             })
         }
     }
 }
 
-fn store_file(files_dir: &PathBuf, file_id: u32, ext: &str, data: &[u8]) {
+fn store_file(files_dir: &PathBuf, file_id: u32, ext: &str, data: &[u8]) -> PathBuf {
     let path = files_dir.join(format!("{file_id}.{ext}"));
     if let Err(e) = fs::create_dir_all(files_dir) {
         eprintln!("bridge: failed to create files_dir: {e}");
-        return;
+        return path;
     }
-    if let Err(e) = fs::write(path, data) {
+    if let Err(e) = fs::write(&path, data) {
         eprintln!("bridge: failed to write file {file_id}: {e}");
     }
+    path
 }
 
 fn received_file_id() -> u32 {
@@ -483,9 +490,9 @@ mod tests {
             data_base64: "aW1hZ2U=".to_string(),
         };
 
-        let input = content_part_to_input(part, &files_dir);
+        let input = content_part_to_message(part, &files_dir);
 
-        let file_id = mentioned_file_id(&input);
+        let file_id = attachment_file_id(&input);
         let stored = files_dir.join(format!("{file_id}.png"));
         assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("png"));
         assert_eq!(fs::read(stored).unwrap(), b"image");
@@ -500,9 +507,9 @@ mod tests {
             data_base64: "cGRm".to_string(),
         };
 
-        let input = content_part_to_input(part, &files_dir);
+        let input = content_part_to_message(part, &files_dir);
 
-        let file_id = mentioned_file_id(&input);
+        let file_id = attachment_file_id(&input);
         let stored = files_dir.join(format!("{file_id}.pdf"));
         assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("pdf"));
         assert_eq!(fs::read(stored).unwrap(), b"pdf");
@@ -512,16 +519,10 @@ mod tests {
         std::env::temp_dir().join(format!("warden-bridge-test-{}", uuid::Uuid::new_v4()))
     }
 
-    fn mentioned_file_id(input: &InputContent) -> u32 {
+    fn attachment_file_id(input: &InboundMessagePart) -> u32 {
         match input {
-            InputContent::InputText(text) => text
-                .text
-                .split("file_id: '")
-                .nth(1)
-                .and_then(|text| text.split('\'').next())
-                .and_then(|file_id| file_id.parse().ok())
-                .expect("input should mention numeric file_id"),
-            _ => panic!("expected input text"),
+            InboundMessagePart::Attachment(attachment) => attachment.file_id,
+            InboundMessagePart::Text(_) => panic!("expected attachment"),
         }
     }
 }

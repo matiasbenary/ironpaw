@@ -56,8 +56,8 @@ impl InternalTool for SendMessageTool {
         "send_message"
     }
 
-    fn responses_schema(&self) -> crate::openai::Tool {
-        tools::responses_tool_schema::<SendMessageToolInput>(
+    fn tool_definition(&self) -> crate::message::ToolDefinition {
+        tools::tool_definition::<SendMessageToolInput>(
             self.name(),
             "Send a message to the user through one of Warden's channels.",
         )
@@ -81,13 +81,14 @@ pub struct SendMessageToolInput {
         description = "Optional channel to send through, for example telegram or tui. If omitted, Warden replies in the current conversation. If provided without conversation_id, that channel's default destination is used."
     )]
     pub channel: Option<String>,
-    #[schemars(description = "The message text to send.")]
-    pub content: String,
     #[serde(default)]
     #[schemars(
-        description = "ID of a generated file to attach. Use the file_id returned by image_generation."
+        description = "ID of a generated file to attach. Use this alone when delivering an image from image_generation."
     )]
     pub file_id: Option<u32>,
+    #[serde(default)]
+    #[schemars(description = "Optional message text to send. Omit this when sending only a generated file.")]
+    pub content: Option<String>,
     #[serde(default)]
     #[schemars(
         description = "Optional channel conversation id. If omitted for an explicit channel, Warden uses that channel's default destination."
@@ -130,7 +131,7 @@ impl From<SendMessageToolInput> for SendMessageParams {
         });
         Self {
             channel: input.channel.unwrap_or_default(),
-            content: input.content,
+            content: input.content.unwrap_or_default(),
             attachments: attachments.into_iter().collect(),
             conversation_id: input.conversation_id,
             thread_id: input.thread_id,

@@ -1,14 +1,23 @@
 use std::{borrow::Cow, time::Duration};
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use reqwest::Client;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 use crate::{
     http::HttpError,
-    openai::{CreateResponse, Response},
+    message::{Attachment, Message, ToolCall, ToolDefinition},
     tools::{self, InternalTool},
 };
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct AiInferenceRequest {
+    pub model: String,
+    pub messages: Vec<Message>,
+    pub tools: Vec<ToolDefinition>,
+    pub parallel_tool_calls: bool,
+}
 
 #[derive(Clone)]
 pub struct AiInferenceTool {
@@ -35,18 +44,20 @@ impl AiInferenceTool {
         })
     }
 
-    fn responses_url(&self) -> String {
-        format!("{}/v1/responses", self.base_url.trim_end_matches('/'))
+    fn chat_completions_url(&self) -> String {
+        format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'))
     }
 
-    pub async fn execute(&self, request: CreateResponse) -> Result<Response, String> {
+    pub async fn execute(&self, request: AiInferenceRequest) -> Result<Message, String> {
         log_entry("request", &request);
+        let chat_request = self.chat_request(&request)?;
+        log_entry("chat request", &chat_request);
 
         let response = self
             .client
-            .post(self.responses_url())
+            .post(self.chat_completions_url())
             .bearer_auth(&self.near_api_key)
-            .json(&request)
+            .json(&chat_request)
             .send()
             .await
             .map_err(sanitize_reqwest_error)
@@ -63,13 +74,108 @@ impl AiInferenceTool {
             return Err(format!("request failed with {status}: {body}"));
         }
 
-        let response = parse_response_body(&body)?;
+        let response = serde_json::from_str(&body)
+            .map_err(|err| format!("failed to parse chat response JSON: {err}"))?;
         log_entry("response", &response);
 
-        if response.status == crate::openai::Status::Failed {
-            return Err(format!("response status was {:?}", response.status));
+        response_to_message(response)
+    }
+
+    fn chat_request(&self, request: &AiInferenceRequest) -> Result<serde_json::Value, String> {
+        let tools = if request.tools.is_empty() {
+            None
+        } else {
+            Some(
+                request
+                    .tools
+                    .iter()
+                    .map(tool_definition_to_chat_tool)
+                    .collect::<Vec<_>>(),
+            )
+        };
+        Ok(serde_json::json!({
+            "model": request.model,
+            "messages": self.messages_to_chat(&request.messages)?,
+            "tools": tools,
+            "parallel_tool_calls": request.parallel_tool_calls,
+        }))
+    }
+
+    fn messages_to_chat(&self, messages: &[Message]) -> Result<Vec<serde_json::Value>, String> {
+        messages
+            .iter()
+            .map(|message| self.message_to_chat(message))
+            .collect()
+    }
+
+    fn message_to_chat(&self, message: &Message) -> Result<serde_json::Value, String> {
+        match message {
+            Message::System(text) => Ok(serde_json::json!({
+                "role": "system",
+                "content": text,
+            })),
+            Message::User { text, attachments } => Ok(serde_json::json!({
+                "role": "user",
+                "content": self.user_content(text, attachments)?,
+            })),
+            Message::Assistant { text, tool_calls } => {
+                let tool_calls = if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(
+                        tool_calls
+                            .iter()
+                            .map(tool_call_to_chat)
+                            .collect::<Vec<_>>(),
+                    )
+                };
+                Ok(serde_json::json!({
+                    "role": "assistant",
+                    "content": text,
+                    "tool_calls": tool_calls,
+                }))
+            }
+            Message::ToolResult {
+                tool_call_id,
+                result,
+                ..
+            } => Ok(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": result.to_string(),
+            })),
         }
-        Ok(response)
+    }
+
+    fn user_content(
+        &self,
+        text: &str,
+        attachments: &[Attachment],
+    ) -> Result<serde_json::Value, String> {
+        let mut parts = vec![serde_json::json!({
+            "type": "text",
+            "text": user_text_with_attachment_hints(text, attachments),
+        })];
+        for attachment in attachments {
+            if attachment.mime_type.starts_with("image/") {
+                if let Some(data_url) = self.attachment_data_url(attachment)? {
+                    parts.push(serde_json::json!({
+                        "type": "image_url",
+                        "image_url": { "url": data_url },
+                    }));
+                }
+            }
+        }
+        Ok(serde_json::Value::Array(parts))
+    }
+
+    fn attachment_data_url(&self, attachment: &Attachment) -> Result<Option<String>, String> {
+        let data = attachment.read().map_err(|err| err.to_string())?;
+        Ok(Some(format!(
+            "data:{};base64,{}",
+            attachment.mime_type,
+            base64::engine::general_purpose::STANDARD.encode(data)
+        )))
     }
 }
 
@@ -100,20 +206,82 @@ fn write_log_entry(label: &str, content: &str) {
         });
 }
 
-fn parse_response_body(body: &str) -> Result<Response, String> {
-    match serde_json::from_str(body) {
-        Ok(response) => Ok(response),
-        Err(original_err) => {
-            let value = serde_json::from_str(body).map_err(|value_err| {
-                format!("failed to parse response JSON: {value_err}; typed error: {original_err}")
-            })?;
-            serde_json::from_value(value).map_err(|normalized_err| {
-                format!(
-                    "failed to parse response: {original_err}; after NEAR compatibility normalization: {normalized_err}"
-                )
-            })
-        }
+fn response_to_message(response: serde_json::Value) -> Result<Message, String> {
+    let message = response["choices"]
+        .as_array()
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .ok_or_else(|| format!("chat response missing choices[0].message: {response}"))?;
+    let text = message["content"].as_str().map(str::to_string);
+    let tool_calls = message["tool_calls"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(chat_tool_call_to_warden)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    Ok(Message::Assistant { text, tool_calls })
+}
+
+fn chat_tool_call_to_warden(value: &serde_json::Value) -> Result<Option<ToolCall>, String> {
+    if value["type"].as_str() != Some("function") {
+        return Ok(None);
     }
+    let function = value
+        .get("function")
+        .ok_or_else(|| format!("tool call missing function: {value}"))?;
+    let arguments = function["arguments"]
+        .as_str()
+        .ok_or_else(|| format!("tool call arguments were not a string: {value}"))?;
+    Ok(Some(ToolCall {
+        id: value["id"]
+            .as_str()
+            .ok_or_else(|| format!("tool call missing id: {value}"))?
+            .to_string(),
+        name: function["name"]
+            .as_str()
+            .ok_or_else(|| format!("tool call missing function name: {value}"))?
+            .to_string(),
+        arguments: arguments.to_string(),
+    }))
+}
+
+fn tool_definition_to_chat_tool(tool: &ToolDefinition) -> serde_json::Value {
+    serde_json::json!({
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.parameters,
+        }
+    })
+}
+
+fn tool_call_to_chat(tool_call: &ToolCall) -> serde_json::Value {
+    serde_json::json!({
+        "id": tool_call.id,
+        "type": "function",
+        "function": {
+            "name": tool_call.name,
+            "arguments": tool_call.arguments,
+        }
+    })
+}
+
+fn user_text_with_attachment_hints(text: &str, attachments: &[Attachment]) -> String {
+    let mut result = text.to_string();
+    for attachment in attachments {
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str(&format!(
+            "A file is attached (file_id: '{}', mime_type: '{}'). Use the inspect_file tool to inspect it.",
+            attachment.file_id, attachment.mime_type
+        ));
+    }
+    result
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -128,26 +296,24 @@ impl JsonSchema for AiInferenceParams {
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
         Schema::try_from(serde_json::json!({
             "type": "object",
-            "description": "OpenAI-compatible CreateResponse request body (responses API).",
+            "description": "Warden-native model inference request.",
             "properties": {
                 "model": {
                     "type": "string",
                     "description": "Optional model name. If omitted, Warden uses its configured default."
                 },
-                "input": {
+                "messages": {
                     "type": "array",
-                    "description": "Responses API input items.",
+                    "description": "Warden message list.",
                     "items": { "type": "object" }
                 },
                 "tools": {
                     "type": "array",
-                    "description": "Optional OpenAI-compatible tool definitions."
+                    "description": "Optional Warden tool definitions."
                 },
-                "tool_choice": {
-                    "description": "Optional OpenAI-compatible tool choice."
-                }
+                "parallel_tool_calls": { "type": "boolean" }
             },
-            "required": ["input"],
+            "required": ["messages"],
             "additionalProperties": true
         }))
         .expect("ai_inference schema should be valid")
@@ -160,16 +326,16 @@ impl InternalTool for AiInferenceTool {
         "ai_inference"
     }
 
-    fn responses_schema(&self) -> crate::openai::Tool {
-        tools::responses_tool_schema::<AiInferenceParams>(
+    fn tool_definition(&self) -> crate::message::ToolDefinition {
+        tools::tool_definition::<AiInferenceParams>(
             self.name(),
-            "Call an OpenAI-compatible model with a Responses API request.",
+            "Call the configured model with Warden-native messages.",
         )
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<tools::ToolOutput, String> {
         tools::execute_typed(args, |params: AiInferenceParams| async {
-            let request: CreateResponse =
+            let request: AiInferenceRequest =
                 serde_json::from_value(params.0).map_err(|err| err.to_string())?;
             AiInferenceTool::execute(self, request).await
         })

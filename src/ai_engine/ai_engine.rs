@@ -2,12 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
-    message::OutboundMessage,
+    message::{Message, OutboundMessage, ToolCall},
     models,
-    openai::{
-        CreateResponse, EasyInputContent, EasyInputMessage, InputItem, InputParam, Role,
-        parse_response_output,
-    },
     tools::{self, InternalTool, InternalTools, ToolOutput},
 };
 
@@ -15,6 +11,7 @@ use super::{
     preamble::system_preamble,
     utils::{fill_current_destination, publish_progress, summarize_tool_args},
 };
+use crate::tools::ai_inference::AiInferenceRequest;
 
 const MAX_TOOL_ROUNDS: usize = 8;
 
@@ -79,70 +76,64 @@ async fn run_agent_loop(
     bus: &Bus,
     channel: &str,
     address: &ChannelAddress,
-    messages: Vec<InputItem>,
+    messages: Vec<Message>,
 ) -> Result<(), String> {
     internal_tools
         .history
         .append(&address.conversation_id, &messages);
 
-    let mut pending_tool_results: Vec<InputItem> = Vec::new();
+    let mut transient_messages = Vec::new();
 
     for round in 0..MAX_TOOL_ROUNDS {
         let available_tools: Vec<_> = internal_tools
             .tools
             .iter()
-            .map(|tool| tools::schema_for_model(tool.as_ref()))
+            .map(|tool| tools::definition_for_model(tool.as_ref()))
             .collect();
-        let input_items = model_input_items(
+        let model_messages = model_messages(
             internal_tools,
             channel,
             address,
-            pending_tool_results.clone(),
+            transient_messages.clone(),
         );
         debug_log(format!(
-            "ai_engine: round {} calling responses(input_items={}, tools={})",
+            "ai_engine: round {} calling chat_completions(messages={}, tools={})",
             round + 1,
-            input_items.len(),
+            model_messages.len(),
             available_tools.len()
         ));
-        let request = CreateResponse {
-            model: Some(models::text_model()),
-            input: InputParam::Items(input_items.clone()),
-            tools: Some(available_tools),
-            parallel_tool_calls: Some(false),
-            ..Default::default()
+        let request = AiInferenceRequest {
+            model: models::text_model(),
+            messages: model_messages,
+            tools: available_tools,
+            parallel_tool_calls: false,
         };
 
-        let response = internal_tools
+        let output = internal_tools
             .ai_inference
             .execute(request)
             .await
             .map_err(|err| err.to_string())?;
-        let output = parse_response_output(response);
-        let function_calls = output.function_calls;
-        pending_tool_results = Vec::new();
-
-        if function_calls.is_empty() {
+        let Message::Assistant { text, tool_calls } = output.clone() else {
+            return Err("model did not return an assistant message".to_string());
+        };
+        transient_messages.clear();
+        if tool_calls.is_empty() {
             debug_log(format!(
                 "ai_engine: round {} finished with assistant text",
                 round + 1
             ));
-            if !output.text.is_empty() {
-                internal_tools.history.append(
-                    &address.conversation_id,
-                    &[assistant_history_input_item(output.text.clone())],
-                );
+            if text.as_deref().is_some_and(|text| !text.is_empty()) {
+                internal_tools
+                    .history
+                    .append(&address.conversation_id, &[output.clone()]);
             }
             publish_current_channel_output(
                 bus,
                 channel,
                 address,
                 AgentLoopOutput {
-                    content: if output.text.is_empty() {
-                        None
-                    } else {
-                        Some(output.text)
-                    },
+                    content: text.filter(|text| !text.is_empty()),
                 },
             );
             return Ok(());
@@ -151,39 +142,43 @@ async fn run_agent_loop(
         debug_log(format!(
             "ai_engine: round {} received {} tool call(s)",
             round + 1,
-            function_calls.len()
+            tool_calls.len()
         ));
-        for tool_call in function_calls {
-            let tool_name = tool_call.name.clone();
-            let args = tool_call.arguments.clone();
-            internal_tools.history.append(
-                &address.conversation_id,
-                &[assistant_history_input_item(format!(
-                    "[tool use] calling {tool_name} with arguments: {args}"
-                ))],
-            );
+        let mut tool_results = Vec::new();
+        let mut has_malformed_tool_call = false;
+        for tool_call in &tool_calls {
+            if serde_json::from_str::<serde_json::Value>(&tool_call.arguments).is_err() {
+                has_malformed_tool_call = true;
+            }
+        }
+        for tool_call in tool_calls {
             let tool_result = execute_tool_call(
                 &internal_tools.tools,
                 tool_call,
                 Some((bus, channel, address)),
             )
             .await?;
-            internal_tools.history.append(
-                &address.conversation_id,
-                &[assistant_history_input_item(format!(
-                    "[tool use] {tool_name} {}",
-                    tool_result.status
-                ))],
-            );
-            pending_tool_results.push(tool_result.input_item);
+            tool_results.push(tool_result);
+        }
+        if has_malformed_tool_call {
+            transient_messages.push(assistant_message_for_history(output));
+            transient_messages.extend(tool_results);
+        } else {
+            internal_tools
+                .history
+                .append(&address.conversation_id, &[output]);
+            internal_tools
+                .history
+                .append(&address.conversation_id, &tool_results);
         }
     }
 
     internal_tools.history.append(
         &address.conversation_id,
-        &[assistant_history_input_item(
-            "[tool use] stopped after too many tool calls".to_string(),
-        )],
+        &[Message::Assistant {
+            text: Some("[tool use] stopped after too many tool calls".to_string()),
+            tool_calls: Vec::new(),
+        }],
     );
     publish_current_channel_output(
         bus,
@@ -196,16 +191,34 @@ async fn run_agent_loop(
     Ok(())
 }
 
-fn model_input_items(
+fn model_messages(
     internal_tools: &InternalTools,
     channel: &str,
     address: &ChannelAddress,
-    pending_tool_results: Vec<InputItem>,
-) -> Vec<InputItem> {
-    let mut input_items = system_preamble(channel, address);
-    input_items.extend(internal_tools.history.load(&address.conversation_id));
-    input_items.extend(pending_tool_results);
-    input_items
+    transient_messages: Vec<Message>,
+) -> Vec<Message> {
+    let mut messages = system_preamble(channel, address);
+    messages.extend(internal_tools.history.load(&address.conversation_id));
+    messages.extend(transient_messages);
+    messages
+}
+
+fn assistant_message_for_history(message: Message) -> Message {
+    let Message::Assistant { text, tool_calls } = message else {
+        return message;
+    };
+    Message::Assistant {
+        text,
+        tool_calls: tool_calls
+            .into_iter()
+            .map(|mut tool_call| {
+                if serde_json::from_str::<serde_json::Value>(&tool_call.arguments).is_err() {
+                    tool_call.arguments = "{}".to_string();
+                }
+                tool_call
+            })
+            .collect(),
+    }
 }
 
 struct AgentLoopOutput {
@@ -232,16 +245,11 @@ fn publish_current_channel_output(
     });
 }
 
-struct ToolCallOutput {
-    input_item: InputItem,
-    status: String,
-}
-
 async fn execute_tool_call(
     tools: &[Arc<dyn InternalTool>],
-    tool_call: crate::openai::FunctionToolCall,
+    tool_call: ToolCall,
     progress: Option<(&Bus, &str, &ChannelAddress)>,
-) -> Result<ToolCallOutput, String> {
+) -> Result<Message, String> {
     let tool_name = tool_call.name.clone();
     let args_summary = summarize_tool_args(&tool_call.arguments);
     let progress_message = format!("calling {tool_name}({args_summary})");
@@ -249,9 +257,20 @@ async fn execute_tool_call(
     if let Some((bus, channel, address)) = progress {
         publish_progress(bus, channel, address, progress_message);
     }
-    let mut args: serde_json::Value =
-        serde_json::from_str(&tool_call.arguments).map_err(|err| err.to_string())?;
-    let (tool_response, status) = if let Some(tool) = tools.iter().find(|t| t.name() == tool_name) {
+    let mut args: serde_json::Value = match serde_json::from_str(&tool_call.arguments) {
+        Ok(args) => args,
+        Err(err) => {
+            return Ok(Message::ToolResult {
+                tool_call_id: tool_call.id,
+                tool_name,
+                result: serde_json::json!({
+                    "ok": false,
+                    "error": err.to_string(),
+                }),
+            });
+        }
+    };
+    let tool_response = if let Some(tool) = tools.iter().find(|t| t.name() == tool_name) {
         if tool_name == "send_message" {
             fill_current_destination(&mut args, progress);
         }
@@ -266,56 +285,28 @@ async fn execute_tool_call(
             }
         }
         match tool.execute(args).await {
-            Ok(response) => (response, "succeeded".to_string()),
+            Ok(response) => response,
             Err(err) => {
                 debug_log(format!("ai_engine: tool {tool_name} failed: {err}"));
-                (
-                    ToolOutput::json(serde_json::json!({
-                        "ok": false,
-                        "error": err,
-                    })),
-                    format!("failed: {err}"),
-                )
+                ToolOutput::json(serde_json::json!({
+                    "ok": false,
+                    "error": err,
+                }))
             }
         }
     } else {
-        (
-            ToolOutput::json(serde_json::json!({
-                "ok": false,
-                "error": format!("unknown tool: {tool_name}"),
-            })),
-            "failed: unknown tool".to_string(),
-        )
+        ToolOutput::json(serde_json::json!({
+            "ok": false,
+            "error": format!("unknown tool: {tool_name}"),
+        }))
     };
     let result = tool_response.result;
     debug_log(format!("ai_engine: tool {tool_name} finished"));
-    Ok(ToolCallOutput {
-        input_item: user_history_input_item(format!(
-            "[tool response] {tool_name} returned: {}",
-            result
-        )),
-        status,
+    Ok(Message::ToolResult {
+        tool_call_id: tool_call.id,
+        tool_name,
+        result,
     })
-}
-
-fn assistant_history_input_item(text: String) -> InputItem {
-    EasyInputMessage {
-        r#type: Default::default(),
-        role: Role::Assistant,
-        content: EasyInputContent::Text(text),
-        phase: None,
-    }
-    .into()
-}
-
-fn user_history_input_item(text: String) -> InputItem {
-    EasyInputMessage {
-        r#type: Default::default(),
-        role: Role::User,
-        content: EasyInputContent::Text(text),
-        phase: None,
-    }
-    .into()
 }
 
 fn debug_log(message: impl AsRef<str>) {
@@ -377,31 +368,28 @@ mod tests {
             bus.clone(),
             std::path::PathBuf::from("/tmp/warden-test-images"),
         )) as Arc<dyn InternalTool>];
-        let tool_call = crate::openai::FunctionToolCall {
-            call_id: "call_1".to_string(),
-            namespace: None,
+        let tool_call = ToolCall {
+            id: "call_1".to_string(),
             name: "send_message".to_string(),
-            arguments: "{\"channel\":\"telegram\",\"content\":\"hi\"}".to_string(),
-            id: None,
-            status: None,
+            arguments: serde_json::json!({
+                "channel": "telegram",
+                "content": "hi",
+            })
+            .to_string(),
         };
 
         let result = execute_tool_call(&tools, tool_call, None).await.unwrap();
-        let result_json = serde_json::to_value(result.input_item).unwrap();
-        assert_eq!(result_json["role"], "user");
-        assert!(
-            result_json["content"]
-                .as_str()
-                .unwrap()
-                .contains("[tool response] send_message returned")
-        );
-        assert!(
-            result_json["content"]
-                .as_str()
-                .unwrap()
-                .contains("\"ok\":true")
-        );
-        assert_eq!(result.status, "succeeded");
+        let Message::ToolResult {
+            tool_call_id,
+            tool_name,
+            result: tool_result,
+        } = result
+        else {
+            panic!("expected tool result");
+        };
+        assert_eq!(tool_call_id, "call_1");
+        assert_eq!(tool_name, "send_message");
+        assert_eq!(tool_result["ok"], true);
 
         let event = timeout(Duration::from_secs(1), events.recv())
             .await
@@ -420,5 +408,51 @@ mod tests {
         assert_eq!(channel, "telegram");
         assert!(address.is_none());
         assert_eq!(message.content.as_deref(), Some("hi"));
+    }
+
+    #[tokio::test]
+    async fn malformed_tool_arguments_return_tool_result_error() {
+        let tools = vec![];
+        let tool_call = ToolCall {
+            id: "call_bad".to_string(),
+            name: "send_message".to_string(),
+            arguments: "{\"channel\":\"telegram\"".to_string(),
+        };
+
+        let result = execute_tool_call(&tools, tool_call, None).await.unwrap();
+        let Message::ToolResult {
+            tool_call_id,
+            tool_name,
+            result: tool_result,
+        } = result
+        else {
+            panic!("expected tool result");
+        };
+        assert_eq!(tool_call_id, "call_bad");
+        assert_eq!(tool_name, "send_message");
+        assert_eq!(tool_result["ok"], false);
+        assert!(
+            tool_result["error"]
+                .as_str()
+                .unwrap()
+                .contains("EOF while parsing")
+        );
+    }
+
+    #[test]
+    fn malformed_tool_arguments_are_sanitized_for_history() {
+        let message = Message::Assistant {
+            text: None,
+            tool_calls: vec![ToolCall {
+                id: "call_bad".to_string(),
+                name: "send_message".to_string(),
+                arguments: "{\"channel\":\"telegram\"".to_string(),
+            }],
+        };
+
+        let Message::Assistant { tool_calls, .. } = assistant_message_for_history(message) else {
+            panic!("expected assistant message");
+        };
+        assert_eq!(tool_calls[0].arguments, "{}");
     }
 }

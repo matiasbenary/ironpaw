@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1"
-async-openai = { version = "0.38", default-features = false, features = ["chat-completion-types", "response-types"] }
 axum = "0.8"
 base64 = "0.22"
 dotenvy = "0.15"

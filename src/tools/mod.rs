@@ -10,7 +10,7 @@ use async_trait::async_trait;
 
 use crate::{
     history::History,
-    openai::{FunctionTool, Tool},
+    message::ToolDefinition,
 };
 
 use self::{
@@ -61,7 +61,7 @@ impl InternalTools {
 pub trait InternalTool: Send + Sync {
     fn name(&self) -> &'static str;
 
-    fn responses_schema(&self) -> Tool;
+    fn tool_definition(&self) -> ToolDefinition;
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput, String>;
 }
@@ -80,7 +80,7 @@ where
     serde_json::to_value(output).map_err(|err| err.to_string())
 }
 
-pub fn responses_tool_schema<P>(name: &str, description: &str) -> Tool
+pub fn tool_definition<P>(name: &str, description: &str) -> ToolDefinition
 where
     P: schemars::JsonSchema,
 {
@@ -88,24 +88,17 @@ where
         serde_json::to_value(schemars::schema_for!(P)).expect("tool schema should serialize");
     sanitize_schema(&mut parameters);
 
-    Tool::Function(FunctionTool {
+    ToolDefinition {
         name: name.to_string(),
-        description: Some(description.to_string()),
-        parameters: Some(parameters),
-        strict: None,
-        defer_loading: None,
-    })
+        description: description.to_string(),
+        parameters,
+    }
 }
 
-pub fn schema_for_model(tool: &dyn InternalTool) -> Tool {
-    let mut schema = tool.responses_schema();
-    if let Tool::Function(function) = &mut schema {
-        let parameters = function
-            .parameters
-            .get_or_insert_with(|| serde_json::json!({ "type": "object" }));
-        if let Some(root) = parameters.as_object_mut() {
-            root.insert("type".to_string(), "object".into());
-        }
+pub fn definition_for_model(tool: &dyn InternalTool) -> ToolDefinition {
+    let mut schema = tool.tool_definition();
+    if let Some(root) = schema.parameters.as_object_mut() {
+        root.insert("type".to_string(), "object".into());
     }
     schema
 }
