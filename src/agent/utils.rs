@@ -20,33 +20,6 @@ fn display_tool_args(arguments: &str) -> String {
     value.to_string()
 }
 
-pub(super) fn fill_current_destination(
-    args: &mut serde_json::Value,
-    progress: Option<(&Bus, &str, &ChannelAddress)>,
-) {
-    let Some((_bus, channel, address)) = progress else {
-        return;
-    };
-    let Some(object) = args.as_object_mut() else {
-        return;
-    };
-    if object.get("channel").is_some() {
-        return;
-    }
-    object.insert(
-        "channel".to_string(),
-        serde_json::Value::String(channel.to_string()),
-    );
-    object
-        .entry("conversation_id")
-        .or_insert_with(|| serde_json::Value::String(address.conversation_id.clone()));
-    if let Some(thread_id) = &address.thread_id {
-        object
-            .entry("thread_id")
-            .or_insert_with(|| serde_json::Value::String(thread_id.clone()));
-    }
-}
-
 pub(super) fn publish_progress(
     bus: &Bus,
     channel: &str,

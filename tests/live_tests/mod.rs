@@ -3,12 +3,49 @@ use std::{path::PathBuf, sync::Arc};
 
 use tokio::time::timeout;
 use warden::{
-    ai_engine::AiEngine,
+    agent::Agent,
+    automations::{Automations, SqliteAutomations},
     bus::{Bus, ChannelAddress, Event, Sender},
     history::SqliteHistory,
     message::{Attachment, Message},
-    tools::{InternalTools, ai_inference::AiInferenceTool, send_message::SendMessageTool},
+    scripts::ScriptRuntime,
+    tools::{
+        InternalTools, dynamic::DynamicTool, raw_inference::RawInferenceTool,
+        send_message::SendMessageTool,
+    },
 };
+
+fn start_warden(bus: &Bus, tools: InternalTools) -> tokio::task::JoinHandle<()> {
+    let tools = Arc::new(tools);
+    let agent = Arc::new(Agent::new(bus.clone(), Arc::clone(&tools)));
+    tools.call_agent.bind(agent);
+    let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&tools)));
+    let tools_dir =
+        std::env::temp_dir().join(format!("warden-live-test-tools-{}", uuid::Uuid::new_v4()));
+    tools
+        .create_tool
+        .bind(Arc::clone(&tools), Arc::clone(&scripts), tools_dir);
+    tools
+        .add(Arc::new(DynamicTool::answer_the_user(scripts)))
+        .expect("stock tool registers");
+    let automations_db = std::env::temp_dir().join(format!(
+        "warden-live-test-automations-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let automation_store =
+        Arc::new(SqliteAutomations::new(automations_db).expect("temp automations db"));
+    let automations = Arc::new(Automations::new(
+        bus.clone(),
+        Arc::clone(&tools),
+        Some(automation_store),
+    ));
+    tools.create_automation.bind(Arc::clone(&automations));
+    tools.delete_automation.bind(Arc::clone(&automations));
+    automations
+        .add(Automations::answer_the_user())
+        .expect("stock automation registers");
+    automations.start()
+}
 
 fn temp_history() -> Arc<SqliteHistory> {
     let path =
@@ -39,15 +76,14 @@ async fn agent_replies_to_hi() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        AiInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new(near_api_key.clone()).unwrap(),
         send_message_tool(&bus, files_dir.clone()),
         near_api_key,
         files_dir,
         temp_history(),
     );
 
-    let engine = AiEngine::new(bus.clone(), tools);
-    let _task = engine.start();
+    let _task = start_warden(&bus, tools);
 
     let message = user_message("hi");
 
@@ -105,15 +141,14 @@ async fn send_message_routes_to_telegram() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        AiInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new(near_api_key.clone()).unwrap(),
         send_message_tool(&bus, files_dir.clone()),
         near_api_key,
         files_dir.clone(),
         temp_history(),
     );
 
-    let engine = AiEngine::new(bus.clone(), tools);
-    let _task = engine.start();
+    let _task = start_warden(&bus, tools);
 
     let address = ChannelAddress {
         channel: "tui".to_string(),
@@ -169,15 +204,14 @@ async fn image_generation_routes_to_telegram() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        AiInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new(near_api_key.clone()).unwrap(),
         send_message_tool(&bus, files_dir.clone()),
         near_api_key,
         files_dir.clone(),
         temp_history(),
     );
 
-    let engine = AiEngine::new(bus.clone(), tools);
-    let _task = engine.start();
+    let _task = start_warden(&bus, tools);
 
     let address = ChannelAddress {
         channel: "tui".to_string(),
@@ -241,15 +275,14 @@ async fn agent_reads_pdf_content() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        AiInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new(near_api_key.clone()).unwrap(),
         send_message_tool(&bus, files_dir.clone()),
         near_api_key,
         files_dir.clone(),
         temp_history(),
     );
 
-    let engine = AiEngine::new(bus.clone(), tools);
-    let _task = engine.start();
+    let _task = start_warden(&bus, tools);
 
     let address = ChannelAddress {
         channel: "tui".to_string(),
@@ -334,15 +367,14 @@ async fn agent_identifies_dog_image() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        AiInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new(near_api_key.clone()).unwrap(),
         send_message_tool(&bus, files_dir.clone()),
         near_api_key,
         files_dir.clone(),
         temp_history(),
     );
 
-    let engine = AiEngine::new(bus.clone(), tools);
-    let _task = engine.start();
+    let _task = start_warden(&bus, tools);
 
     let image_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -401,6 +433,217 @@ async fn agent_identifies_dog_image() {
     assert!(
         reply.to_lowercase().contains("dog"),
         "agent did not identify the test image as a dog; reply was: {reply}"
+    );
+}
+
+/// Verify the agent can schedule a delayed message through an automation.
+///
+/// Run with:
+///   cargo test --test live_tests -- --ignored --nocapture delayed_message_automation
+#[tokio::test]
+#[ignore = "live: makes real NEAR AI calls, requires NEAR_API_KEY env var"]
+async fn delayed_message_automation() {
+    let _ = dotenvy::dotenv();
+    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+
+    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+
+    let bus = Bus::new(32);
+    let mut events = bus.subscribe();
+
+    let tools = InternalTools::new(
+        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        send_message_tool(&bus, files_dir.clone()),
+        near_api_key,
+        files_dir,
+        temp_history(),
+    );
+
+    let _task = start_warden(&bus, tools);
+
+    let message = user_message(
+        "In 3 seconds, send me a message that says exactly: BANANA. \
+         The delayed message must contain only that single word.",
+    );
+
+    bus.publish(Event::MessageIn {
+        channel: "tui".to_string(),
+        sender: Sender::User,
+        address: ChannelAddress {
+            channel: "tui".to_string(),
+            conversation_id: "live-test-automation".to_string(),
+            thread_id: None,
+        },
+        message,
+    });
+
+    let result = timeout(Duration::from_secs(60), async {
+        loop {
+            let event = events.recv().await.expect("bus closed");
+            if let Event::MessageOut { message, .. } = event {
+                let Message::Assistant {
+                    text: Some(content),
+                    ..
+                } = message
+                else {
+                    continue;
+                };
+                eprintln!("[live_test] MessageOut: {content}");
+                if content.trim() == "BANANA" {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "timed out: the delayed BANANA message never arrived within 60 s"
+    );
+}
+
+/// Verify the agent can schedule a message at an absolute wall-clock time,
+/// which requires it to read the current time from its preamble.
+///
+/// Run with:
+///   cargo test --test live_tests -- --ignored --nocapture scheduled_message_at_wall_clock_time
+#[tokio::test]
+#[ignore = "live: makes real NEAR AI calls, requires NEAR_API_KEY env var"]
+async fn scheduled_message_at_wall_clock_time() {
+    let _ = dotenvy::dotenv();
+    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+
+    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+
+    let bus = Bus::new(32);
+    let mut events = bus.subscribe();
+
+    let tools = InternalTools::new(
+        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        send_message_tool(&bus, files_dir.clone()),
+        near_api_key,
+        files_dir,
+        temp_history(),
+    );
+
+    let _task = start_warden(&bus, tools);
+
+    let target = chrono::Local::now() + chrono::Duration::seconds(8);
+    let message = user_message(&format!(
+        "Today at exactly {}, send me a message that says exactly: KIWI. \
+         The scheduled message must contain only that single word.",
+        target.format("%H:%M:%S"),
+    ));
+
+    bus.publish(Event::MessageIn {
+        channel: "tui".to_string(),
+        sender: Sender::User,
+        address: ChannelAddress {
+            channel: "tui".to_string(),
+            conversation_id: "live-test-at".to_string(),
+            thread_id: None,
+        },
+        message,
+    });
+
+    let result = timeout(Duration::from_secs(60), async {
+        loop {
+            let event = events.recv().await.expect("bus closed");
+            if let Event::MessageOut { message, .. } = event {
+                let Message::Assistant {
+                    text: Some(content),
+                    ..
+                } = message
+                else {
+                    continue;
+                };
+                eprintln!("[live_test] MessageOut: {content}");
+                if content.trim() == "KIWI" {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "timed out: the scheduled KIWI message never arrived within 60 s"
+    );
+}
+
+/// Verify the full dynamic-tool path: the agent authors a tool that fetches
+/// the Hacker News top stories, schedules it, and the tool delivers them.
+///
+/// Run with:
+///   cargo test --test live_tests -- --ignored --nocapture --test-threads=1 hacker_news_automation
+#[tokio::test]
+#[ignore = "live: makes real NEAR AI calls and fetches hacker-news.firebaseio.com"]
+async fn hacker_news_automation() {
+    let _ = dotenvy::dotenv();
+    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+
+    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+
+    let bus = Bus::new(32);
+    let mut events = bus.subscribe();
+
+    let tools = InternalTools::new(
+        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        send_message_tool(&bus, files_dir.clone()),
+        near_api_key,
+        files_dir,
+        temp_history(),
+    );
+
+    let _task = start_warden(&bus, tools);
+
+    let message = user_message(
+        "Create a tool that fetches the titles of the current top 5 Hacker News \
+         stories (GET https://hacker-news.firebaseio.com/v0/topstories.json for \
+         the ids, then https://hacker-news.firebaseio.com/v0/item/<id>.json for \
+         each title) and sends them to me in a single message that starts with \
+         'HN TOP 5'. Then schedule that tool to run once, 5 seconds from now.",
+    );
+
+    bus.publish(Event::MessageIn {
+        channel: "tui".to_string(),
+        sender: Sender::User,
+        address: ChannelAddress {
+            channel: "tui".to_string(),
+            conversation_id: "live-test-hn".to_string(),
+            thread_id: None,
+        },
+        message,
+    });
+
+    let result = timeout(Duration::from_secs(120), async {
+        loop {
+            let event = events.recv().await.expect("bus closed");
+            if let Event::MessageOut { message, .. } = event {
+                let Message::Assistant {
+                    text: Some(content),
+                    ..
+                } = message
+                else {
+                    continue;
+                };
+                eprintln!("[live_test] MessageOut: {content}");
+                if content.trim_start().starts_with("HN TOP 5") && content.len() > 40 {
+                    return;
+                }
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "timed out: the HN TOP 5 message never arrived within 120 s"
     );
 }
 

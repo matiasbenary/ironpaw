@@ -76,7 +76,7 @@ pub struct ImageGenerationParams {
 
 #[async_trait]
 impl InternalTool for ImageGenerationTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "image_generation"
     }
 
@@ -87,7 +87,11 @@ impl InternalTool for ImageGenerationTool {
         )
     }
 
-    async fn execute(&self, _args: serde_json::Value) -> Result<ToolOutput, String> {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &crate::tools::ToolContext,
+    ) -> Result<ToolOutput, String> {
         #[allow(unreachable_code)]
         let params: ImageGenerationParams =
             serde_json::from_value(_args).map_err(|err| err.to_string())?;

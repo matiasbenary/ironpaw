@@ -13,7 +13,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct AiInferenceRequest {
+pub struct RawInferenceRequest {
     #[serde(default = "models::text_model")]
     pub model: String,
     pub messages: Vec<Message>,
@@ -23,9 +23,9 @@ pub struct AiInferenceRequest {
     pub parallel_tool_calls: bool,
 }
 
-impl JsonSchema for AiInferenceRequest {
+impl JsonSchema for RawInferenceRequest {
     fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("AiInferenceRequest")
+        Cow::Borrowed("RawInferenceRequest")
     }
 
     fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
@@ -51,18 +51,18 @@ impl JsonSchema for AiInferenceRequest {
             "required": ["messages"],
             "additionalProperties": false
         }))
-        .expect("ai_inference schema should be valid")
+        .expect("raw_inference schema should be valid")
     }
 }
 
 #[derive(Clone)]
-pub struct AiInferenceTool {
+pub struct RawInferenceTool {
     client: Client,
     near_api_key: String,
     base_url: String,
 }
 
-impl AiInferenceTool {
+impl RawInferenceTool {
     pub fn new(near_api_key: String) -> Result<Self, HttpError> {
         let client = Client::builder()
             .timeout(Duration::from_secs(env_timeout_secs(
@@ -87,7 +87,7 @@ impl AiInferenceTool {
         )
     }
 
-    pub async fn execute(&self, request: AiInferenceRequest) -> Result<Message, String> {
+    pub async fn execute(&self, request: RawInferenceRequest) -> Result<Message, String> {
         log_entry("request", &request);
         let chat_request = self.chat_request(&request)?;
         log_entry("chat request", &chat_request);
@@ -120,7 +120,7 @@ impl AiInferenceTool {
         response_to_message(response)
     }
 
-    fn chat_request(&self, request: &AiInferenceRequest) -> Result<serde_json::Value, String> {
+    fn chat_request(&self, request: &RawInferenceRequest) -> Result<serde_json::Value, String> {
         let tools = if request.tools.is_empty() {
             None
         } else {
@@ -325,21 +325,27 @@ fn user_text_with_attachment_hints(text: &str, attachments: &[Attachment]) -> St
 }
 
 #[async_trait]
-impl InternalTool for AiInferenceTool {
-    fn name(&self) -> &'static str {
-        "ai_inference"
+impl InternalTool for RawInferenceTool {
+    fn name(&self) -> &str {
+        "raw_inference"
     }
 
     fn tool_definition(&self) -> crate::message::ToolDefinition {
-        tools::tool_definition::<AiInferenceRequest>(
+        tools::tool_definition::<RawInferenceRequest>(
             self.name(),
-            "Call the configured model with Warden-native messages.",
+            "Call a model directly with Warden-native messages: one completion, \
+             no history, no tool execution. Use it to delegate a task to a \
+             specific model (e.g. a vision or audio model).",
         )
     }
 
-    async fn execute(&self, args: serde_json::Value) -> Result<tools::ToolOutput, String> {
-        tools::execute_typed(args, |request: AiInferenceRequest| async {
-            AiInferenceTool::execute(self, request).await
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &tools::ToolContext,
+    ) -> Result<tools::ToolOutput, String> {
+        tools::execute_typed(args, |request: RawInferenceRequest| async {
+            RawInferenceTool::execute(self, request).await
         })
         .await
         .map(tools::ToolOutput::json)

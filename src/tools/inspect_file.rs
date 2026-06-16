@@ -9,20 +9,20 @@ use crate::{
     models,
     tools::{
         self, InternalTool, ToolOutput,
-        ai_inference::{AiInferenceRequest, AiInferenceTool},
+        raw_inference::{RawInferenceRequest, RawInferenceTool},
     },
 };
 
 pub struct InspectFileTool {
     files_dir: PathBuf,
-    ai_inference: AiInferenceTool,
+    raw_inference: RawInferenceTool,
 }
 
 impl InspectFileTool {
-    pub fn new(files_dir: PathBuf, ai_inference: AiInferenceTool) -> Self {
+    pub fn new(files_dir: PathBuf, raw_inference: RawInferenceTool) -> Self {
         Self {
             files_dir,
-            ai_inference,
+            raw_inference,
         }
     }
 }
@@ -61,7 +61,7 @@ impl JsonSchema for InspectFileParams {
 
 #[async_trait]
 impl InternalTool for InspectFileTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "inspect_file"
     }
 
@@ -72,7 +72,11 @@ impl InternalTool for InspectFileTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &crate::tools::ToolContext,
+    ) -> Result<ToolOutput, String> {
         let params: InspectFileParams = serde_json::from_value(args).map_err(|e| e.to_string())?;
 
         let attachment = Attachment::from_file_id(&self.files_dir, params.file_id)?;
@@ -135,8 +139,8 @@ impl InspectFileTool {
 
     async fn call_model(&self, model: String, input: Vec<Message>) -> Result<String, String> {
         let response = self
-            .ai_inference
-            .execute(AiInferenceRequest {
+            .raw_inference
+            .execute(RawInferenceRequest {
                 model,
                 messages: input,
                 tools: Vec::new(),

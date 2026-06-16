@@ -7,6 +7,7 @@ The current implementation is intentionally small, and is composed by:
 - `Channels`: WASM components that allow messages to flow from and towards the outside world.
 - An `AI Engine`, which reacts to incoming messages and runs them through an LLM with access to tools.
 - A small set of internal `Tools` exposed both to the LLM and system components.
+- The capability to create `Dynamic Tools` at runtime, which are `quickjs` scripts that can combine other existing tools
 - A `Bus` that all components use to interact with each-other by publishing and subscribing to typed events.
 - A `secrets` system for storing and handling credentials (e.g. the NEAR API key used by `ai_inference`).
 
@@ -146,6 +147,9 @@ The memory module exposes 4 methods:
 
 ## Tools
 
+In Warden we currently distinguish between two types of tools: internal tools and dynamic ones.
+
+### Internal Tools
 Internal tools are async and model-callable. Every internal tool exposes:
 
 - `name()`
@@ -177,6 +181,13 @@ Implemented internal tools:
 credential handling centralized.
 
 `send_message` publishes `Event::MessageOut` with a Warden `Message`. If no explicit channel address is provided, the channel bridge can use that channel's stored `default_address`.
+
+### Dynamic Tools
+
+In order to allow the LLM to implement simple scripts, we added the `create_tool` tool, that allows the LLM to write `quickjs` scripts, that are then executed. 
+
+These scripts should be stored as `.qjs` files in the `tools` directory, and should expose which https endpoints they are allowed to call.
+
 
 ## HTTP And Secrets
 
@@ -318,14 +329,16 @@ The implemented system is enough for the current MVP, but these pieces are still
 
 ### Automations
 
-`CronTick` exists as a bus event, but there is no scheduler, automation data model, automation storage, or automation executor yet.
+An `automation` is simply a small program that reacts to an event (be it scheduled or a world event) and executes a single call of a `Tool`.
 
-The missing shape is roughly:
+There are two main types of automations, those that react to `cron` events (i.e. scheduled events), and those that react to `events` (for now, only the `MessageIn` event).
 
-- store declarative automations
-- trigger them from cron or bus events
-- execute actions through the same tool runtime
-- allow the AI engine to create/manage them through tools
+By triggering tools, we enable `warden` to decide if it needs to use the LLM to process the `automation` or not. 
+
+For example, by default all user messages trigger the `ai engine` tool, which means that the LLM will be called to handle the message and answer the user back.
+
+However, we added a test that showcases how `warden` can create a `tool` (using the `create_tool` tool) to fetch the 5 top stories from Hacker News and send them to the user, without calling the LLM at all. This makes sense, as "fetching top stories from HN" is a simple task that can be scripted once and repeated forever, without needing the LLM to figure out how to do it every single time.
+
 
 ### Channel Management CLI
 

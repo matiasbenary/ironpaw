@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
     message::{Attachment, Message},
-    tools::{self, InternalTool},
+    tools::{self, InternalTool, ToolContext},
 };
 
 type AttachmentResolver = Arc<dyn Fn(u32) -> Result<Attachment, String> + Send + Sync>;
@@ -53,20 +53,28 @@ impl SendMessageTool {
 
 #[async_trait]
 impl InternalTool for SendMessageTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "send_message"
     }
 
     fn tool_definition(&self) -> crate::message::ToolDefinition {
         tools::tool_definition::<SendMessageToolInput>(
             self.name(),
-            "Send a message to the user through one of Warden's channels.",
+            "Send a message to the user through one of Warden's channels. \
+             Use this only to reach a different channel or conversation than \
+             the current one, or to deliver a file: your final reply is \
+             delivered to the current conversation automatically.",
         )
     }
 
-    async fn execute(&self, args: serde_json::Value) -> Result<tools::ToolOutput, String> {
-        let input: SendMessageToolInput =
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<tools::ToolOutput, String> {
+        let mut input: SendMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
+        input.fill_current_destination(ctx);
         let output = SendMessageTool::execute(self, input).await?;
         Ok(tools::ToolOutput::json(
             serde_json::to_value(output).map_err(|err| err.to_string())?,
@@ -102,6 +110,26 @@ pub struct SendMessageToolInput {
     pub thread_id: Option<String>,
 }
 
+impl SendMessageToolInput {
+    /// When the model names no channel, reply in the conversation the
+    /// current run was triggered from.
+    fn fill_current_destination(&mut self, ctx: &ToolContext) {
+        if self.channel.is_some() {
+            return;
+        }
+        let Some((channel, address)) = &ctx.destination else {
+            return;
+        };
+        self.channel = Some(channel.clone());
+        if self.conversation_id.is_none() {
+            self.conversation_id = Some(address.conversation_id.clone());
+        }
+        if self.thread_id.is_none() {
+            self.thread_id = address.thread_id.clone();
+        }
+    }
+}
+
 fn message_address(
     channel: &str,
     conversation_id: Option<String>,
@@ -118,4 +146,74 @@ fn message_address(
 pub struct SendMessageOutput {
     ok: bool,
     channel: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input(args: serde_json::Value) -> SendMessageToolInput {
+        serde_json::from_value(args).expect("valid input")
+    }
+
+    fn tui_context() -> ToolContext {
+        ToolContext {
+            destination: Some((
+                "telegram".to_string(),
+                ChannelAddress {
+                    channel: "telegram".to_string(),
+                    conversation_id: "123".to_string(),
+                    thread_id: Some("456".to_string()),
+                },
+            )),
+            conversation_id: Some("123".to_string()),
+            ..ToolContext::default()
+        }
+    }
+
+    #[test]
+    fn explicit_channel_is_left_untouched() {
+        let mut input = input(serde_json::json!({
+            "channel": "telegram",
+            "content": "hi"
+        }));
+
+        input.fill_current_destination(&ToolContext {
+            destination: Some((
+                "tui".to_string(),
+                ChannelAddress {
+                    channel: "tui".to_string(),
+                    conversation_id: "http://127.0.0.1:60684".to_string(),
+                    thread_id: None,
+                },
+            )),
+            conversation_id: None,
+            ..ToolContext::default()
+        });
+
+        assert_eq!(input.channel.as_deref(), Some("telegram"));
+        assert!(input.conversation_id.is_none());
+        assert!(input.thread_id.is_none());
+    }
+
+    #[test]
+    fn omitted_channel_defaults_to_current_conversation() {
+        let mut input = input(serde_json::json!({ "content": "hi" }));
+
+        input.fill_current_destination(&tui_context());
+
+        assert_eq!(input.channel.as_deref(), Some("telegram"));
+        assert_eq!(input.conversation_id.as_deref(), Some("123"));
+        assert_eq!(input.thread_id.as_deref(), Some("456"));
+    }
+
+    #[test]
+    fn detached_context_fills_nothing() {
+        let mut input = input(serde_json::json!({ "content": "hi" }));
+
+        input.fill_current_destination(&ToolContext::default());
+
+        assert!(input.channel.is_none());
+        assert!(input.conversation_id.is_none());
+    }
 }

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::tools::{self, InternalTool, ToolOutput};
+use crate::tools::{self, InternalTool, ToolContext, ToolOutput};
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -31,10 +31,6 @@ pub struct TodoItem {
 struct TodoInput {
     /// The complete, updated todo list for this session.
     todos: Vec<TodoItem>,
-    /// Injected by the engine — not part of the model schema.
-    #[serde(default)]
-    #[schemars(skip)]
-    pub conversation_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -52,7 +48,7 @@ impl TodoTool {
 
 #[async_trait]
 impl InternalTool for TodoTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "todo"
     }
 
@@ -68,10 +64,15 @@ impl InternalTool for TodoTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value) -> Result<ToolOutput, String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, String> {
         let input: TodoInput = serde_json::from_value(args).map_err(|e| e.to_string())?;
-        let key = input
+        let key = ctx
             .conversation_id
+            .clone()
             .unwrap_or_else(|| "default".to_string());
 
         let mut state = self.state.lock().unwrap();
