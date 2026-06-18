@@ -11,6 +11,7 @@ pub mod raw_inference;
 pub mod send_message;
 pub mod todo;
 pub mod web_fetch;
+pub mod web_search;
 
 use std::sync::{Arc, RwLock};
 
@@ -24,7 +25,7 @@ use self::{
     image_generation::ImageGenerationTool, inspect_automation::InspectAutomationTool,
     inspect_file::InspectFileTool, list_automations::ListAutomationsTool,
     raw_inference::RawInferenceTool, send_message::SendMessageTool, todo::TodoTool,
-    web_fetch::WebFetchTool,
+    web_fetch::WebFetchTool, web_search::WebSearchTool,
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can
@@ -93,6 +94,7 @@ impl InternalTools {
         let list_automations = Arc::new(ListAutomationsTool::new());
         let create_tool = Arc::new(CreateToolTool::new());
         let web_fetch = Arc::new(WebFetchTool::new());
+        let web_search = Arc::new(WebSearchTool::new(std::env::var("BRAVE_SEARCH_API").ok()));
         Self {
             raw_inference: raw_inference.clone(),
             send_message: Arc::clone(&send_message),
@@ -116,6 +118,7 @@ impl InternalTools {
                 list_automations,
                 create_tool,
                 web_fetch,
+                web_search,
             ]),
         }
     }
