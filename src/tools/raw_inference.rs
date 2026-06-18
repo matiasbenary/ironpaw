@@ -58,12 +58,11 @@ impl JsonSchema for RawInferenceRequest {
 #[derive(Clone)]
 pub struct RawInferenceTool {
     client: Client,
-    near_api_key: String,
     base_url: String,
 }
 
 impl RawInferenceTool {
-    pub fn new(near_api_key: String) -> Result<Self, HttpError> {
+    pub fn new() -> Result<Self, HttpError> {
         let client = Client::builder()
             .timeout(Duration::from_secs(env_timeout_secs(
                 "NEAR_CHAT_TIMEOUT_SECS",
@@ -74,7 +73,6 @@ impl RawInferenceTool {
 
         Ok(Self {
             client,
-            near_api_key,
             base_url: std::env::var("NEAR_BASE_URL")
                 .unwrap_or_else(|_| "https://cloud-api.near.ai".to_string()),
         })
@@ -88,6 +86,8 @@ impl RawInferenceTool {
     }
 
     pub async fn execute(&self, request: RawInferenceRequest) -> Result<Message, String> {
+        let near_api_key =
+            std::env::var("NEAR_API_KEY").map_err(|_| "missing tool secret: NEAR_API_KEY")?;
         log_entry("request", &request);
         let chat_request = self.chat_request(&request)?;
         log_entry("chat request", &chat_request);
@@ -95,7 +95,7 @@ impl RawInferenceTool {
         let response = self
             .client
             .post(self.chat_completions_url())
-            .bearer_auth(&self.near_api_key)
+            .bearer_auth(near_api_key)
             .json(&chat_request)
             .send()
             .await

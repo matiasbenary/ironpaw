@@ -118,7 +118,7 @@ Examples: Terminal UI, Telegram, Discord, HTTP webhooks.
 <summary> A note on the TUI </summary>
 Terminal UI being at the same level as Telegram/Discord means the TUI
 doesn't need to start when `warden` starts. `warden` is a long-running
-process; `warden tui` is a separate command that connects to it.
+process; the TUI is just one client/channel that connects to it.
 <details>
 
 Channels are implemented as **WASM modules** (Rust compiled to WASM).
@@ -256,9 +256,9 @@ A shell tool is a real binary running as a child process, invoked via
 a restricted `shell(cmd, args...)` interface (argv-only — no shell
 metacharacters, no command substitution, no piping at the shell layer).
 
-Use shell tools for things where running a real CLI is genuinely the
-right answer (`rg`, `jq`, `git log`, local file inspection, and the
-occasional CLI that has no usable HTTP equivalent).
+Use shell tools for local binaries that are genuinely the right execution
+surface (`rg`, `jq`, `git log`, local file inspection, and local utilities
+that have no usable HTTP equivalent).
 
 **Installing a shell tool:**
 
@@ -447,13 +447,12 @@ runs:
 On subsequent starts, `warden` prompts for the passphrase, unlocks the
 store, and runs as a background process.
 
-The TUI is a separate command (`warden tui`) that connects to the
-running process. Users can run it, close it, and reconnect at will
-without affecting cron automations or active channels.
+The TUI is one possible channel/client that connects to the running process.
+Users can open it, close it, and reconnect at will without affecting cron
+automations or active channels.
 
-If the user wants to connect a new channel (e.g. Telegram), they run
-`warden channels install telegram`, which triggers an interactive setup
-for that channel (e.g. asks for the Telegram bot token).
+If the user wants to connect a new channel (e.g. Telegram), Warden should guide
+that setup through chat-visible onboarding/tool flows.
 
 The same conversation thread is shared across channels: starting a chat
 in Telegram and continuing in the TUI works seamlessly because the AI
@@ -467,7 +466,7 @@ Engine has memory per-User, not per-channel.
 2. A NON-AI module requests for the passphrase, derives the encryption key, and unlocks the secret store.
 3. If the API for NEAR AI is missing, we prompt the user to enter it and save it in the secret store.
 4. The main modules (Bus, AI Engine, Automation Executor) start up and subscribe to the bus.
-5. The user opens `./warden tui` in another terminal. The TUI connects to the main process and subscribes to the bus.
+5. The user opens any configured channel/client. The channel connects to the main process and subscribes to the bus.
 6. The user types "hello" in the TUI. The TUI publishes `message_in { channel: "tui", sender: User, payload: "hello" }` to the bus.
 7. The AI Engine is subscribed to `message_in` events. It receives the event, sees it's from the User, and decides to process it.
 8. The AI Engine calls the LLM using the `ai_inference` tool, which is an http tool that use the NEAR AI key, which is injected at the boundary by the HTTP Processor (Proxy?).
@@ -486,32 +485,15 @@ Engine has memory per-User, not per-channel.
 
 ## Main Interface
 
-`warden` is the main process. It starts the background service. The TUI
-is a separate command that connects to it. We can use `warden` itself to
-log everything during early development.
+`warden` is the local agent runtime. It starts the bus, channels, tools, and
+automation executor. User-facing setup and management should happen through
+channels and tools.
 
-```
-warden                                # run the background service
-warden tui                            # attach the terminal UI
+Expected management flows:
 
-warden channels
-    list                              # list installed channels
-    install [channel]                 # install a channel (telegram, discord, ...)
-    remove  [channel]                 # remove a channel
-
-warden tools
-    list                              # list installed tools
-    install [tool]                    # install a tool from the registry
-    auth    [tool]                    # authenticate a tool (e.g. github)
-    remove  [tool]                    # remove a tool
-
-warden automations
-    list                              # list automations
-    remove  [automation]              # remove an automation
-                                      # note: automations are created
-                                      # by the LLM during conversation,
-                                      # not via this CLI
-```
+- Channels: list, install, configure, authenticate, and remove through chat.
+- Tools: list, install, update, authenticate, and remove through chat.
+- Automations: create, inspect, update, and delete through chat-visible tools.
 
 ---
 

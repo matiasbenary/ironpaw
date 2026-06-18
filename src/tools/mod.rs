@@ -7,6 +7,7 @@ pub mod image_generation;
 pub mod inspect_automation;
 pub mod inspect_file;
 pub mod list_automations;
+pub mod onboarding;
 pub mod raw_inference;
 pub mod send_message;
 pub mod todo;
@@ -24,8 +25,8 @@ use self::{
     create_tool::CreateToolTool, delete_automation::DeleteAutomationTool,
     image_generation::ImageGenerationTool, inspect_automation::InspectAutomationTool,
     inspect_file::InspectFileTool, list_automations::ListAutomationsTool,
-    raw_inference::RawInferenceTool, send_message::SendMessageTool, todo::TodoTool,
-    web_fetch::WebFetchTool, web_search::WebSearchTool,
+    onboarding::OnboardingTool, raw_inference::RawInferenceTool, send_message::SendMessageTool,
+    todo::TodoTool, web_fetch::WebFetchTool, web_search::WebSearchTool,
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can
@@ -70,6 +71,7 @@ pub struct InternalTools {
     pub delete_automation: Arc<DeleteAutomationTool>,
     pub inspect_automation: Arc<InspectAutomationTool>,
     pub list_automations: Arc<ListAutomationsTool>,
+    pub onboarding: Arc<OnboardingTool>,
     pub create_tool: Arc<CreateToolTool>,
     pub history: Arc<dyn History>,
     tools: RwLock<Vec<Arc<dyn InternalTool>>>,
@@ -79,12 +81,11 @@ impl InternalTools {
     pub fn new(
         raw_inference: RawInferenceTool,
         send_message: SendMessageTool,
-        near_api_key: String,
         files_dir: std::path::PathBuf,
         history: Arc<dyn History>,
     ) -> Self {
         let send_message = Arc::new(send_message);
-        let image_generation = Arc::new(ImageGenerationTool::new(near_api_key, files_dir.clone()));
+        let image_generation = Arc::new(ImageGenerationTool::new(files_dir.clone()));
         let inspect_file = Arc::new(InspectFileTool::new(files_dir, raw_inference.clone()));
         let todo = Arc::new(TodoTool::new());
         let call_agent = Arc::new(CallAgentTool::new());
@@ -92,9 +93,10 @@ impl InternalTools {
         let delete_automation = Arc::new(DeleteAutomationTool::new());
         let inspect_automation = Arc::new(InspectAutomationTool::new());
         let list_automations = Arc::new(ListAutomationsTool::new());
+        let onboarding = Arc::new(OnboardingTool::new());
         let create_tool = Arc::new(CreateToolTool::new());
         let web_fetch = Arc::new(WebFetchTool::new());
-        let web_search = Arc::new(WebSearchTool::new(std::env::var("BRAVE_SEARCH_API").ok()));
+        let web_search = Arc::new(WebSearchTool::new());
         Self {
             raw_inference: raw_inference.clone(),
             send_message: Arc::clone(&send_message),
@@ -103,6 +105,7 @@ impl InternalTools {
             delete_automation: Arc::clone(&delete_automation),
             inspect_automation: Arc::clone(&inspect_automation),
             list_automations: Arc::clone(&list_automations),
+            onboarding: Arc::clone(&onboarding),
             create_tool: Arc::clone(&create_tool),
             history,
             tools: RwLock::new(vec![
@@ -116,6 +119,7 @@ impl InternalTools {
                 delete_automation,
                 inspect_automation,
                 list_automations,
+                onboarding,
                 create_tool,
                 web_fetch,
                 web_search,
@@ -424,9 +428,8 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         InternalTools::new(
-            RawInferenceTool::new("test-key".to_string()).unwrap(),
+            RawInferenceTool::new().unwrap(),
             SendMessageTool::new(bus, |_| Err("no attachments".to_string())),
-            "test-key".to_string(),
             files_dir,
             Arc::new(crate::history::SqliteHistory::new(history).unwrap()),
         )

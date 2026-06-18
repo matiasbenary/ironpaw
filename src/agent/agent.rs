@@ -246,11 +246,10 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         InternalTools::new(
-            crate::tools::raw_inference::RawInferenceTool::new("test-key".to_string()).unwrap(),
+            crate::tools::raw_inference::RawInferenceTool::new().unwrap(),
             crate::tools::send_message::SendMessageTool::new(bus.clone(), |_| {
                 Err("unexpected attachment lookup".to_string())
             }),
-            "test-key".to_string(),
             files_dir,
             Arc::new(crate::history::SqliteHistory::new(history).unwrap()),
         )

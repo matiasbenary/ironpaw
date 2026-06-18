@@ -80,28 +80,22 @@ struct BraveThumbnail {
 
 pub struct WebSearchTool {
     client: Client,
-    brave_api_key: Option<String>,
 }
 
 impl WebSearchTool {
-    pub fn new(brave_api_key: Option<String>) -> Self {
+    pub fn new() -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("http client should build");
-        Self {
-            client,
-            brave_api_key,
-        }
+        Self { client }
     }
 
     async fn execute(&self, params: WebSearchParams) -> Result<WebSearchOutput, String> {
         validate_params(&params)?;
-        let api_key = self
-            .brave_api_key
-            .as_deref()
-            .ok_or_else(|| "missing tool secret: BRAVE_SEARCH_API".to_string())?;
+        let api_key = std::env::var("BRAVE_SEARCH_API")
+            .map_err(|_| "missing tool secret: BRAVE_SEARCH_API")?;
         let count = params.count.unwrap_or(DEFAULT_COUNT).clamp(1, MAX_COUNT);
         let url = build_search_url(&params, count)?;
 

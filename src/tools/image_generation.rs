@@ -12,20 +12,18 @@ use crate::{
 
 pub struct ImageGenerationTool {
     client: reqwest::Client,
-    near_api_key: String,
     base_url: String,
     model: String,
     files_dir: PathBuf,
 }
 
 impl ImageGenerationTool {
-    pub fn new(near_api_key: String, files_dir: PathBuf) -> Self {
+    pub fn new(files_dir: PathBuf) -> Self {
         Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(120))
                 .build()
                 .expect("image generation HTTP client"),
-            near_api_key,
             base_url: std::env::var("NEAR_BASE_URL")
                 .unwrap_or_else(|_| "https://cloud-api.near.ai".to_string()),
             model: models::image_model(),
@@ -34,6 +32,8 @@ impl ImageGenerationTool {
     }
 
     async fn generate(&self, prompt: &str) -> Result<String, String> {
+        let near_api_key =
+            std::env::var("NEAR_API_KEY").map_err(|_| "missing tool secret: NEAR_API_KEY")?;
         let url = format!(
             "{}/v1/images/generations",
             self.base_url.trim_end_matches('/')
@@ -47,7 +47,7 @@ impl ImageGenerationTool {
         let response = self
             .client
             .post(&url)
-            .bearer_auth(&self.near_api_key)
+            .bearer_auth(near_api_key)
             .json(&body)
             .send()
             .await

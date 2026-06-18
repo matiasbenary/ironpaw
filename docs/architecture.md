@@ -192,6 +192,7 @@ TODO:
 
 - Store each dynamic tool with an explicit capability manifest next to its script: version, description, parameter schema, allowed tool calls, and allowed outbound HTTPS endpoints.
 - Decide the dynamic-tool lifecycle model for direct file edits: source of truth, update/delete semantics, startup discovery, and whether runtime reload/file watching is needed.
+- Decide whether some built-in/internal tools should eventually move to packaged WASM tools with declared capabilities and secret requirements.
 
 
 ## HTTP And Secrets
@@ -226,6 +227,9 @@ TODO:
 
 - Connect dynamic-tool endpoint allowlists to the HTTP boundary so scripts can only call declared public HTTPS hosts.
 - Add durable tool/automation execution audit logs.
+- Replace plaintext `.env` secret storage with an encrypted local store or OS keychain-backed secret store.
+- Add a key reconfiguration flow for rotating or replacing `NEAR_API_KEY` and `BRAVE_SEARCH_API` after onboarding.
+- Add channel-level message deletion/redaction so pasted setup secrets can be removed from frontends after capture.
 
 Channels use this through the WASM host HTTP imports. The internal
 `ai_inference` tool is trusted code and directly owns the NEAR API key supplied
@@ -353,17 +357,27 @@ For example, by default all user messages trigger the `ai engine` tool, which me
 
 However, we added a test that showcases how `warden` can create a `tool` (using the `create_tool` tool) to fetch the 5 top stories from Hacker News and send them to the user, without calling the LLM at all. This makes sense, as "fetching top stories from HN" is a simple task that can be scripted once and repeated forever, without needing the LLM to figure out how to do it every single time.
 
+On a fresh install with no stored automations, Warden installs an in-memory
+`onboarding` automation instead of the normal `answer-the-user` automation
+when required API keys are missing. The onboarding tool asks for `NEAR_API_KEY`
+and `BRAVE_SEARCH_API`, writes them to `.env` for the current MVP, tests
+`raw_inference` and `web_search`, then removes itself and installs
+`answer-the-user`. If Warden restarts halfway through onboarding, the flow
+starts over from the first prompt.
 
-### Channel Management CLI
 
-There is no `warden channel` command yet. Channel installation and configuration are still manual.
+### Channel And Tool Management
+
+Channel installation and configuration are still manual. Setup should happen
+through onboarding, channels, and tools exposed inside the agent runtime.
 
 Expected future work:
 
-- install a channel
+- install a channel through chat/onboarding
 - copy/build the channel WASM into the runtime `channels` directory
 - create or update `<channel>.config.json`
 - guide Telegram setup, including owner id, bot token secret, webhook secret, and ngrok settings
+- install, update, authenticate, and remove tools through chat-visible tool flows
 
 ### Better Config UX
 

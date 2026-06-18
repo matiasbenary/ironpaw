@@ -43,6 +43,11 @@ fn start_warden(bus: &Bus, tools: InternalTools) -> tokio::task::JoinHandle<()> 
     tools.delete_automation.bind(Arc::clone(&automations));
     tools.inspect_automation.bind(Arc::clone(&automations));
     tools.list_automations.bind(Arc::clone(&automations));
+    tools.onboarding.bind(
+        Arc::clone(&tools),
+        Arc::clone(&automations),
+        std::env::temp_dir().join(format!("warden-live-test-env-{}.env", uuid::Uuid::new_v4())),
+    );
     automations
         .add(Automations::answer_the_user())
         .expect("stock automation registers");
@@ -69,7 +74,7 @@ fn send_message_tool(bus: &Bus, files_dir: PathBuf) -> SendMessageTool {
 #[ignore = "live: makes real NEAR AI calls, requires NEAR_API_KEY env var"]
 async fn agent_replies_to_hi() {
     let _ = dotenvy::dotenv();
-    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
     let files_dir = std::env::temp_dir().join("warden-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
@@ -78,9 +83,8 @@ async fn agent_replies_to_hi() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
-        near_api_key,
         files_dir,
         temp_history(),
     );
@@ -134,7 +138,7 @@ async fn agent_replies_to_hi() {
 #[ignore = "live: makes real NEAR AI calls, requires NEAR_API_KEY env var"]
 async fn send_message_routes_to_telegram() {
     let _ = dotenvy::dotenv();
-    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
     let files_dir = std::env::temp_dir().join("warden-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
@@ -143,9 +147,8 @@ async fn send_message_routes_to_telegram() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
-        near_api_key,
         files_dir.clone(),
         temp_history(),
     );
@@ -195,7 +198,7 @@ async fn send_message_routes_to_telegram() {
 #[ignore = "live: makes real NEAR AI calls, requires NEAR_API_KEY env var"]
 async fn image_generation_routes_to_telegram() {
     let _ = dotenvy::dotenv();
-    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
     // Temp dir with a stub image the mock generator will serve.
     let files_dir = std::env::temp_dir().join("warden-live-test-files");
@@ -206,9 +209,8 @@ async fn image_generation_routes_to_telegram() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
-        near_api_key,
         files_dir.clone(),
         temp_history(),
     );
@@ -268,7 +270,7 @@ async fn image_generation_routes_to_telegram() {
 #[ignore = "live: makes real NEAR AI calls, requires NEAR_API_KEY env var"]
 async fn agent_reads_pdf_content() {
     let _ = dotenvy::dotenv();
-    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
     let files_dir = std::env::temp_dir().join("warden-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
@@ -277,9 +279,8 @@ async fn agent_reads_pdf_content() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
-        near_api_key,
         files_dir.clone(),
         temp_history(),
     );
@@ -360,7 +361,7 @@ async fn agent_reads_pdf_content() {
 #[ignore = "live: makes real NEAR AI calls, requires NEAR_API_KEY env var"]
 async fn agent_identifies_dog_image() {
     let _ = dotenvy::dotenv();
-    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
     let files_dir = std::env::temp_dir().join("warden-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
@@ -369,9 +370,8 @@ async fn agent_identifies_dog_image() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
-        near_api_key,
         files_dir.clone(),
         temp_history(),
     );
@@ -446,7 +446,7 @@ async fn agent_identifies_dog_image() {
 #[ignore = "live: makes real NEAR AI calls and requires BRAVE_SEARCH_API env var"]
 async fn agent_uses_web_search_for_wikipedia() {
     let _ = dotenvy::dotenv();
-    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
     std::env::var("BRAVE_SEARCH_API").expect("BRAVE_SEARCH_API must be set");
 
     let files_dir = std::env::temp_dir().join("warden-live-test-files");
@@ -456,9 +456,8 @@ async fn agent_uses_web_search_for_wikipedia() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
-        near_api_key,
         files_dir,
         temp_history(),
     );
@@ -522,7 +521,7 @@ async fn agent_uses_web_search_for_wikipedia() {
 #[ignore = "live: makes real NEAR AI calls, requires NEAR_API_KEY env var"]
 async fn delayed_message_automation() {
     let _ = dotenvy::dotenv();
-    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
     let files_dir = std::env::temp_dir().join("warden-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
@@ -531,9 +530,8 @@ async fn delayed_message_automation() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
-        near_api_key,
         files_dir,
         temp_history(),
     );
@@ -591,7 +589,7 @@ async fn delayed_message_automation() {
 #[ignore = "live: makes real NEAR AI calls, requires NEAR_API_KEY env var"]
 async fn scheduled_message_at_wall_clock_time() {
     let _ = dotenvy::dotenv();
-    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
     let files_dir = std::env::temp_dir().join("warden-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
@@ -600,9 +598,8 @@ async fn scheduled_message_at_wall_clock_time() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
-        near_api_key,
         files_dir,
         temp_history(),
     );
@@ -662,7 +659,7 @@ async fn scheduled_message_at_wall_clock_time() {
 #[ignore = "live: makes real NEAR AI calls and fetches hacker-news.firebaseio.com"]
 async fn hacker_news_automation() {
     let _ = dotenvy::dotenv();
-    let near_api_key = std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
     let files_dir = std::env::temp_dir().join("warden-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
@@ -671,9 +668,8 @@ async fn hacker_news_automation() {
     let mut events = bus.subscribe();
 
     let tools = InternalTools::new(
-        RawInferenceTool::new(near_api_key.clone()).unwrap(),
+        RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
-        near_api_key,
         files_dir,
         temp_history(),
     );

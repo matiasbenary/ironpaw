@@ -135,9 +135,8 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let tools = Arc::new(InternalTools::new(
-            RawInferenceTool::new("test-key".to_string()).unwrap(),
+            RawInferenceTool::new().unwrap(),
             SendMessageTool::new(bus, |_| Err("no attachments".to_string())),
-            "test-key".to_string(),
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
         ));

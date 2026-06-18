@@ -22,20 +22,27 @@ async fn main() -> std::io::Result<()> {
     let secrets = Secrets::load(&layout);
 
     let bus = Bus::new(16);
-    let near_api_key = secrets
+    let setup_complete = secrets
         .tools
         .get("NEAR_API_KEY")
-        .ok_or_else(|| std::io::Error::other("missing tool secret: NEAR_API_KEY"))?;
+        .is_some_and(|value| !value.trim().is_empty())
+        && secrets
+            .tools
+            .get("BRAVE_SEARCH_API")
+            .is_some_and(|value| !value.trim().is_empty());
+    let env_path = secrets
+        .loaded_env()
+        .cloned()
+        .unwrap_or_else(|| layout.root().join(".env"));
     let history = Arc::new(
         SqliteHistory::new(layout.data_dir().join("history.db")).map_err(std::io::Error::other)?,
     );
     let tools = Arc::new(InternalTools::new(
-        RawInferenceTool::new(near_api_key.clone()).map_err(std::io::Error::other)?,
+        RawInferenceTool::new().map_err(std::io::Error::other)?,
         SendMessageTool::new(bus.clone(), {
             let files_dir = layout.files_dir();
             move |file_id| Attachment::from_file_id(&files_dir, file_id)
         }),
-        near_api_key.clone(),
         layout.files_dir(),
         history,
     ));
@@ -66,10 +73,21 @@ async fn main() -> std::io::Result<()> {
     tools.delete_automation.bind(Arc::clone(&automations));
     tools.inspect_automation.bind(Arc::clone(&automations));
     tools.list_automations.bind(Arc::clone(&automations));
-    automations
-        .add(Automations::answer_the_user())
-        .map_err(std::io::Error::other)?;
-    automations.load_stored().map_err(std::io::Error::other)?;
+    tools
+        .onboarding
+        .bind(Arc::clone(&tools), Arc::clone(&automations), env_path);
+    let stored_count = automations.load_stored().map_err(std::io::Error::other)?;
+    if stored_count == 0 {
+        if setup_complete {
+            automations
+                .add(Automations::answer_the_user())
+                .map_err(std::io::Error::other)?;
+        } else {
+            automations
+                .add(warden::tools::onboarding::OnboardingTool::automation())
+                .map_err(std::io::Error::other)?;
+        }
+    }
     let _automations_task = automations.start();
 
     let token = uuid::Uuid::new_v4().to_string();
