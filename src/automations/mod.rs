@@ -24,6 +24,15 @@ pub struct Automation {
     pub args: serde_json::Value,
 }
 
+#[derive(serde::Serialize)]
+pub struct AutomationInfo {
+    pub name: String,
+    pub enabled: bool,
+    pub trigger: serde_json::Value,
+    pub tool: String,
+    pub args: serde_json::Value,
+}
+
 #[derive(Clone)]
 pub enum Trigger {
     /// Recurring, standard cron expression, evaluated in local time.
@@ -170,6 +179,29 @@ impl Automations {
         Ok(())
     }
 
+    pub fn list(&self) -> Vec<AutomationInfo> {
+        self.automations
+            .read()
+            .expect("automations lock")
+            .iter()
+            .map(|automation| automation_info(automation))
+            .collect()
+    }
+
+    pub fn inspect(&self, name: &str) -> Result<AutomationInfo, String> {
+        self.automations
+            .read()
+            .expect("automations lock")
+            .iter()
+            .find(|automation| automation.name == name)
+            .map(|automation| automation_info(automation))
+            .ok_or_else(|| format!("unknown automation: {name}"))
+    }
+
+    pub fn validate_tool_call(&self, tool: &str, args: &serde_json::Value) -> Result<(), String> {
+        self.tools.validate_args_for_tool(tool, args)
+    }
+
     fn add_runtime(self: &Arc<Self>, automation: Automation) -> Result<(), String> {
         self.ensure_unique_name(&automation.name)?;
         let automation = Arc::new(automation);
@@ -307,6 +339,34 @@ impl Automations {
                     .unwrap_or("unknown error")
             );
         }
+    }
+}
+
+fn automation_info(automation: &Automation) -> AutomationInfo {
+    AutomationInfo {
+        name: automation.name.clone(),
+        enabled: automation.enabled,
+        trigger: trigger_json(&automation.trigger),
+        tool: automation.tool.clone(),
+        args: automation.args.clone(),
+    }
+}
+
+fn trigger_json(trigger: &Trigger) -> serde_json::Value {
+    match trigger {
+        Trigger::Cron { expression, .. } => serde_json::json!({
+            "type": "cron",
+            "expression": expression,
+        }),
+        Trigger::At { datetime } => serde_json::json!({
+            "type": "at",
+            "datetime": datetime.to_rfc3339(),
+        }),
+        Trigger::Event { sender, channel } => serde_json::json!({
+            "type": "event",
+            "sender": sender,
+            "channel": channel,
+        }),
     }
 }
 

@@ -64,6 +64,8 @@ async fn main() -> std::io::Result<()> {
     ));
     tools.create_automation.bind(Arc::clone(&automations));
     tools.delete_automation.bind(Arc::clone(&automations));
+    tools.inspect_automation.bind(Arc::clone(&automations));
+    tools.list_automations.bind(Arc::clone(&automations));
     automations
         .add(Automations::answer_the_user())
         .map_err(std::io::Error::other)?;

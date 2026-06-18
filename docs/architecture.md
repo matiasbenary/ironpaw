@@ -188,6 +188,11 @@ In order to allow the LLM to implement simple scripts, we added the `create_tool
 
 These scripts should be stored as `.qjs` files in the `tools` directory, and should expose which https endpoints they are allowed to call.
 
+TODO:
+
+- Store each dynamic tool with an explicit capability manifest next to its script: version, description, parameter schema, allowed tool calls, and allowed outbound HTTPS endpoints.
+- Decide the dynamic-tool lifecycle model for direct file edits: source of truth, update/delete semantics, startup discovery, and whether runtime reload/file watching is needed.
+
 
 ## HTTP And Secrets
 
@@ -212,6 +217,15 @@ secrets and tool code does not ask for channel secrets.
 - restricts non-loopback requests to configured hosts
 - injects credentials as headers or URL placeholder replacements
 - keeps secret lookup at the host boundary
+
+The generic `web_fetch` tool is read-only and unauthenticated. It rejects plain
+HTTP except localhost development URLs, rejects private/internal resolved IPs,
+and does not follow redirects.
+
+TODO:
+
+- Connect dynamic-tool endpoint allowlists to the HTTP boundary so scripts can only call declared public HTTPS hosts.
+- Add durable tool/automation execution audit logs.
 
 Channels use this through the WASM host HTTP imports. The internal
 `ai_inference` tool is trusted code and directly owns the NEAR API key supplied

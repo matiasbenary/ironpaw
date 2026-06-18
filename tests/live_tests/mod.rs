@@ -41,6 +41,8 @@ fn start_warden(bus: &Bus, tools: InternalTools) -> tokio::task::JoinHandle<()> 
     ));
     tools.create_automation.bind(Arc::clone(&automations));
     tools.delete_automation.bind(Arc::clone(&automations));
+    tools.inspect_automation.bind(Arc::clone(&automations));
+    tools.list_automations.bind(Arc::clone(&automations));
     automations
         .add(Automations::answer_the_user())
         .expect("stock automation registers");

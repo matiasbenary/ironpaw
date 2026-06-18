@@ -84,6 +84,7 @@ impl CreateAutomationTool {
                 .map_err(|err| format!("args must be a JSON object, got a string: {err}"))?,
             Some(value) => value,
         };
+        automations.validate_tool_call(&params.tool, &args)?;
         automations.add_persistent(Automation {
             name: params.name.clone(),
             enabled: true,

@@ -4,7 +4,9 @@ pub mod create_tool;
 pub mod delete_automation;
 pub mod dynamic;
 pub mod image_generation;
+pub mod inspect_automation;
 pub mod inspect_file;
+pub mod list_automations;
 pub mod raw_inference;
 pub mod send_message;
 pub mod todo;
@@ -19,7 +21,8 @@ use crate::{bus::ChannelAddress, history::History, message::ToolDefinition};
 use self::{
     call_agent::CallAgentTool, create_automation::CreateAutomationTool,
     create_tool::CreateToolTool, delete_automation::DeleteAutomationTool,
-    image_generation::ImageGenerationTool, inspect_file::InspectFileTool,
+    image_generation::ImageGenerationTool, inspect_automation::InspectAutomationTool,
+    inspect_file::InspectFileTool, list_automations::ListAutomationsTool,
     raw_inference::RawInferenceTool, send_message::SendMessageTool, todo::TodoTool,
     web_fetch::WebFetchTool,
 };
@@ -64,6 +67,8 @@ pub struct InternalTools {
     pub call_agent: Arc<CallAgentTool>,
     pub create_automation: Arc<CreateAutomationTool>,
     pub delete_automation: Arc<DeleteAutomationTool>,
+    pub inspect_automation: Arc<InspectAutomationTool>,
+    pub list_automations: Arc<ListAutomationsTool>,
     pub create_tool: Arc<CreateToolTool>,
     pub history: Arc<dyn History>,
     tools: RwLock<Vec<Arc<dyn InternalTool>>>,
@@ -84,6 +89,8 @@ impl InternalTools {
         let call_agent = Arc::new(CallAgentTool::new());
         let create_automation = Arc::new(CreateAutomationTool::new());
         let delete_automation = Arc::new(DeleteAutomationTool::new());
+        let inspect_automation = Arc::new(InspectAutomationTool::new());
+        let list_automations = Arc::new(ListAutomationsTool::new());
         let create_tool = Arc::new(CreateToolTool::new());
         let web_fetch = Arc::new(WebFetchTool::new());
         Self {
@@ -92,6 +99,8 @@ impl InternalTools {
             call_agent: Arc::clone(&call_agent),
             create_automation: Arc::clone(&create_automation),
             delete_automation: Arc::clone(&delete_automation),
+            inspect_automation: Arc::clone(&inspect_automation),
+            list_automations: Arc::clone(&list_automations),
             create_tool: Arc::clone(&create_tool),
             history,
             tools: RwLock::new(vec![
@@ -103,6 +112,8 @@ impl InternalTools {
                 call_agent,
                 create_automation,
                 delete_automation,
+                inspect_automation,
+                list_automations,
                 create_tool,
                 web_fetch,
             ]),
@@ -130,6 +141,20 @@ impl InternalTools {
             .expect("tools lock")
             .iter()
             .any(|tool| tool.name() == name)
+    }
+
+    pub fn validate_args_for_tool(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Result<(), String> {
+        let tool = self
+            .all()
+            .into_iter()
+            .find(|tool| tool.name() == name)
+            .ok_or_else(|| format!("unknown tool: {name}"))?;
+        validate_json_schema(args, &tool.tool_definition().parameters)
+            .map_err(|err| format!("invalid args for tool '{name}': {err}"))
     }
 }
 
@@ -240,11 +265,99 @@ fn sanitize_schema(value: &mut serde_json::Value) {
     }
 }
 
+fn validate_json_schema(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<(), String> {
+    if let Some(types) = schema.get("type").and_then(|value| value.as_array()) {
+        if types
+            .iter()
+            .any(|schema_type| validate_type(value, schema_type.as_str().unwrap_or("")).is_ok())
+        {
+            return Ok(());
+        }
+        return Err(format!("expected one of {types:?}"));
+    }
+
+    if let Some(schema_type) = schema.get("type").and_then(|value| value.as_str()) {
+        validate_type(value, schema_type)?;
+    }
+
+    match value {
+        serde_json::Value::Object(object) => validate_object(object, schema),
+        serde_json::Value::Array(items) => {
+            if let Some(item_schema) = schema.get("items") {
+                for item in items {
+                    validate_json_schema(item, item_schema)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_type(value: &serde_json::Value, schema_type: &str) -> Result<(), String> {
+    let valid = match schema_type {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "number" => value.is_number(),
+        "null" => value.is_null(),
+        _ => true,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("expected {schema_type}"))
+    }
+}
+
+fn validate_object(
+    object: &serde_json::Map<String, serde_json::Value>,
+    schema: &serde_json::Value,
+) -> Result<(), String> {
+    if let Some(required) = schema.get("required").and_then(|value| value.as_array()) {
+        for field in required.iter().filter_map(|field| field.as_str()) {
+            if !object.contains_key(field) {
+                return Err(format!("missing required field '{field}'"));
+            }
+        }
+    }
+
+    let properties = schema.get("properties").and_then(|value| value.as_object());
+    if schema
+        .get("additionalProperties")
+        .and_then(|value| value.as_bool())
+        == Some(false)
+    {
+        for key in object.keys() {
+            if properties.is_none_or(|properties| !properties.contains_key(key)) {
+                return Err(format!("unknown field '{key}'"));
+            }
+        }
+    }
+
+    if let Some(properties) = properties {
+        for (key, value) in object {
+            if let Some(property_schema) = properties.get(key) {
+                validate_json_schema(value, property_schema)
+                    .map_err(|err| format!("{key}: {err}"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     struct FakeTool(&'static str);
+
+    struct SchemaTool;
 
     #[async_trait]
     impl InternalTool for FakeTool {
@@ -266,6 +379,36 @@ mod tests {
             ctx: &ToolContext,
         ) -> Result<ToolOutput, String> {
             Ok(ToolOutput::json(serde_json::json!({ "depth": ctx.depth })))
+        }
+    }
+
+    #[async_trait]
+    impl InternalTool for SchemaTool {
+        fn name(&self) -> &str {
+            "schema_tool"
+        }
+
+        fn tool_definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.name().to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string" }
+                    },
+                    "required": ["message"],
+                    "additionalProperties": false
+                }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext,
+        ) -> Result<ToolOutput, String> {
+            Ok(ToolOutput::json(serde_json::json!({})))
         }
     }
 
@@ -292,6 +435,40 @@ mod tests {
         tools.add(Arc::new(FakeTool("fake"))).expect("first add");
         assert!(tools.add(Arc::new(FakeTool("fake"))).is_err());
         assert!(tools.add(Arc::new(FakeTool("send_message"))).is_err());
+    }
+
+    #[test]
+    fn validate_args_rejects_unknown_tools() {
+        let tools = test_tools();
+        let result = tools.validate_args_for_tool("not_a_tool", &serde_json::json!({}));
+        assert!(result.unwrap_err().contains("unknown tool"));
+    }
+
+    #[test]
+    fn validate_args_checks_required_and_extra_fields() {
+        let tools = test_tools();
+        tools.add(Arc::new(SchemaTool)).expect("add schema tool");
+
+        assert!(
+            tools
+                .validate_args_for_tool("schema_tool", &serde_json::json!({}))
+                .unwrap_err()
+                .contains("missing required field")
+        );
+        assert!(
+            tools
+                .validate_args_for_tool(
+                    "schema_tool",
+                    &serde_json::json!({ "message": "hi", "extra": true })
+                )
+                .unwrap_err()
+                .contains("unknown field")
+        );
+        assert!(
+            tools
+                .validate_args_for_tool("schema_tool", &serde_json::json!({ "message": "hi" }))
+                .is_ok()
+        );
     }
 
     #[tokio::test]
