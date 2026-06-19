@@ -20,29 +20,6 @@ use crate::{
     secrets::ChannelSecrets,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-struct OutboundAttachment {
-    kind: String,
-    mime_type: String,
-    filename: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    file_id: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    data_base64: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    url: Option<String>,
-}
-
-#[derive(Clone, Debug, serde::Serialize)]
-struct OutboundMessage {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    attachments: Vec<OutboundAttachment>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    delete_message_id: Option<String>,
-}
-
 pub const DEFAULT_ADDR: &str = "127.0.0.1:7878";
 
 #[derive(Clone)]
@@ -202,7 +179,7 @@ async fn message_channel_to_warden(
 async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, LoadedChannel>) {
     let mut events = bus.subscribe();
     loop {
-        let (channel, address, outbound_message) = match events.recv().await {
+        let (channel, event) = match events.recv().await {
             Ok(Event::MessageOut {
                 channel,
                 recipient: Sender::User,
@@ -218,26 +195,26 @@ async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, L
                     eprintln!("{channel} message out has no address and no default_address");
                     continue;
                 };
-                let Some(outbound_message) = channel_outbound_message(message) else {
+                if !matches!(message, Message::Assistant { .. }) {
                     eprintln!("{channel} message out was not deliverable to a channel");
                     continue;
-                };
-                (channel, address, outbound_message)
-            }
-            Ok(Event::DeleteMessage { channel, address }) => {
-                let Some(message_id) = address.message_id.clone() else {
-                    eprintln!("{channel} delete message has no message_id");
-                    continue;
-                };
+                }
                 (
-                    channel,
-                    address,
-                    OutboundMessage {
-                        content: None,
-                        attachments: Vec::new(),
-                        delete_message_id: Some(message_id),
+                    channel.clone(),
+                    Event::MessageOut {
+                        channel,
+                        recipient: Sender::User,
+                        address: Some(address),
+                        message,
                     },
                 )
+            }
+            Ok(Event::DeleteMessage { channel, address }) => {
+                if address.message_id.is_none() {
+                    eprintln!("{channel} delete message has no message_id");
+                    continue;
+                }
+                (channel.clone(), Event::DeleteMessage { channel, address })
             }
             Ok(_) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -248,79 +225,84 @@ async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, L
             continue;
         };
         let channel_state = channel_runtime.state.lock().await.clone();
-        let message_json = match serde_json::to_string(&outbound_message) {
-            Ok(message_json) => message_json,
+        let event_json = match channel_outbound_event_json(&event) {
+            Ok(event_json) => event_json,
             Err(err) => {
                 eprintln!("failed to serialize {channel} outbound event: {err}");
                 continue;
             }
         };
-        let address_json = match serde_json::to_string(&address) {
-            Ok(address_json) => address_json,
-            Err(err) => {
-                eprintln!("failed to serialize {channel} address: {err}");
-                continue;
-            }
-        };
 
-        let handled = channel_runtime.wasm.lock().await.on_message_out(
-            &message_json,
-            &address_json,
-            &channel_state.config_json,
-        );
+        let handled = channel_runtime
+            .wasm
+            .lock()
+            .await
+            .on_outbound_event(&event_json, &channel_state.config_json);
         match handled {
-            Ok(true) => eprintln!("bridge: {channel} channel handled message out"),
-            Ok(false) => eprintln!("{channel} channel did not handle message out"),
-            Err(err) => eprintln!("{channel} message out failed: {err}"),
+            Ok(true) => eprintln!("bridge: {channel} channel handled outbound event"),
+            Ok(false) => eprintln!("{channel} channel did not handle outbound event"),
+            Err(err) => eprintln!("{channel} outbound event failed: {err}"),
         }
     }
 }
 
-fn channel_outbound_message(message: Message) -> Option<OutboundMessage> {
-    let Message::Assistant {
-        text, attachments, ..
-    } = message
-    else {
-        return None;
-    };
-    Some(OutboundMessage {
-        content: text,
-        attachments: attachments
-            .into_iter()
-            .map(channel_outbound_attachment)
-            .collect(),
-        delete_message_id: None,
-    })
+fn channel_outbound_event_json(event: &Event) -> Result<String, serde_json::Error> {
+    let mut value = serde_json::to_value(event)?;
+    add_attachment_data(&mut value);
+    serde_json::to_string(&value)
 }
 
-fn channel_outbound_attachment(attachment: Attachment) -> OutboundAttachment {
-    let Attachment {
-        file_id,
-        mime_type,
-        filename,
-        source,
-    } = attachment;
-    let data_base64 = fs::read(&source).ok().map(|bytes| {
+fn add_attachment_data(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                add_attachment_data(item);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if object.contains_key("file_id")
+                && object.contains_key("mime_type")
+                && object.contains_key("source")
+            {
+                add_attachment_payload(object);
+            }
+            for child in object.values_mut() {
+                add_attachment_data(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn add_attachment_payload(object: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(source) = object
+        .get("source")
+        .and_then(|source| source.as_str())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    if !object.contains_key("filename") {
+        let filename = std::path::Path::new(&source)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+            .or_else(|| {
+                object
+                    .get("file_id")
+                    .and_then(|file_id| file_id.as_u64())
+                    .map(|file_id| file_id.to_string())
+            });
+        if let Some(filename) = filename {
+            object.insert("filename".to_string(), serde_json::Value::String(filename));
+        }
+    }
+    if let Ok(bytes) = fs::read(source) {
         use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    });
-    OutboundAttachment {
-        kind: if mime_type.starts_with("image/") {
-            "image".to_string()
-        } else {
-            "file".to_string()
-        },
-        mime_type,
-        filename: filename.unwrap_or_else(|| {
-            source
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| file_id.to_string())
-        }),
-        file_id: Some(file_id),
-        data_base64,
-        url: None,
+        object.insert(
+            "data_base64".to_string(),
+            serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(bytes)),
+        );
     }
 }
 
@@ -594,6 +576,66 @@ mod tests {
         let stored = files_dir.join(format!("{file_id}.pdf"));
         assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("pdf"));
         assert_eq!(fs::read(stored).unwrap(), b"pdf");
+    }
+
+    #[test]
+    fn outbound_message_serializes_bus_event_with_attachment_data() {
+        let files_dir = unique_test_files_dir();
+        fs::create_dir_all(&files_dir).unwrap();
+        let source = files_dir.join("7.png");
+        fs::write(&source, b"image").unwrap();
+        let event = Event::MessageOut {
+            channel: "telegram".to_string(),
+            recipient: Sender::User,
+            address: Some(ChannelAddress {
+                channel: "telegram".to_string(),
+                conversation_id: "chat".to_string(),
+                thread_id: None,
+                message_id: None,
+            }),
+            message: Message::Assistant {
+                text: Some("hi".to_string()),
+                attachments: vec![Attachment {
+                    file_id: 7,
+                    mime_type: "image/png".to_string(),
+                    filename: None,
+                    source,
+                }],
+                tool_calls: Vec::new(),
+            },
+        };
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&channel_outbound_event_json(&event).unwrap()).unwrap();
+
+        assert_eq!(payload["MessageOut"]["message"]["Assistant"]["text"], "hi");
+        assert_eq!(
+            payload["MessageOut"]["message"]["Assistant"]["attachments"][0]["data_base64"],
+            "aW1hZ2U="
+        );
+        assert_eq!(
+            payload["MessageOut"]["message"]["Assistant"]["attachments"][0]["filename"],
+            "7.png"
+        );
+    }
+
+    #[test]
+    fn delete_message_serializes_as_delete_event_not_fake_message() {
+        let event = Event::DeleteMessage {
+            channel: "telegram".to_string(),
+            address: ChannelAddress {
+                channel: "telegram".to_string(),
+                conversation_id: "chat".to_string(),
+                thread_id: None,
+                message_id: Some("42".to_string()),
+            },
+        };
+
+        let payload = channel_outbound_event_json(&event).unwrap();
+
+        assert!(payload.contains("\"DeleteMessage\""));
+        assert!(payload.contains("\"message_id\":\"42\""));
+        assert!(!payload.contains("delete_message_id"));
     }
 
     fn unique_test_files_dir() -> PathBuf {

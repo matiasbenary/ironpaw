@@ -74,14 +74,13 @@ impl WasmChannel {
             .map_err(WasmChannelError::Guest)
     }
 
-    pub fn on_message_out(
+    pub fn on_outbound_event(
         &mut self,
-        message_json: &str,
-        address_json: &str,
+        event_json: &str,
         config_json: &str,
     ) -> Result<bool, WasmChannelError> {
         self.bindings
-            .call_on_message_out(&mut self.store, message_json, address_json, config_json)
+            .call_on_outbound_event(&mut self.store, event_json, config_json)
             .map_err(|err| WasmChannelError::Call(err.to_string()))?
             .map_err(WasmChannelError::Guest)
     }

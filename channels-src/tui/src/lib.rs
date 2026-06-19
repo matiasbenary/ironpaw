@@ -41,16 +41,57 @@ impl Guest for TuiChannel {
         channel_host::emit_message(&event)
     }
 
-    fn on_message_out(
-        message_json: String,
-        address_json: String,
-        _config_json: String,
-    ) -> Result<bool, String> {
-        let address: ChannelAddress =
-            serde_json::from_str(&address_json).map_err(|err| err.to_string())?;
-        channel_host::http_request("POST", &address.conversation_id, &message_json)?;
+    fn on_outbound_event(event_json: String, _config_json: String) -> Result<bool, String> {
+        let event: OutboundEvent =
+            serde_json::from_str(&event_json).map_err(|err| err.to_string())?;
+        let OutboundEvent::MessageOut { address, message } = event else {
+            return Ok(false);
+        };
+        let Some(address) = address else {
+            return Err("tui message out did not include address".to_string());
+        };
+        let WardenMessage::Assistant(message) = message else {
+            return Ok(false);
+        };
+        channel_host::http_request(
+            "POST",
+            &address.conversation_id,
+            &serde_json::to_string(&message).map_err(|err| err.to_string())?,
+        )?;
         Ok(true)
     }
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+enum OutboundEvent {
+    MessageOut {
+        address: Option<ChannelAddress>,
+        message: WardenMessage,
+    },
+    DeleteMessage {
+        address: ChannelAddress,
+    },
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+enum WardenMessage {
+    Assistant(AssistantMessage),
+    System(serde_json::Value),
+    User(serde_json::Value),
+    ToolResult(serde_json::Value),
+}
+
+#[derive(serde::Serialize, Deserialize)]
+struct AssistantMessage {
+    #[serde(
+        rename(deserialize = "text", serialize = "content"),
+        serialize_with = "serialize_content"
+    )]
+    content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -62,6 +103,13 @@ struct IncomingMessage {
 #[derive(Deserialize)]
 struct ChannelAddress {
     conversation_id: String,
+}
+
+fn serialize_content<S>(content: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(content.as_deref().unwrap_or_default())
 }
 
 export!(TuiChannel);

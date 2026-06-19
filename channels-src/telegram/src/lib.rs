@@ -92,25 +92,33 @@ impl Guest for TelegramChannel {
         channel_host::emit_message(&event)
     }
 
-    fn on_message_out(
-        message_json: String,
-        address_json: String,
-        config_json: String,
-    ) -> Result<bool, String> {
+    fn on_outbound_event(event_json: String, config_json: String) -> Result<bool, String> {
         let config: RuntimeConfig =
             serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
         let Some(telegram) = config.telegram else {
             return Ok(false);
         };
         let bot_token_placeholder = secret_placeholder(&telegram.bot_token_secret);
-        let address: ChannelAddress =
-            serde_json::from_str(&address_json).map_err(|err| err.to_string())?;
-        let message: AssistantMessage =
-            serde_json::from_str(&message_json).map_err(|err| err.to_string())?;
-        if let Some(message_id) = message.delete_message_id.as_deref() {
-            delete_message(&bot_token_placeholder, &address, message_id)?;
-            return Ok(true);
-        }
+        let event: OutboundEvent =
+            serde_json::from_str(&event_json).map_err(|err| err.to_string())?;
+        let (address, message) = match event {
+            OutboundEvent::MessageOut { address, message } => {
+                let Some(address) = address else {
+                    return Err("telegram message out did not include address".to_string());
+                };
+                let WardenMessage::Assistant(message) = message else {
+                    return Ok(false);
+                };
+                (address, message)
+            }
+            OutboundEvent::DeleteMessage { address } => {
+                let Some(message_id) = address.message_id.as_deref() else {
+                    return Err("telegram delete message did not include message_id".to_string());
+                };
+                delete_message(&bot_token_placeholder, &address, message_id)?;
+                return Ok(true);
+            }
+        };
         let text = display_message(&message);
 
         if let Some(image) = message.image_attachment() {
@@ -146,6 +154,26 @@ impl Guest for TelegramChannel {
 }
 
 #[derive(Deserialize)]
+enum OutboundEvent {
+    MessageOut {
+        address: Option<ChannelAddress>,
+        message: WardenMessage,
+    },
+    DeleteMessage {
+        address: ChannelAddress,
+    },
+}
+
+#[derive(Deserialize)]
+#[allow(dead_code)]
+enum WardenMessage {
+    Assistant(AssistantMessage),
+    System(serde_json::Value),
+    User(serde_json::Value),
+    ToolResult(serde_json::Value),
+}
+
+#[derive(Deserialize)]
 struct RuntimeConfig {
     path: String,
     #[serde(default)]
@@ -175,9 +203,7 @@ struct TelegramConfig {
 
 #[derive(Deserialize)]
 struct AssistantMessage {
-    content: Option<String>,
-    #[serde(default)]
-    delete_message_id: Option<String>,
+    text: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<serde_json::Value>>,
     #[serde(default)]
@@ -188,15 +214,14 @@ impl AssistantMessage {
     fn image_attachment(&self) -> Option<&AssistantAttachment> {
         self.attachments
             .iter()
-            .find(|attachment| attachment.kind == "image")
+            .find(|attachment| attachment.mime_type.starts_with("image/"))
     }
 }
 
 #[derive(Deserialize)]
 struct AssistantAttachment {
-    kind: String,
     mime_type: String,
-    filename: String,
+    filename: Option<String>,
     data_base64: Option<String>,
     url: Option<String>,
 }
@@ -206,6 +231,8 @@ struct ChannelAddress {
     conversation_id: String,
     #[serde(default)]
     thread_id: Option<String>,
+    #[serde(default)]
+    message_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -295,7 +322,7 @@ struct TelegramUser {
 }
 
 fn display_message(message: &AssistantMessage) -> String {
-    if let Some(content) = &message.content {
+    if let Some(content) = &message.text {
         return content.clone();
     }
 
@@ -355,7 +382,7 @@ fn send_image(
         &format!("https://api.telegram.org/bot{bot_token_placeholder}/sendPhoto"),
         &fields.to_string(),
         "photo",
-        &image.filename,
+        image.filename.as_deref().unwrap_or("image"),
         &image.mime_type,
         data_base64,
     )?;
