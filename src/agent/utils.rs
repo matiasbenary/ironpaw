@@ -1,5 +1,5 @@
 use crate::{
-    bus::{Bus, ChannelAddress, Event, Sender},
+    bus::{Bus, ChannelAction, ChannelAddress, Event, Sender},
     message::Message,
 };
 
@@ -35,5 +35,19 @@ pub(super) fn publish_progress(
             attachments: Vec::new(),
             tool_calls: Vec::new(),
         },
+    });
+}
+
+pub(super) fn publish_channel_action(
+    bus: &Bus,
+    channel: &str,
+    address: &ChannelAddress,
+    action: ChannelAction,
+) {
+    bus.publish(Event::ChannelAction {
+        channel: channel.to_string(),
+        recipient: Sender::User,
+        address: address.clone(),
+        action,
     });
 }

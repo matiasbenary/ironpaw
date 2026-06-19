@@ -1,6 +1,6 @@
 mod event;
 
-pub use event::{ChannelAddress, Event, Sender};
+pub use event::{ChannelAction, ChannelAddress, Event, Sender};
 use tokio::sync::broadcast;
 
 #[derive(Clone)]

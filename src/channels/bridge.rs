@@ -216,6 +216,20 @@ async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, L
                 }
                 (channel.clone(), Event::DeleteMessage { channel, address })
             }
+            Ok(Event::ChannelAction {
+                channel,
+                recipient: Sender::User,
+                address,
+                action,
+            }) => (
+                channel.clone(),
+                Event::ChannelAction {
+                    channel,
+                    recipient: Sender::User,
+                    address,
+                    action,
+                },
+            ),
             Ok(_) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -225,24 +239,39 @@ async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, L
             continue;
         };
         let channel_state = channel_runtime.state.lock().await.clone();
-        let event_json = match channel_outbound_event_json(&event) {
-            Ok(event_json) => event_json,
-            Err(err) => {
-                eprintln!("failed to serialize {channel} outbound event: {err}");
-                continue;
-            }
-        };
+        dispatch_channel_event(
+            channel_runtime,
+            &channel,
+            &channel_state.config_json,
+            &event,
+        )
+        .await;
+    }
+}
 
-        let handled = channel_runtime
-            .wasm
-            .lock()
-            .await
-            .on_outbound_event(&event_json, &channel_state.config_json);
-        match handled {
-            Ok(true) => eprintln!("bridge: {channel} channel handled outbound event"),
-            Ok(false) => eprintln!("{channel} channel did not handle outbound event"),
-            Err(err) => eprintln!("{channel} outbound event failed: {err}"),
+async fn dispatch_channel_event(
+    channel_runtime: &LoadedChannel,
+    channel: &str,
+    config_json: &str,
+    event: &Event,
+) {
+    let event_json = match channel_outbound_event_json(event) {
+        Ok(event_json) => event_json,
+        Err(err) => {
+            eprintln!("failed to serialize {channel} outbound event: {err}");
+            return;
         }
+    };
+
+    let handled = channel_runtime
+        .wasm
+        .lock()
+        .await
+        .on_outbound_event(&event_json, config_json);
+    match handled {
+        Ok(true) => eprintln!("bridge: {channel} channel handled outbound event"),
+        Ok(false) => eprintln!("{channel} channel did not handle outbound event"),
+        Err(err) => eprintln!("{channel} outbound event failed: {err}"),
     }
 }
 
@@ -636,6 +665,31 @@ mod tests {
         assert!(payload.contains("\"DeleteMessage\""));
         assert!(payload.contains("\"message_id\":\"42\""));
         assert!(!payload.contains("delete_message_id"));
+    }
+
+    #[test]
+    fn channel_action_serializes_for_outbound_channel() {
+        let event = Event::ChannelAction {
+            channel: "telegram".to_string(),
+            recipient: Sender::User,
+            address: ChannelAddress {
+                channel: "telegram".to_string(),
+                conversation_id: "chat".to_string(),
+                thread_id: Some("7".to_string()),
+                message_id: None,
+            },
+            action: crate::bus::ChannelAction::Typing,
+        };
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&channel_outbound_event_json(&event).unwrap()).unwrap();
+
+        assert_eq!(
+            payload["ChannelAction"]["address"]["conversation_id"],
+            "chat"
+        );
+        assert_eq!(payload["ChannelAction"]["address"]["thread_id"], "7");
+        assert_eq!(payload["ChannelAction"]["action"], "typing");
     }
 
     fn unique_test_files_dir() -> PathBuf {

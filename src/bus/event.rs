@@ -18,6 +18,12 @@ pub struct ChannelAddress {
     pub message_id: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChannelAction {
+    #[serde(rename = "typing")]
+    Typing,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Event {
     MessageIn {
@@ -36,6 +42,12 @@ pub enum Event {
     DeleteMessage {
         channel: String,
         address: ChannelAddress,
+    },
+    ChannelAction {
+        channel: String,
+        recipient: Sender,
+        address: ChannelAddress,
+        action: ChannelAction,
     },
     CronTick {
         schedule: String,

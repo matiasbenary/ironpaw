@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    bus::{Bus, ChannelAddress},
+    bus::{Bus, ChannelAction, ChannelAddress},
     history::{HistoryEntry, MessageMetadata},
     message::{Message, ToolCall},
     models,
@@ -10,7 +10,7 @@ use crate::{
 
 use super::{
     preamble::system_preamble,
-    utils::{publish_progress, summarize_tool_args},
+    utils::{publish_channel_action, publish_progress, summarize_tool_args},
 };
 use crate::tools::raw_inference::RawInferenceRequest;
 
@@ -57,6 +57,9 @@ impl Agent {
         };
 
         for round in 0..MAX_TOOL_ROUNDS {
+            if let Some((channel, address)) = destination {
+                publish_channel_action(&self.bus, channel, address, ChannelAction::Typing);
+            }
             let available_tools: Vec<_> = self
                 .internal_tools
                 .all()

@@ -44,21 +44,23 @@ impl Guest for TuiChannel {
     fn on_outbound_event(event_json: String, _config_json: String) -> Result<bool, String> {
         let event: OutboundEvent =
             serde_json::from_str(&event_json).map_err(|err| err.to_string())?;
-        let OutboundEvent::MessageOut { address, message } = event else {
-            return Ok(false);
-        };
-        let Some(address) = address else {
-            return Err("tui message out did not include address".to_string());
-        };
-        let WardenMessage::Assistant(message) = message else {
-            return Ok(false);
-        };
-        channel_host::http_request(
-            "POST",
-            &address.conversation_id,
-            &serde_json::to_string(&message).map_err(|err| err.to_string())?,
-        )?;
-        Ok(true)
+        match event {
+            OutboundEvent::MessageOut { address, message } => {
+                let Some(address) = address else {
+                    return Err("tui message out did not include address".to_string());
+                };
+                let WardenMessage::Assistant(message) = message else {
+                    return Ok(false);
+                };
+                channel_host::http_request(
+                    "POST",
+                    &address.conversation_id,
+                    &serde_json::to_string(&message).map_err(|err| err.to_string())?,
+                )?;
+                Ok(true)
+            }
+            OutboundEvent::DeleteMessage { .. } | OutboundEvent::ChannelAction { .. } => Ok(false),
+        }
     }
 }
 
@@ -71,6 +73,10 @@ enum OutboundEvent {
     },
     DeleteMessage {
         address: ChannelAddress,
+    },
+    ChannelAction {
+        address: ChannelAddress,
+        action: String,
     },
 }
 

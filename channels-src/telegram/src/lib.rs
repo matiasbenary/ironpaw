@@ -118,6 +118,10 @@ impl Guest for TelegramChannel {
                 delete_message(&bot_token_placeholder, &address, message_id)?;
                 return Ok(true);
             }
+            OutboundEvent::ChannelAction { address, action } => {
+                send_chat_action(&bot_token_placeholder, &address, action)?;
+                return Ok(true);
+            }
         };
         let text = display_message(&message);
 
@@ -162,6 +166,16 @@ enum OutboundEvent {
     DeleteMessage {
         address: ChannelAddress,
     },
+    ChannelAction {
+        address: ChannelAddress,
+        action: ChannelAction,
+    },
+}
+
+#[derive(Deserialize)]
+enum ChannelAction {
+    #[serde(rename = "typing")]
+    Typing,
 }
 
 #[derive(Deserialize)]
@@ -402,6 +416,31 @@ fn delete_message(
     channel_host::http_request(
         "POST",
         &format!("https://api.telegram.org/bot{bot_token_placeholder}/deleteMessage"),
+        &body.to_string(),
+    )?;
+    Ok(())
+}
+
+fn send_chat_action(
+    bot_token_placeholder: &str,
+    address: &ChannelAddress,
+    action: ChannelAction,
+) -> Result<(), String> {
+    let action = match action {
+        ChannelAction::Typing => "typing",
+    };
+    let mut body = serde_json::json!({
+        "chat_id": address.conversation_id,
+        "action": action,
+    });
+    if let Some(thread_id) = &address.thread_id {
+        let message_thread_id = thread_id.parse::<i64>().map_err(|err| err.to_string())?;
+        body["message_thread_id"] = serde_json::json!(message_thread_id);
+    }
+
+    channel_host::http_request(
+        "POST",
+        &format!("https://api.telegram.org/bot{bot_token_placeholder}/sendChatAction"),
         &body.to_string(),
     )?;
     Ok(())
