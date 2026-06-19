@@ -154,6 +154,24 @@ impl Automations {
         self.add_runtime(automation)
     }
 
+    pub fn replace_persistent(
+        self: &Arc<Self>,
+        remove_name: &str,
+        automation: Automation,
+    ) -> Result<(), String> {
+        self.remove_runtime(remove_name);
+        if let Some(store) = &self.store {
+            store.delete(remove_name)?;
+        }
+        if self.is_registered(&automation.name) {
+            return Ok(());
+        }
+        if let Some(store) = &self.store {
+            store.insert(&automation)?;
+        }
+        self.add_runtime(automation)
+    }
+
     pub fn load_stored(self: &Arc<Self>) -> Result<usize, String> {
         let Some(store) = &self.store else {
             return Ok(0);
@@ -176,6 +194,34 @@ impl Automations {
         }
         if let Some(store) = &self.store {
             store.delete(name)?;
+        }
+        Ok(())
+    }
+
+    pub fn recover_stale_channel_auth(self: &Arc<Self>) -> Result<(), String> {
+        let names = self
+            .automations
+            .read()
+            .expect("automations lock")
+            .iter()
+            .filter(|automation| automation.name.starts_with("channel_auth:"))
+            .map(|automation| automation.name.clone())
+            .collect::<Vec<_>>();
+        if names.is_empty() {
+            return Ok(());
+        }
+        for name in names {
+            self.remove_runtime(&name);
+            if let Some(store) = &self.store {
+                store.delete(&name)?;
+            }
+        }
+        if !self.is_registered("answer-the-user") {
+            let automation = Automations::answer_the_user();
+            if let Some(store) = &self.store {
+                store.insert(&automation)?;
+            }
+            self.add_runtime(automation)?;
         }
         Ok(())
     }

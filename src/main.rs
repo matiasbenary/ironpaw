@@ -77,7 +77,20 @@ async fn main() -> std::io::Result<()> {
     tools
         .onboarding
         .bind(Arc::clone(&tools), Arc::clone(&automations), env_path);
+    tools.install_channel.bind(
+        Arc::clone(&tools),
+        Arc::clone(&automations),
+        layout.clone(),
+        secrets
+            .loaded_env()
+            .cloned()
+            .unwrap_or_else(|| layout.root().join(".env")),
+    );
+    tools.list_channels.bind(layout.clone());
     let stored_count = automations.load_stored().map_err(std::io::Error::other)?;
+    automations
+        .recover_stale_channel_auth()
+        .map_err(std::io::Error::other)?;
     if stored_count == 0 {
         if setup_complete {
             automations
@@ -93,10 +106,14 @@ async fn main() -> std::io::Result<()> {
 
     let token = uuid::Uuid::new_v4().to_string();
     let addr = std::env::var("WARDEN_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
-    let channel_runtime =
+    let channel_runtime = Arc::new(
         channels::start(bus, &layout, secrets.channels.clone(), &addr, token.clone())
             .await
-            .map_err(std::io::Error::other)?;
+            .map_err(std::io::Error::other)?,
+    );
+    tools
+        .install_channel
+        .bind_channel_runtime(Arc::clone(&channel_runtime));
 
     println!("channel bridge token: {token}");
     println!("runtime root: {}", layout.root().display());

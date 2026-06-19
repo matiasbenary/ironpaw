@@ -17,7 +17,7 @@
       "secret": "TELEGRAM_WEBHOOK_SECRET"
     }
   ],
-  "owner_id": "123456789",
+  "owner_id": null,
   "telegram": {
     "bot_token_secret": "TELEGRAM_BOT_TOKEN",
     "webhook_enabled": true

@@ -7,6 +7,7 @@ pub mod dynamic;
 pub mod image_generation;
 pub mod inspect_automation;
 pub mod inspect_file;
+pub mod install_channel;
 pub mod list_automations;
 pub mod onboarding;
 pub mod raw_inference;
@@ -22,13 +23,22 @@ use async_trait::async_trait;
 use crate::{bus::ChannelAddress, history::History, message::ToolDefinition};
 
 use self::{
-    call_agent::CallAgentTool, create_automation::CreateAutomationTool,
-    create_tool::CreateToolTool, delete_automation::DeleteAutomationTool,
-    delete_message::DeleteMessageTool, image_generation::ImageGenerationTool,
-    inspect_automation::InspectAutomationTool, inspect_file::InspectFileTool,
-    list_automations::ListAutomationsTool, onboarding::OnboardingTool,
-    raw_inference::RawInferenceTool, send_message::SendMessageTool, todo::TodoTool,
-    web_fetch::WebFetchTool, web_search::WebSearchTool,
+    call_agent::CallAgentTool,
+    create_automation::CreateAutomationTool,
+    create_tool::CreateToolTool,
+    delete_automation::DeleteAutomationTool,
+    delete_message::DeleteMessageTool,
+    image_generation::ImageGenerationTool,
+    inspect_automation::InspectAutomationTool,
+    inspect_file::InspectFileTool,
+    install_channel::{InstallChannelTool, ListChannelsTool},
+    list_automations::ListAutomationsTool,
+    onboarding::OnboardingTool,
+    raw_inference::RawInferenceTool,
+    send_message::SendMessageTool,
+    todo::TodoTool,
+    web_fetch::WebFetchTool,
+    web_search::WebSearchTool,
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can
@@ -74,7 +84,9 @@ pub struct InternalTools {
     pub delete_automation: Arc<DeleteAutomationTool>,
     pub inspect_automation: Arc<InspectAutomationTool>,
     pub list_automations: Arc<ListAutomationsTool>,
+    pub list_channels: Arc<ListChannelsTool>,
     pub onboarding: Arc<OnboardingTool>,
+    pub install_channel: Arc<InstallChannelTool>,
     pub create_tool: Arc<CreateToolTool>,
     pub history: Arc<dyn History>,
     tools: RwLock<Vec<Arc<dyn InternalTool>>>,
@@ -100,7 +112,9 @@ impl InternalTools {
         let delete_automation = Arc::new(DeleteAutomationTool::new());
         let inspect_automation = Arc::new(InspectAutomationTool::new());
         let list_automations = Arc::new(ListAutomationsTool::new());
+        let list_channels = Arc::new(ListChannelsTool::new());
         let onboarding = Arc::new(OnboardingTool::new());
+        let install_channel = Arc::new(InstallChannelTool::new());
         let create_tool = Arc::new(CreateToolTool::new());
         let web_fetch = Arc::new(WebFetchTool::new());
         let web_search = Arc::new(WebSearchTool::new());
@@ -113,7 +127,9 @@ impl InternalTools {
             delete_automation: Arc::clone(&delete_automation),
             inspect_automation: Arc::clone(&inspect_automation),
             list_automations: Arc::clone(&list_automations),
+            list_channels: Arc::clone(&list_channels),
             onboarding: Arc::clone(&onboarding),
+            install_channel: Arc::clone(&install_channel),
             create_tool: Arc::clone(&create_tool),
             history,
             tools: RwLock::new(vec![
@@ -128,7 +144,9 @@ impl InternalTools {
                 delete_automation,
                 inspect_automation,
                 list_automations,
+                list_channels,
                 onboarding,
+                install_channel,
                 create_tool,
                 web_fetch,
                 web_search,

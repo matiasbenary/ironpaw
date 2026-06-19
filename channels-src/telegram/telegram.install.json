@@ -1,0 +1,28 @@
+{
+  "name": "telegram",
+  "display_name": "Telegram",
+  "external": true,
+  "setup_url": "https://t.me/BotFather",
+  "secrets": [
+    {
+      "name": "telegram_bot_token",
+      "prompt": "Enter your Telegram Bot API token from @BotFather.",
+      "optional": false
+    },
+    {
+      "name": "telegram_webhook_secret",
+      "prompt": "Webhook secret. Leave empty to auto-generate.",
+      "optional": true,
+      "auto_generate": {
+        "length": 64
+      }
+    }
+  ],
+  "config": [
+    {
+      "path": "/owner_id",
+      "prompt": "Enter your numeric Telegram user id. This is not your bot token; you can get it by messaging @userinfobot.",
+      "type": "string"
+    }
+  ]
+}

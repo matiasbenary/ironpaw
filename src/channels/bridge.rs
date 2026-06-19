@@ -8,7 +8,10 @@ use axum::{
     routing::post,
 };
 use serde::Deserialize;
-use tokio::{net::TcpListener, sync::Mutex};
+use tokio::{
+    net::TcpListener,
+    sync::{Mutex, RwLock},
+};
 
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
@@ -41,8 +44,44 @@ struct BridgeState {
     bus: Bus,
     token: Arc<String>,
     secrets: ChannelSecrets,
-    channels_by_path: Arc<HashMap<String, LoadedChannel>>,
+    registry: Arc<ChannelRegistry>,
     files_dir: PathBuf,
+}
+
+#[derive(Default)]
+pub struct ChannelRegistry {
+    channels_by_path: RwLock<HashMap<String, LoadedChannel>>,
+    channels_by_name: RwLock<HashMap<String, LoadedChannel>>,
+}
+
+impl ChannelRegistry {
+    pub async fn new(channels: Vec<LoadedChannel>) -> Self {
+        let registry = Self::default();
+        for channel in channels {
+            registry.add(channel).await;
+        }
+        registry
+    }
+
+    pub async fn add(&self, channel: LoadedChannel) {
+        let path = channel.state.lock().await.config.path.clone();
+        self.channels_by_path
+            .write()
+            .await
+            .insert(path, channel.clone());
+        self.channels_by_name
+            .write()
+            .await
+            .insert(channel.name.clone(), channel);
+    }
+
+    async fn by_path(&self, path: &str) -> Option<LoadedChannel> {
+        self.channels_by_path.read().await.get(path).cloned()
+    }
+
+    async fn by_name(&self, name: &str) -> Option<LoadedChannel> {
+        self.channels_by_name.read().await.get(name).cloned()
+    }
 }
 
 pub async fn run_server(
@@ -51,26 +90,19 @@ pub async fn run_server(
     addr: &str,
     token: String,
     secrets: ChannelSecrets,
-    channels: Vec<LoadedChannel>,
+    registry: Arc<ChannelRegistry>,
     files_dir: PathBuf,
 ) -> io::Result<()> {
-    let mut channels_by_path = HashMap::new();
-    for channel in channels {
-        let path = channel.state.lock().await.config.path.clone();
-        channels_by_path.insert(path, channel);
-    }
-    let channels_by_name = channels_by_path
-        .values()
-        .cloned()
-        .map(|channel| (channel.name.clone(), channel))
-        .collect::<HashMap<_, _>>();
-    tokio::spawn(message_warden_to_channel(bus.clone(), channels_by_name));
+    tokio::spawn(message_warden_to_channel(
+        bus.clone(),
+        Arc::clone(&registry),
+    ));
 
     let state = BridgeState {
         bus,
         token: Arc::new(token),
         secrets,
-        channels_by_path: Arc::new(channels_by_path),
+        registry,
         files_dir,
     };
     let app = Router::new()
@@ -113,7 +145,7 @@ async fn message_channel_to_warden(
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let path = format!("/{path}");
-    let Some(channel) = state.channels_by_path.get(&path).cloned() else {
+    let Some(channel) = state.registry.by_path(&path).await else {
         return Err((StatusCode::NOT_FOUND, "channel route not found".to_string()));
     };
     let channel_state = channel.state.lock().await.clone();
@@ -176,7 +208,7 @@ async fn message_channel_to_warden(
     })))
 }
 
-async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, LoadedChannel>) {
+async fn message_warden_to_channel(bus: Bus, registry: Arc<ChannelRegistry>) {
     let mut events = bus.subscribe();
     loop {
         let (channel, event) = match events.recv().await {
@@ -186,7 +218,7 @@ async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, L
                 address,
                 message,
             }) => {
-                let Some(channel_runtime) = channels_by_name.get(&channel) else {
+                let Some(channel_runtime) = registry.by_name(&channel).await else {
                     eprintln!("bridge: no loaded channel named {channel} for message out");
                     continue;
                 };
@@ -234,13 +266,13 @@ async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, L
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         };
-        let Some(channel_runtime) = channels_by_name.get(&channel) else {
+        let Some(channel_runtime) = registry.by_name(&channel).await else {
             eprintln!("bridge: no loaded channel named {channel} for outbound event");
             continue;
         };
         let channel_state = channel_runtime.state.lock().await.clone();
         dispatch_channel_event(
-            channel_runtime,
+            &channel_runtime,
             &channel,
             &channel_state.config_json,
             &event,
