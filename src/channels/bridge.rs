@@ -39,6 +39,8 @@ struct OutboundMessage {
     content: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     attachments: Vec<OutboundAttachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delete_message_id: Option<String>,
 }
 
 pub const DEFAULT_ADDR: &str = "127.0.0.1:7878";
@@ -200,54 +202,56 @@ async fn message_channel_to_warden(
 async fn message_warden_to_channel(bus: Bus, channels_by_name: HashMap<String, LoadedChannel>) {
     let mut events = bus.subscribe();
     loop {
-        let event = match events.recv().await {
+        let (channel, address, outbound_message) = match events.recv().await {
             Ok(Event::MessageOut {
                 channel,
                 recipient: Sender::User,
                 address,
                 message,
-            }) => Event::MessageOut {
-                channel,
-                recipient: Sender::User,
-                address,
-                message,
-            },
+            }) => {
+                let Some(channel_runtime) = channels_by_name.get(&channel) else {
+                    eprintln!("bridge: no loaded channel named {channel} for message out");
+                    continue;
+                };
+                let channel_state = channel_runtime.state.lock().await.clone();
+                let Some(address) = address.or(channel_state.config.default_address) else {
+                    eprintln!("{channel} message out has no address and no default_address");
+                    continue;
+                };
+                let Some(outbound_message) = channel_outbound_message(message) else {
+                    eprintln!("{channel} message out was not deliverable to a channel");
+                    continue;
+                };
+                (channel, address, outbound_message)
+            }
+            Ok(Event::DeleteMessage { channel, address }) => {
+                let Some(message_id) = address.message_id.clone() else {
+                    eprintln!("{channel} delete message has no message_id");
+                    continue;
+                };
+                (
+                    channel,
+                    address,
+                    OutboundMessage {
+                        content: None,
+                        attachments: Vec::new(),
+                        delete_message_id: Some(message_id),
+                    },
+                )
+            }
             Ok(_) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         };
-
-        let Event::MessageOut {
-            channel,
-            address,
-            message,
-            ..
-        } = event
-        else {
-            continue;
-        };
         let Some(channel_runtime) = channels_by_name.get(&channel) else {
-            eprintln!("bridge: no loaded channel named {channel} for message out");
+            eprintln!("bridge: no loaded channel named {channel} for outbound event");
             continue;
         };
         let channel_state = channel_runtime.state.lock().await.clone();
-        let Some(address) = address.or(channel_state.config.default_address) else {
-            eprintln!("{channel} message out has no address and no default_address");
-            continue;
-        };
-        eprintln!(
-            "bridge: delivering message out to channel {channel} conversation_id={}",
-            address.conversation_id
-        );
-
-        let Some(outbound_message) = channel_outbound_message(message) else {
-            eprintln!("{channel} message out was not deliverable to a channel");
-            continue;
-        };
         let message_json = match serde_json::to_string(&outbound_message) {
             Ok(message_json) => message_json,
             Err(err) => {
-                eprintln!("failed to serialize {channel} message out: {err}");
+                eprintln!("failed to serialize {channel} outbound event: {err}");
                 continue;
             }
         };
@@ -285,6 +289,7 @@ fn channel_outbound_message(message: Message) -> Option<OutboundMessage> {
             .into_iter()
             .map(channel_outbound_attachment)
             .collect(),
+        delete_message_id: None,
     })
 }
 
@@ -323,16 +328,18 @@ async fn remember_default_address(
     channel: &LoadedChannel,
     address: &ChannelAddress,
 ) -> Result<(), String> {
+    let mut default_address = address.clone();
+    default_address.message_id = None;
     let mut state = channel.state.lock().await;
-    if state.config.default_address.as_ref() == Some(address) {
+    if state.config.default_address.as_ref() == Some(&default_address) {
         return Ok(());
     }
 
-    state.config.default_address = Some(address.clone());
+    state.config.default_address = Some(default_address.clone());
     let mut config_json = serde_json::from_str::<serde_json::Value>(&state.config_json)
         .map_err(|err| err.to_string())?;
     config_json["default_address"] =
-        serde_json::to_value(address).map_err(|err| err.to_string())?;
+        serde_json::to_value(&default_address).map_err(|err| err.to_string())?;
     state.config_json =
         serde_json::to_string_pretty(&config_json).map_err(|err| err.to_string())?;
     fs::write(&channel.config_path, &state.config_json).map_err(|err| err.to_string())

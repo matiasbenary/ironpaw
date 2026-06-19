@@ -4,14 +4,15 @@ use rusqlite::{Connection, params};
 
 use crate::message::Message;
 
-use super::History;
+use super::{History, HistoryEntry, MessageMetadata};
 
 /// SQLite-backed persistent history.
 ///
 /// Schema:
-///   entries(id, conversation_id, item_json, search_text, compacted)
+///   entries(id, conversation_id, item_json, metadata_json, search_text, compacted)
 ///
 /// `item_json`    — full serialised `Message`
+/// `metadata_json` — full serialised `MessageMetadata`
 /// `search_text`  — plain text extracted from the item, used for FTS5
 /// `compacted`    — 1 when this entry has been replaced by a summary but is
 ///                  retained for `search()`. `load()` skips compacted entries.
@@ -31,6 +32,7 @@ impl SqliteHistory {
                  id              INTEGER PRIMARY KEY,
                  conversation_id TEXT    NOT NULL,
                  item_json       TEXT    NOT NULL,
+                 metadata_json   TEXT    NOT NULL DEFAULT '',
                  search_text     TEXT    NOT NULL DEFAULT '',
                  compacted       INTEGER NOT NULL DEFAULT 0
              );
@@ -44,11 +46,27 @@ impl SqliteHistory {
              END;",
         )
         .map_err(|e| e.to_string())?;
+        ensure_metadata_column(&conn).map_err(|e| e.to_string())?;
 
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
+}
+
+fn ensure_metadata_column(conn: &Connection) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(entries)")?;
+    let has_metadata = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(Result::ok)
+        .any(|column| column == "metadata_json");
+    if !has_metadata {
+        conn.execute(
+            "ALTER TABLE entries ADD COLUMN metadata_json TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 fn extract_search_text(item: &Message) -> String {
@@ -93,34 +111,92 @@ fn extract_search_text(item: &Message) -> String {
     }
 }
 
+fn entry_from_row(
+    conversation_id: &str,
+    item_json: String,
+    metadata_json: String,
+) -> Option<HistoryEntry> {
+    let message = serde_json::from_str(&item_json).ok()?;
+    let metadata = if metadata_json.trim().is_empty() {
+        MessageMetadata::new("warden", conversation_id.to_string(), None, None)
+    } else {
+        serde_json::from_str(&metadata_json).ok()?
+    };
+    Some(HistoryEntry { message, metadata })
+}
+
 impl History for SqliteHistory {
-    fn load(&self, conversation_id: &str) -> Vec<Message> {
+    fn load(&self, conversation_id: &str) -> Vec<HistoryEntry> {
         let conn = self.conn.lock().expect("history mutex poisoned");
         let mut stmt = conn
             .prepare(
-                "SELECT item_json FROM entries
+                "SELECT item_json, metadata_json FROM entries
                  WHERE conversation_id = ?1 AND compacted = 0
                  ORDER BY id ASC",
             )
             .expect("prepare load");
-        stmt.query_map(params![conversation_id], |row| row.get::<_, String>(0))
-            .expect("query load")
-            .filter_map(|r| r.ok())
-            .filter_map(|json| serde_json::from_str(&json).ok())
-            .collect()
+        stmt.query_map(params![conversation_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .expect("query load")
+        .filter_map(|r| r.ok())
+        .filter_map(|(item_json, metadata_json)| {
+            entry_from_row(conversation_id, item_json, metadata_json)
+        })
+        .collect()
     }
 
-    fn append(&self, conversation_id: &str, items: &[Message]) {
+    fn append(&self, conversation_id: &str, entries: &[HistoryEntry]) {
         let conn = self.conn.lock().expect("history mutex poisoned");
-        for item in items {
-            let json = serde_json::to_string(item).expect("serialize Message");
-            let text = extract_search_text(item);
+        for entry in entries {
+            let json = serde_json::to_string(&entry.message).expect("serialize Message");
+            let metadata_json =
+                serde_json::to_string(&entry.metadata).expect("serialize MessageMetadata");
+            let text = extract_search_text(&entry.message);
             conn.execute(
-                "INSERT INTO entries(conversation_id, item_json, search_text)
-                 VALUES (?1, ?2, ?3)",
-                params![conversation_id, json, text],
+                "INSERT INTO entries(conversation_id, item_json, metadata_json, search_text)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![conversation_id, json, metadata_json, text],
             )
             .expect("insert entry");
+        }
+    }
+
+    fn delete_external_message(
+        &self,
+        channel: &str,
+        conversation_id: &str,
+        thread_id: Option<&str>,
+        external_id: &str,
+    ) {
+        let conn = self.conn.lock().expect("history mutex poisoned");
+        match thread_id {
+            Some(thread_id) => {
+                conn.execute(
+                    "DELETE FROM entries
+                     WHERE conversation_id = ?1
+                       AND json_valid(metadata_json)
+                       AND json_extract(metadata_json, '$.channel') = ?2
+                       AND json_extract(metadata_json, '$.conversation_id') = ?1
+                       AND json_extract(metadata_json, '$.thread_id') = ?3
+                       AND json_extract(metadata_json, '$.external_id') = ?4",
+                    params![conversation_id, channel, thread_id, external_id],
+                )
+                .expect("delete external message");
+            }
+            None => {
+                conn.execute(
+                    "DELETE FROM entries
+                     WHERE conversation_id = ?1
+                       AND json_valid(metadata_json)
+                       AND json_extract(metadata_json, '$.channel') = ?2
+                       AND json_extract(metadata_json, '$.conversation_id') = ?1
+                       AND json_type(metadata_json, '$.thread_id') IS NULL
+                       AND json_extract(metadata_json, '$.external_id') = ?3",
+                    params![conversation_id, channel, external_id],
+                )
+                .expect("delete external message");
+            }
         }
     }
 
@@ -133,20 +209,23 @@ impl History for SqliteHistory {
         )
         .expect("compact update");
         let summary_item = Message::System(format!("[conversation summary] {summary}"));
+        let summary_metadata =
+            MessageMetadata::new("warden", conversation_id.to_string(), None, None);
         let json = serde_json::to_string(&summary_item).expect("serialize summary");
+        let metadata_json = serde_json::to_string(&summary_metadata).expect("serialize metadata");
         conn.execute(
-            "INSERT INTO entries(conversation_id, item_json, search_text)
-             VALUES (?1, ?2, ?3)",
-            params![conversation_id, json, summary],
+            "INSERT INTO entries(conversation_id, item_json, metadata_json, search_text)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![conversation_id, json, metadata_json, summary],
         )
         .expect("insert summary");
     }
 
-    fn search(&self, conversation_id: &str, query: &str) -> Vec<Message> {
+    fn search(&self, conversation_id: &str, query: &str) -> Vec<HistoryEntry> {
         let conn = self.conn.lock().expect("history mutex poisoned");
         let mut stmt = conn
             .prepare(
-                "SELECT e.item_json
+                "SELECT e.item_json, e.metadata_json
                  FROM entries_fts f
                  JOIN entries e ON e.id = f.rowid
                  WHERE f.search_text MATCH ?1
@@ -156,11 +235,111 @@ impl History for SqliteHistory {
             )
             .expect("prepare search");
         stmt.query_map(params![query, conversation_id], |row| {
-            row.get::<_, String>(0)
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .expect("query search")
         .filter_map(|r| r.ok())
-        .filter_map(|json| serde_json::from_str(&json).ok())
+        .filter_map(|(item_json, metadata_json)| {
+            entry_from_row(conversation_id, item_json, metadata_json)
+        })
         .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_history() -> SqliteHistory {
+        let path =
+            std::env::temp_dir().join(format!("warden-history-test-{}.db", uuid::Uuid::new_v4()));
+        SqliteHistory::new(path).unwrap()
+    }
+
+    #[test]
+    fn appends_and_loads_message_metadata() {
+        let history = temp_history();
+        let entry = HistoryEntry {
+            message: Message::User {
+                text: "hello".to_string(),
+                attachments: Vec::new(),
+            },
+            metadata: MessageMetadata::new(
+                "telegram",
+                "chat-1",
+                Some("thread-1".to_string()),
+                Some("provider-1".to_string()),
+            ),
+        };
+
+        history.append("chat-1", std::slice::from_ref(&entry));
+
+        let loaded = history.load("chat-1");
+        assert_eq!(loaded, vec![entry]);
+    }
+
+    #[test]
+    fn metadata_external_id_can_be_missing() {
+        let history = temp_history();
+        history.append(
+            "chat-1",
+            &[HistoryEntry {
+                message: Message::Assistant {
+                    text: Some("done".to_string()),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                },
+                metadata: MessageMetadata::new("telegram", "chat-1", None, None),
+            }],
+        );
+
+        let loaded = history.load("chat-1");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].metadata.channel, "telegram");
+        assert_eq!(loaded[0].metadata.conversation_id, "chat-1");
+        assert_eq!(loaded[0].metadata.external_id, None);
+    }
+
+    #[test]
+    fn deletes_by_channel_conversation_thread_and_external_id() {
+        let history = temp_history();
+        history.append(
+            "chat-1",
+            &[
+                HistoryEntry {
+                    message: Message::User {
+                        text: "secret".to_string(),
+                        attachments: Vec::new(),
+                    },
+                    metadata: MessageMetadata::new(
+                        "telegram",
+                        "chat-1",
+                        Some("thread-1".to_string()),
+                        Some("provider-1".to_string()),
+                    ),
+                },
+                HistoryEntry {
+                    message: Message::User {
+                        text: "keep".to_string(),
+                        attachments: Vec::new(),
+                    },
+                    metadata: MessageMetadata::new(
+                        "telegram",
+                        "chat-1",
+                        Some("thread-2".to_string()),
+                        Some("provider-1".to_string()),
+                    ),
+                },
+            ],
+        );
+
+        history.delete_external_message("telegram", "chat-1", Some("thread-1"), "provider-1");
+
+        let loaded = history.load("chat-1");
+        assert_eq!(loaded.len(), 1);
+        let Message::User { text, .. } = &loaded[0].message else {
+            panic!("expected user message");
+        };
+        assert_eq!(text, "keep");
     }
 }

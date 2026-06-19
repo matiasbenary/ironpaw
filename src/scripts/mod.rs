@@ -156,6 +156,7 @@ mod tests {
         Arc::new(InternalTools::new(
             RawInferenceTool::new().unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
+            crate::tools::delete_message::DeleteMessageTool::new(bus.clone()),
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
         ))

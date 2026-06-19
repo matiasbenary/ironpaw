@@ -136,7 +136,8 @@ mod tests {
         ));
         let tools = Arc::new(InternalTools::new(
             RawInferenceTool::new().unwrap(),
-            SendMessageTool::new(bus, |_| Err("no attachments".to_string())),
+            SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
+            crate::tools::delete_message::DeleteMessageTool::new(bus),
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
         ));

@@ -176,11 +176,16 @@ Implemented internal tools:
 - `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image, and returns a `file_id` for later delivery.
 - `inspect_file`: inspects a locally stored file by numeric `file_id`, using text extraction for documents and a vision model for images.
 - `send_message`: publishes a message to a user through a channel.
+- `delete_message`: deletes a channel message when the channel supports it.
 
 `ai_inference` is both the engine's model-call primitive and a model-callable tool. This allows future model-to-model delegation while keeping inference
 credential handling centralized.
 
 `send_message` publishes `Event::MessageOut` with a Warden `Message`. If no explicit channel address is provided, the channel bridge can use that channel's stored `default_address`.
+
+TODO:
+
+- Change the channel outbound ABI so successful sends can return the provider message id; then `send_message` can wait for that result and persist history with `external_id` instead of `None`.
 
 ### Dynamic Tools
 

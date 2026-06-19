@@ -1,9 +1,10 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
+    history::{History, HistoryEntry, MessageMetadata},
     message::{Attachment, Message},
     tools::{self, InternalTool, ToolContext},
 };
@@ -14,6 +15,7 @@ type AttachmentResolver = Arc<dyn Fn(u32) -> Result<Attachment, String> + Send +
 pub struct SendMessageTool {
     bus: Bus,
     attachment_resolver: AttachmentResolver,
+    history: OnceLock<Arc<dyn History>>,
 }
 
 impl SendMessageTool {
@@ -24,7 +26,12 @@ impl SendMessageTool {
         Self {
             bus,
             attachment_resolver: Arc::new(attachment_resolver),
+            history: OnceLock::new(),
         }
+    }
+
+    pub fn bind_history(&self, history: Arc<dyn History>) {
+        let _ = self.history.set(history);
     }
 
     pub async fn execute(&self, input: SendMessageToolInput) -> Result<SendMessageOutput, String> {
@@ -34,13 +41,30 @@ impl SendMessageTool {
             .transpose()?
             .into_iter()
             .collect();
-        let channel = input.channel.unwrap_or_default();
+        let channel = input
+            .channel
+            .filter(|channel| !channel.trim().is_empty())
+            .ok_or_else(|| "channel is required".to_string())?;
         let address = message_address(&channel, input.conversation_id, input.thread_id);
         let message = Message::Assistant {
             text: Some(input.content.unwrap_or_default()),
             attachments,
             tool_calls: Vec::new(),
         };
+        if let (Some(history), Some(address)) = (self.history.get(), &address) {
+            history.append(
+                &address.conversation_id,
+                &[HistoryEntry {
+                    message: message.clone(),
+                    metadata: MessageMetadata::new(
+                        channel.clone(),
+                        address.conversation_id.clone(),
+                        address.thread_id.clone(),
+                        None,
+                    ),
+                }],
+            );
+        }
         self.bus.publish(Event::MessageOut {
             channel: channel.clone(),
             recipient: Sender::User,
@@ -139,6 +163,7 @@ fn message_address(
         channel: channel.to_string(),
         conversation_id,
         thread_id,
+        message_id: None,
     })
 }
 
@@ -151,9 +176,18 @@ pub struct SendMessageOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history::{History, SqliteHistory};
 
     fn input(args: serde_json::Value) -> SendMessageToolInput {
         serde_json::from_value(args).expect("valid input")
+    }
+
+    fn temp_history() -> Arc<SqliteHistory> {
+        let path = std::env::temp_dir().join(format!(
+            "warden-message-tool-history-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        Arc::new(SqliteHistory::new(path).unwrap())
     }
 
     fn tui_context() -> ToolContext {
@@ -164,6 +198,7 @@ mod tests {
                     channel: "telegram".to_string(),
                     conversation_id: "123".to_string(),
                     thread_id: Some("456".to_string()),
+                    message_id: None,
                 },
             )),
             conversation_id: Some("123".to_string()),
@@ -185,6 +220,7 @@ mod tests {
                     channel: "tui".to_string(),
                     conversation_id: "http://127.0.0.1:60684".to_string(),
                     thread_id: None,
+                    message_id: None,
                 },
             )),
             conversation_id: None,
@@ -215,5 +251,52 @@ mod tests {
 
         assert!(input.channel.is_none());
         assert!(input.conversation_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn send_message_requires_channel_after_context_defaults() {
+        let bus = Bus::new(16);
+        let tool = SendMessageTool::new(bus, |_| Err("unexpected attachment".to_string()));
+
+        let result = tool
+            .execute(SendMessageToolInput {
+                channel: None,
+                file_id: None,
+                content: Some("hi".to_string()),
+                conversation_id: None,
+                thread_id: None,
+            })
+            .await;
+
+        assert_eq!(result.err().as_deref(), Some("channel is required"));
+    }
+
+    #[tokio::test]
+    async fn send_message_appends_channel_history_when_address_is_known() {
+        let bus = Bus::new(16);
+        let history = temp_history();
+        let tool = SendMessageTool::new(bus, |_| Err("unexpected attachment".to_string()));
+        tool.bind_history(history.clone());
+
+        tool.execute(SendMessageToolInput {
+            channel: Some("telegram".to_string()),
+            file_id: None,
+            content: Some("hi".to_string()),
+            conversation_id: Some("chat-1".to_string()),
+            thread_id: Some("thread-1".to_string()),
+        })
+        .await
+        .unwrap();
+
+        let entries = history.load("chat-1");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].metadata.channel, "telegram");
+        assert_eq!(entries[0].metadata.conversation_id, "chat-1");
+        assert_eq!(entries[0].metadata.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(entries[0].metadata.external_id, None);
+        let Message::Assistant { text, .. } = &entries[0].message else {
+            panic!("expected assistant message");
+        };
+        assert_eq!(text.as_deref(), Some("hi"));
     }
 }

@@ -10,8 +10,8 @@ use warden::{
     message::{Attachment, Message},
     scripts::ScriptRuntime,
     tools::{
-        InternalTools, dynamic::DynamicTool, raw_inference::RawInferenceTool,
-        send_message::SendMessageTool,
+        InternalTools, delete_message::DeleteMessageTool, dynamic::DynamicTool,
+        raw_inference::RawInferenceTool, send_message::SendMessageTool,
     },
 };
 
@@ -85,6 +85,7 @@ async fn agent_replies_to_hi() {
     let tools = InternalTools::new(
         RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
+        DeleteMessageTool::new(bus.clone()),
         files_dir,
         temp_history(),
     );
@@ -100,6 +101,7 @@ async fn agent_replies_to_hi() {
             channel: "tui".to_string(),
             conversation_id: "live-test-hi".to_string(),
             thread_id: None,
+            message_id: None,
         },
         message,
     });
@@ -149,6 +151,7 @@ async fn send_message_routes_to_telegram() {
     let tools = InternalTools::new(
         RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
+        DeleteMessageTool::new(bus.clone()),
         files_dir.clone(),
         temp_history(),
     );
@@ -159,6 +162,7 @@ async fn send_message_routes_to_telegram() {
         channel: "tui".to_string(),
         conversation_id: "live-test-conversation".to_string(),
         thread_id: None,
+        message_id: None,
     };
 
     let message = user_message("Please send me a message on telegram saying hello.");
@@ -211,6 +215,7 @@ async fn image_generation_routes_to_telegram() {
     let tools = InternalTools::new(
         RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
+        DeleteMessageTool::new(bus.clone()),
         files_dir.clone(),
         temp_history(),
     );
@@ -221,6 +226,7 @@ async fn image_generation_routes_to_telegram() {
         channel: "tui".to_string(),
         conversation_id: "live-test-conversation".to_string(),
         thread_id: None,
+        message_id: None,
     };
 
     let message = user_message("Create an image of a dog and send it to me in telegram.");
@@ -281,6 +287,7 @@ async fn agent_reads_pdf_content() {
     let tools = InternalTools::new(
         RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
+        DeleteMessageTool::new(bus.clone()),
         files_dir.clone(),
         temp_history(),
     );
@@ -291,6 +298,7 @@ async fn agent_reads_pdf_content() {
         channel: "tui".to_string(),
         conversation_id: "live-test-pdf".to_string(),
         thread_id: None,
+        message_id: None,
     };
 
     // Mimic what the bridge does: store the file to disk, then tell the model about it.
@@ -372,6 +380,7 @@ async fn agent_identifies_dog_image() {
     let tools = InternalTools::new(
         RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
+        DeleteMessageTool::new(bus.clone()),
         files_dir.clone(),
         temp_history(),
     );
@@ -407,6 +416,7 @@ async fn agent_identifies_dog_image() {
             channel: "tui".to_string(),
             conversation_id: "live-test-image".to_string(),
             thread_id: None,
+            message_id: None,
         },
         message,
     });
@@ -458,6 +468,7 @@ async fn agent_uses_web_search_for_wikipedia() {
     let tools = InternalTools::new(
         RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
+        DeleteMessageTool::new(bus.clone()),
         files_dir,
         temp_history(),
     );
@@ -477,6 +488,7 @@ async fn agent_uses_web_search_for_wikipedia() {
             channel: "tui".to_string(),
             conversation_id: "live-test-web-search".to_string(),
             thread_id: None,
+            message_id: None,
         },
         message,
     });
@@ -532,6 +544,7 @@ async fn delayed_message_automation() {
     let tools = InternalTools::new(
         RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
+        DeleteMessageTool::new(bus.clone()),
         files_dir,
         temp_history(),
     );
@@ -550,6 +563,7 @@ async fn delayed_message_automation() {
             channel: "tui".to_string(),
             conversation_id: "live-test-automation".to_string(),
             thread_id: None,
+            message_id: None,
         },
         message,
     });
@@ -600,6 +614,7 @@ async fn scheduled_message_at_wall_clock_time() {
     let tools = InternalTools::new(
         RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
+        DeleteMessageTool::new(bus.clone()),
         files_dir,
         temp_history(),
     );
@@ -620,6 +635,7 @@ async fn scheduled_message_at_wall_clock_time() {
             channel: "tui".to_string(),
             conversation_id: "live-test-at".to_string(),
             thread_id: None,
+            message_id: None,
         },
         message,
     });
@@ -670,6 +686,7 @@ async fn hacker_news_automation() {
     let tools = InternalTools::new(
         RawInferenceTool::new().unwrap(),
         send_message_tool(&bus, files_dir.clone()),
+        DeleteMessageTool::new(bus.clone()),
         files_dir,
         temp_history(),
     );
@@ -691,6 +708,7 @@ async fn hacker_news_automation() {
             channel: "tui".to_string(),
             conversation_id: "live-test-hn".to_string(),
             thread_id: None,
+            message_id: None,
         },
         message,
     });

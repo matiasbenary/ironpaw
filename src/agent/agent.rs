@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     bus::{Bus, ChannelAddress},
+    history::{HistoryEntry, MessageMetadata},
     message::{Message, ToolCall},
     models,
     tools::{self, InternalTools, ToolContext},
@@ -43,17 +44,17 @@ impl Agent {
         conversation_id: &str,
         messages: Vec<Message>,
     ) -> Result<Option<String>, String> {
-        self.internal_tools
-            .history
-            .append(conversation_id, &messages);
-
         let ctx = ToolContext {
             destination: destination
                 .map(|(channel, address)| (channel.to_string(), address.clone())),
             conversation_id: Some(conversation_id.to_string()),
             ..ToolContext::default()
         };
-        let mut transient_messages = Vec::new();
+        let mut transient_messages = if self.messages_are_in_history(conversation_id, &messages) {
+            Vec::new()
+        } else {
+            messages
+        };
 
         for round in 0..MAX_TOOL_ROUNDS {
             let available_tools: Vec<_> = self
@@ -96,9 +97,15 @@ impl Agent {
                     round + 1
                 ));
                 if text.as_deref().is_some_and(|text| !text.is_empty()) {
-                    self.internal_tools
-                        .history
-                        .append(conversation_id, std::slice::from_ref(&output));
+                    self.internal_tools.history.append(
+                        conversation_id,
+                        &[history_entry(
+                            output.clone(),
+                            destination,
+                            conversation_id,
+                            false,
+                        )],
+                    );
                 }
                 return Ok(text.filter(|text| !text.is_empty()));
             }
@@ -124,23 +131,30 @@ impl Agent {
                 transient_messages.push(assistant_message_for_history(output));
                 transient_messages.extend(tool_results);
             } else {
-                self.internal_tools
-                    .history
-                    .append(conversation_id, &[output]);
-                self.internal_tools
-                    .history
-                    .append(conversation_id, &tool_results);
+                self.internal_tools.history.append(
+                    conversation_id,
+                    &[history_entry(output, destination, conversation_id, false)],
+                );
+                self.internal_tools.history.append(
+                    conversation_id,
+                    &history_entries(tool_results, destination, conversation_id, false),
+                );
             }
         }
 
         let stopped = "stopped after too many tool calls".to_string();
         self.internal_tools.history.append(
             conversation_id,
-            &[Message::Assistant {
-                text: Some(format!("[tool use] {stopped}")),
-                attachments: Vec::new(),
-                tool_calls: Vec::new(),
-            }],
+            &[history_entry(
+                Message::Assistant {
+                    text: Some(format!("[tool use] {stopped}")),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                },
+                destination,
+                conversation_id,
+                false,
+            )],
         );
         Ok(Some(stopped))
     }
@@ -152,9 +166,29 @@ impl Agent {
         transient_messages: Vec<Message>,
     ) -> Vec<Message> {
         let mut messages = system_preamble(destination);
-        messages.extend(self.internal_tools.history.load(conversation_id));
+        messages.extend(
+            self.internal_tools
+                .history
+                .load(conversation_id)
+                .into_iter()
+                .map(|entry| entry.message),
+        );
         messages.extend(transient_messages);
         messages
+    }
+
+    fn messages_are_in_history(&self, conversation_id: &str, messages: &[Message]) -> bool {
+        if messages.is_empty() {
+            return true;
+        }
+        let history = self.internal_tools.history.load(conversation_id);
+        if history.len() < messages.len() {
+            return false;
+        }
+        history[history.len() - messages.len()..]
+            .iter()
+            .map(|entry| &entry.message)
+            .eq(messages.iter())
     }
 
     fn publish_tool_progress(
@@ -170,6 +204,48 @@ impl Agent {
             publish_progress(&self.bus, channel, address, progress_message);
         }
     }
+}
+
+fn history_entries(
+    messages: Vec<Message>,
+    destination: Destination<'_>,
+    conversation_id: &str,
+    include_external_id: bool,
+) -> Vec<HistoryEntry> {
+    messages
+        .into_iter()
+        .map(|message| history_entry(message, destination, conversation_id, include_external_id))
+        .collect()
+}
+
+fn history_entry(
+    message: Message,
+    destination: Destination<'_>,
+    conversation_id: &str,
+    include_external_id: bool,
+) -> HistoryEntry {
+    HistoryEntry {
+        message,
+        metadata: history_metadata(destination, conversation_id, include_external_id),
+    }
+}
+
+fn history_metadata(
+    destination: Destination<'_>,
+    conversation_id: &str,
+    include_external_id: bool,
+) -> MessageMetadata {
+    if let Some((channel, address)) = destination {
+        return MessageMetadata::new(
+            channel,
+            address.conversation_id.clone(),
+            address.thread_id.clone(),
+            include_external_id
+                .then(|| address.message_id.clone())
+                .flatten(),
+        );
+    }
+    MessageMetadata::new("warden", conversation_id.to_string(), None, None)
 }
 
 async fn execute_tool_call(
@@ -250,6 +326,7 @@ mod tests {
             crate::tools::send_message::SendMessageTool::new(bus.clone(), |_| {
                 Err("unexpected attachment lookup".to_string())
             }),
+            crate::tools::delete_message::DeleteMessageTool::new(bus.clone()),
             files_dir,
             Arc::new(crate::history::SqliteHistory::new(history).unwrap()),
         )

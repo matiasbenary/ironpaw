@@ -2,6 +2,7 @@ pub mod call_agent;
 pub mod create_automation;
 pub mod create_tool;
 pub mod delete_automation;
+pub mod delete_message;
 pub mod dynamic;
 pub mod image_generation;
 pub mod inspect_automation;
@@ -23,10 +24,11 @@ use crate::{bus::ChannelAddress, history::History, message::ToolDefinition};
 use self::{
     call_agent::CallAgentTool, create_automation::CreateAutomationTool,
     create_tool::CreateToolTool, delete_automation::DeleteAutomationTool,
-    image_generation::ImageGenerationTool, inspect_automation::InspectAutomationTool,
-    inspect_file::InspectFileTool, list_automations::ListAutomationsTool,
-    onboarding::OnboardingTool, raw_inference::RawInferenceTool, send_message::SendMessageTool,
-    todo::TodoTool, web_fetch::WebFetchTool, web_search::WebSearchTool,
+    delete_message::DeleteMessageTool, image_generation::ImageGenerationTool,
+    inspect_automation::InspectAutomationTool, inspect_file::InspectFileTool,
+    list_automations::ListAutomationsTool, onboarding::OnboardingTool,
+    raw_inference::RawInferenceTool, send_message::SendMessageTool, todo::TodoTool,
+    web_fetch::WebFetchTool, web_search::WebSearchTool,
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can
@@ -66,6 +68,7 @@ impl ToolOutput {
 pub struct InternalTools {
     pub raw_inference: RawInferenceTool,
     pub send_message: Arc<SendMessageTool>,
+    pub delete_message: Arc<DeleteMessageTool>,
     pub call_agent: Arc<CallAgentTool>,
     pub create_automation: Arc<CreateAutomationTool>,
     pub delete_automation: Arc<DeleteAutomationTool>,
@@ -81,10 +84,14 @@ impl InternalTools {
     pub fn new(
         raw_inference: RawInferenceTool,
         send_message: SendMessageTool,
+        delete_message: DeleteMessageTool,
         files_dir: std::path::PathBuf,
         history: Arc<dyn History>,
     ) -> Self {
+        send_message.bind_history(Arc::clone(&history));
+        delete_message.bind_history(Arc::clone(&history));
         let send_message = Arc::new(send_message);
+        let delete_message = Arc::new(delete_message);
         let image_generation = Arc::new(ImageGenerationTool::new(files_dir.clone()));
         let inspect_file = Arc::new(InspectFileTool::new(files_dir, raw_inference.clone()));
         let todo = Arc::new(TodoTool::new());
@@ -100,6 +107,7 @@ impl InternalTools {
         Self {
             raw_inference: raw_inference.clone(),
             send_message: Arc::clone(&send_message),
+            delete_message: Arc::clone(&delete_message),
             call_agent: Arc::clone(&call_agent),
             create_automation: Arc::clone(&create_automation),
             delete_automation: Arc::clone(&delete_automation),
@@ -111,6 +119,7 @@ impl InternalTools {
             tools: RwLock::new(vec![
                 Arc::new(raw_inference),
                 send_message,
+                delete_message,
                 image_generation,
                 inspect_file,
                 todo,
@@ -429,7 +438,8 @@ mod tests {
         ));
         InternalTools::new(
             RawInferenceTool::new().unwrap(),
-            SendMessageTool::new(bus, |_| Err("no attachments".to_string())),
+            SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
+            DeleteMessageTool::new(bus),
             files_dir,
             Arc::new(crate::history::SqliteHistory::new(history).unwrap()),
         )

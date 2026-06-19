@@ -11,8 +11,8 @@ use warden::{
     scripts::ScriptRuntime,
     secrets::Secrets,
     tools::{
-        InternalTools, dynamic::DynamicTool, raw_inference::RawInferenceTool,
-        send_message::SendMessageTool,
+        InternalTools, delete_message::DeleteMessageTool, dynamic::DynamicTool,
+        raw_inference::RawInferenceTool, send_message::SendMessageTool,
     },
 };
 
@@ -43,6 +43,7 @@ async fn main() -> std::io::Result<()> {
             let files_dir = layout.files_dir();
             move |file_id| Attachment::from_file_id(&files_dir, file_id)
         }),
+        DeleteMessageTool::new(bus.clone()),
         layout.files_dir(),
         history,
     ));

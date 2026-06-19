@@ -86,6 +86,9 @@ impl OnboardingTool {
             }
             Stage::NeedNear => {
                 let key = clean_key(&params.message)?;
+                self.send("Thanks, let me redact that for you.", ctx)
+                    .await?;
+                self.delete_current_message(ctx).await;
                 write_env_secret(self.env_path()?, "NEAR_API_KEY", &key)?;
                 reload_env(self.env_path()?)?;
                 self.send("Thanks, let me test the key to make sure it works.", ctx)
@@ -109,6 +112,9 @@ impl OnboardingTool {
             }
             Stage::NeedSearch => {
                 let key = clean_key(&params.message)?;
+                self.send("Thanks, let me redact that for you.", ctx)
+                    .await?;
+                self.delete_current_message(ctx).await;
                 write_env_secret(self.env_path()?, "BRAVE_SEARCH_API", &key)?;
                 reload_env(self.env_path()?)?;
                 self.send("Thanks, let me test the key to make sure it works.", ctx)
@@ -137,6 +143,19 @@ impl OnboardingTool {
                 .to_string());
         }
         Ok(())
+    }
+
+    async fn delete_current_message(&self, ctx: &ToolContext) {
+        let Ok(tools) = self.tools() else {
+            return;
+        };
+        let result = tools::run_tool(tools, "delete_message", serde_json::json!({}), ctx).await;
+        if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
+            eprintln!(
+                "onboarding could not delete inbound setup message: {}",
+                result["error"].as_str().unwrap_or("unknown error")
+            );
+        }
     }
 
     async fn test_search_and_finish(&self, ctx: &ToolContext) -> Result<(), String> {

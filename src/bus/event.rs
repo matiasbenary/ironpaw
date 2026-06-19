@@ -14,6 +14,8 @@ pub struct ChannelAddress {
     pub conversation_id: String,
     #[serde(default)]
     pub thread_id: Option<String>,
+    #[serde(default)]
+    pub message_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -30,6 +32,10 @@ pub enum Event {
         #[serde(default)]
         address: Option<ChannelAddress>,
         message: Message,
+    },
+    DeleteMessage {
+        channel: String,
+        address: ChannelAddress,
     },
     CronTick {
         schedule: String,

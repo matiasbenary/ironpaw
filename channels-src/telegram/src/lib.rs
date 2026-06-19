@@ -83,7 +83,8 @@ impl Guest for TelegramChannel {
             "address": {
                 "channel": "telegram",
                 "conversation_id": message.chat.id.to_string(),
-                "thread_id": message.message_thread_id.map(|id| id.to_string())
+                "thread_id": message.message_thread_id.map(|id| id.to_string()),
+                "message_id": message.message_id.to_string()
             },
             "content": content,
         })
@@ -106,6 +107,10 @@ impl Guest for TelegramChannel {
             serde_json::from_str(&address_json).map_err(|err| err.to_string())?;
         let message: AssistantMessage =
             serde_json::from_str(&message_json).map_err(|err| err.to_string())?;
+        if let Some(message_id) = message.delete_message_id.as_deref() {
+            delete_message(&bot_token_placeholder, &address, message_id)?;
+            return Ok(true);
+        }
         let text = display_message(&message);
 
         if let Some(image) = message.image_attachment() {
@@ -172,6 +177,8 @@ struct TelegramConfig {
 struct AssistantMessage {
     content: Option<String>,
     #[serde(default)]
+    delete_message_id: Option<String>,
+    #[serde(default)]
     tool_calls: Option<Vec<serde_json::Value>>,
     #[serde(default)]
     attachments: Vec<AssistantAttachment>,
@@ -209,6 +216,7 @@ struct TelegramUpdate {
 
 #[derive(Deserialize)]
 struct TelegramMessage {
+    message_id: i64,
     from: Option<TelegramUser>,
     chat: TelegramChat,
     text: Option<String>,
@@ -350,6 +358,24 @@ fn send_image(
         &image.filename,
         &image.mime_type,
         data_base64,
+    )?;
+    Ok(())
+}
+
+fn delete_message(
+    bot_token_placeholder: &str,
+    address: &ChannelAddress,
+    message_id: &str,
+) -> Result<(), String> {
+    let message_id = message_id.parse::<i64>().map_err(|err| err.to_string())?;
+    let body = serde_json::json!({
+        "chat_id": address.conversation_id,
+        "message_id": message_id,
+    });
+    channel_host::http_request(
+        "POST",
+        &format!("https://api.telegram.org/bot{bot_token_placeholder}/deleteMessage"),
+        &body.to_string(),
     )?;
     Ok(())
 }
