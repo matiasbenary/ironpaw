@@ -11,6 +11,7 @@ pub mod install_channel;
 pub mod list_automations;
 pub mod onboarding;
 pub mod raw_inference;
+pub mod search_history;
 pub mod send_message;
 pub mod todo;
 pub mod web_fetch;
@@ -35,6 +36,7 @@ use self::{
     list_automations::ListAutomationsTool,
     onboarding::OnboardingTool,
     raw_inference::RawInferenceTool,
+    search_history::SearchHistoryTool,
     send_message::SendMessageTool,
     todo::TodoTool,
     web_fetch::WebFetchTool,
@@ -118,6 +120,7 @@ impl InternalTools {
         let create_tool = Arc::new(CreateToolTool::new());
         let web_fetch = Arc::new(WebFetchTool::new());
         let web_search = Arc::new(WebSearchTool::new());
+        let search_history = Arc::new(SearchHistoryTool::new(Arc::clone(&history)));
         Self {
             raw_inference: raw_inference.clone(),
             send_message: Arc::clone(&send_message),
@@ -148,6 +151,7 @@ impl InternalTools {
                 onboarding,
                 install_channel,
                 create_tool,
+                search_history,
                 web_fetch,
                 web_search,
             ]),

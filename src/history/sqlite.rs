@@ -9,13 +9,13 @@ use super::{History, HistoryEntry, MessageMetadata};
 /// SQLite-backed persistent history.
 ///
 /// Schema:
-///   entries(id, conversation_id, item_json, metadata_json, search_text, compacted)
+///   entries(id, conversation_id, item_json, metadata_json, search_text, active)
 ///
 /// `item_json`    — full serialised `Message`
 /// `metadata_json` — full serialised `MessageMetadata`
 /// `search_text`  — plain text extracted from the item, used for FTS5
-/// `compacted`    — 1 when this entry has been replaced by a summary but is
-///                  retained for `search()`. `load()` skips compacted entries.
+/// `active`       — 1 for messages loaded into the live context, 0 for cold
+///                  storage retained for search
 pub struct SqliteHistory {
     conn: Mutex<Connection>,
 }
@@ -34,39 +34,27 @@ impl SqliteHistory {
                  item_json       TEXT    NOT NULL,
                  metadata_json   TEXT    NOT NULL DEFAULT '',
                  search_text     TEXT    NOT NULL DEFAULT '',
-                 compacted       INTEGER NOT NULL DEFAULT 0
+                 active          INTEGER NOT NULL DEFAULT 1
              );
-             CREATE INDEX IF NOT EXISTS idx_conv ON entries(conversation_id, compacted);
+             CREATE INDEX IF NOT EXISTS idx_conv ON entries(conversation_id, active);
              CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
                  search_text, content='entries', content_rowid='id'
              );
              CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
                  INSERT INTO entries_fts(rowid, search_text)
                  VALUES (new.id, new.search_text);
+             END;
+             CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+                 INSERT INTO entries_fts(entries_fts, rowid, search_text)
+                 VALUES ('delete', old.id, old.search_text);
              END;",
         )
         .map_err(|e| e.to_string())?;
-        ensure_metadata_column(&conn).map_err(|e| e.to_string())?;
 
         Ok(Self {
             conn: Mutex::new(conn),
         })
     }
-}
-
-fn ensure_metadata_column(conn: &Connection) -> rusqlite::Result<()> {
-    let mut stmt = conn.prepare("PRAGMA table_info(entries)")?;
-    let has_metadata = stmt
-        .query_map([], |row| row.get::<_, String>(1))?
-        .filter_map(Result::ok)
-        .any(|column| column == "metadata_json");
-    if !has_metadata {
-        conn.execute(
-            "ALTER TABLE entries ADD COLUMN metadata_json TEXT NOT NULL DEFAULT ''",
-            [],
-        )?;
-    }
-    Ok(())
 }
 
 fn extract_search_text(item: &Message) -> String {
@@ -111,17 +99,9 @@ fn extract_search_text(item: &Message) -> String {
     }
 }
 
-fn entry_from_row(
-    conversation_id: &str,
-    item_json: String,
-    metadata_json: String,
-) -> Option<HistoryEntry> {
+fn entry_from_row(item_json: String, metadata_json: String) -> Option<HistoryEntry> {
     let message = serde_json::from_str(&item_json).ok()?;
-    let metadata = if metadata_json.trim().is_empty() {
-        MessageMetadata::new("warden", conversation_id.to_string(), None, None)
-    } else {
-        serde_json::from_str(&metadata_json).ok()?
-    };
+    let metadata = serde_json::from_str(&metadata_json).ok()?;
     Some(HistoryEntry { message, metadata })
 }
 
@@ -131,7 +111,7 @@ impl History for SqliteHistory {
         let mut stmt = conn
             .prepare(
                 "SELECT item_json, metadata_json FROM entries
-                 WHERE conversation_id = ?1 AND compacted = 0
+                 WHERE conversation_id = ?1 AND active = 1
                  ORDER BY id ASC",
             )
             .expect("prepare load");
@@ -140,9 +120,7 @@ impl History for SqliteHistory {
         })
         .expect("query load")
         .filter_map(|r| r.ok())
-        .filter_map(|(item_json, metadata_json)| {
-            entry_from_row(conversation_id, item_json, metadata_json)
-        })
+        .filter_map(|(item_json, metadata_json)| entry_from_row(item_json, metadata_json))
         .collect()
     }
 
@@ -203,8 +181,7 @@ impl History for SqliteHistory {
     fn compact(&self, conversation_id: &str, summary: &str) {
         let conn = self.conn.lock().expect("history mutex poisoned");
         conn.execute(
-            "UPDATE entries SET compacted = 1
-             WHERE conversation_id = ?1 AND compacted = 0",
+            "UPDATE entries SET active = 0 WHERE conversation_id = ?1 AND active = 1",
             params![conversation_id],
         )
         .expect("compact update");
@@ -221,7 +198,7 @@ impl History for SqliteHistory {
         .expect("insert summary");
     }
 
-    fn search(&self, conversation_id: &str, query: &str) -> Vec<HistoryEntry> {
+    fn search(&self, query: &str) -> Vec<HistoryEntry> {
         let conn = self.conn.lock().expect("history mutex poisoned");
         let mut stmt = conn
             .prepare(
@@ -229,19 +206,16 @@ impl History for SqliteHistory {
                  FROM entries_fts f
                  JOIN entries e ON e.id = f.rowid
                  WHERE f.search_text MATCH ?1
-                   AND e.conversation_id = ?2
                  ORDER BY e.id DESC
                  LIMIT 20",
             )
             .expect("prepare search");
-        stmt.query_map(params![query, conversation_id], |row| {
+        stmt.query_map(params![query], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .expect("query search")
         .filter_map(|r| r.ok())
-        .filter_map(|(item_json, metadata_json)| {
-            entry_from_row(conversation_id, item_json, metadata_json)
-        })
+        .filter_map(|(item_json, metadata_json)| entry_from_row(item_json, metadata_json))
         .collect()
     }
 }

@@ -147,7 +147,7 @@ impl InspectFileTool {
                 parallel_tool_calls: false,
             })
             .await?;
-        let Message::Assistant { text, .. } = response else {
+        let Message::Assistant { text, .. } = response.message else {
             return Err("file inspection model response was not an assistant message".to_string());
         };
         let answer = text.unwrap_or_default();

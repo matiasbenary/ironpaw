@@ -43,8 +43,8 @@ impl MessageMetadata {
 }
 
 pub trait History: Send + Sync {
-    /// Return stored items for a conversation, oldest first.
-    /// Non-compacted items only — compacted items are retained for search.
+    /// Return active items for a conversation, oldest first.
+    /// Inactive items stay on disk for search.
     fn load(&self, conversation_id: &str) -> Vec<HistoryEntry>;
 
     /// Persist new items for a conversation.
@@ -59,11 +59,10 @@ pub trait History: Send + Sync {
         external_id: &str,
     );
 
-    /// Replace all active items with a compacted summary item, retaining
-    /// the originals on disk (compacted=1) so they remain searchable.
+    /// Replace a conversation with a summary item.
     fn compact(&self, conversation_id: &str, summary: &str);
 
-    /// Full-text search over all stored items (including compacted).
+    /// Full-text search over all stored items.
     /// Returns matching items newest first.
-    fn search(&self, conversation_id: &str, query: &str) -> Vec<HistoryEntry>;
+    fn search(&self, query: &str) -> Vec<HistoryEntry>;
 }

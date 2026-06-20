@@ -23,6 +23,22 @@ pub struct RawInferenceRequest {
     pub parallel_tool_calls: bool,
 }
 
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+pub struct RawInferenceUsage {
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RawInferenceOutput {
+    pub message: Message,
+    pub usage: RawInferenceUsage,
+}
+
 impl JsonSchema for RawInferenceRequest {
     fn schema_name() -> Cow<'static, str> {
         Cow::Borrowed("RawInferenceRequest")
@@ -85,7 +101,10 @@ impl RawInferenceTool {
         )
     }
 
-    pub async fn execute(&self, request: RawInferenceRequest) -> Result<Message, String> {
+    pub async fn execute(
+        &self,
+        request: RawInferenceRequest,
+    ) -> Result<RawInferenceOutput, String> {
         let near_api_key =
             std::env::var("NEAR_API_KEY").map_err(|_| "missing tool secret: NEAR_API_KEY")?;
         log_entry("request", &request);
@@ -117,7 +136,7 @@ impl RawInferenceTool {
             .map_err(|err| format!("failed to parse chat response JSON: {err}"))?;
         log_entry("response", &response);
 
-        response_to_message(response)
+        response_to_output(response)
     }
 
     fn chat_request(&self, request: &RawInferenceRequest) -> Result<serde_json::Value, String> {
@@ -242,7 +261,7 @@ fn write_log_entry(label: &str, content: &str) {
         });
 }
 
-fn response_to_message(response: serde_json::Value) -> Result<Message, String> {
+fn response_to_output(response: serde_json::Value) -> Result<RawInferenceOutput, String> {
     let message = response["choices"]
         .as_array()
         .and_then(|choices| choices.first())
@@ -258,10 +277,14 @@ fn response_to_message(response: serde_json::Value) -> Result<Message, String> {
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-    Ok(Message::Assistant {
-        text,
-        attachments: Vec::new(),
-        tool_calls,
+    let usage = serde_json::from_value(response["usage"].clone()).unwrap_or_default();
+    Ok(RawInferenceOutput {
+        message: Message::Assistant {
+            text,
+            attachments: Vec::new(),
+            tool_calls,
+        },
+        usage,
     })
 }
 
