@@ -16,8 +16,8 @@ pub struct MessageMetadata {
     pub id: String,
     /// Channel that produced or receives this message, e.g. "telegram".
     pub channel: String,
-    /// Channel conversation/chat id.
-    pub conversation_id: String,
+    /// Channel/provider conversation/chat id.
+    pub channel_conversation_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
     /// Provider-owned message id when Warden knows it.
@@ -28,14 +28,14 @@ pub struct MessageMetadata {
 impl MessageMetadata {
     pub fn new(
         channel: impl Into<String>,
-        conversation_id: impl Into<String>,
+        channel_conversation_id: impl Into<String>,
         thread_id: Option<String>,
         external_id: Option<String>,
     ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             channel: channel.into(),
-            conversation_id: conversation_id.into(),
+            channel_conversation_id: channel_conversation_id.into(),
             thread_id,
             external_id,
         }
@@ -54,7 +54,7 @@ pub trait History: Send + Sync {
     fn delete_external_message(
         &self,
         channel: &str,
-        conversation_id: &str,
+        channel_conversation_id: &str,
         thread_id: Option<&str>,
         external_id: &str,
     );

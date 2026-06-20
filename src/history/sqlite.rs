@@ -143,7 +143,7 @@ impl History for SqliteHistory {
     fn delete_external_message(
         &self,
         channel: &str,
-        conversation_id: &str,
+        channel_conversation_id: &str,
         thread_id: Option<&str>,
         external_id: &str,
     ) {
@@ -152,26 +152,24 @@ impl History for SqliteHistory {
             Some(thread_id) => {
                 conn.execute(
                     "DELETE FROM entries
-                     WHERE conversation_id = ?1
-                       AND json_valid(metadata_json)
-                       AND json_extract(metadata_json, '$.channel') = ?2
-                       AND json_extract(metadata_json, '$.conversation_id') = ?1
+                     WHERE json_valid(metadata_json)
+                       AND json_extract(metadata_json, '$.channel') = ?1
+                       AND json_extract(metadata_json, '$.channel_conversation_id') = ?2
                        AND json_extract(metadata_json, '$.thread_id') = ?3
                        AND json_extract(metadata_json, '$.external_id') = ?4",
-                    params![conversation_id, channel, thread_id, external_id],
+                    params![channel, channel_conversation_id, thread_id, external_id],
                 )
                 .expect("delete external message");
             }
             None => {
                 conn.execute(
                     "DELETE FROM entries
-                     WHERE conversation_id = ?1
-                       AND json_valid(metadata_json)
-                       AND json_extract(metadata_json, '$.channel') = ?2
-                       AND json_extract(metadata_json, '$.conversation_id') = ?1
+                     WHERE json_valid(metadata_json)
+                       AND json_extract(metadata_json, '$.channel') = ?1
+                       AND json_extract(metadata_json, '$.channel_conversation_id') = ?2
                        AND json_type(metadata_json, '$.thread_id') IS NULL
                        AND json_extract(metadata_json, '$.external_id') = ?3",
-                    params![conversation_id, channel, external_id],
+                    params![channel, channel_conversation_id, external_id],
                 )
                 .expect("delete external message");
             }
@@ -270,7 +268,7 @@ mod tests {
         let loaded = history.load("chat-1");
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].metadata.channel, "telegram");
-        assert_eq!(loaded[0].metadata.conversation_id, "chat-1");
+        assert_eq!(loaded[0].metadata.channel_conversation_id, "chat-1");
         assert_eq!(loaded[0].metadata.external_id, None);
     }
 

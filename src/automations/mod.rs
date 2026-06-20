@@ -792,7 +792,7 @@ mod tests {
         let entries = tools.history.load("c1");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].metadata.channel, "telegram");
-        assert_eq!(entries[0].metadata.conversation_id, "c1");
+        assert_eq!(entries[0].metadata.channel_conversation_id, "c1");
         assert_eq!(entries[0].metadata.thread_id.as_deref(), Some("thread-1"));
         assert_eq!(
             entries[0].metadata.external_id.as_deref(),

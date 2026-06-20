@@ -291,7 +291,7 @@ mod tests {
         let entries = history.load("chat-1");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].metadata.channel, "telegram");
-        assert_eq!(entries[0].metadata.conversation_id, "chat-1");
+        assert_eq!(entries[0].metadata.channel_conversation_id, "chat-1");
         assert_eq!(entries[0].metadata.thread_id.as_deref(), Some("thread-1"));
         assert_eq!(entries[0].metadata.external_id, None);
         let Message::Assistant { text, .. } = &entries[0].message else {
