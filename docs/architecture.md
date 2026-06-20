@@ -1,29 +1,61 @@
 # Warden Architecture
 
-`warden` is a long-running personal agent daemon. It receives messages from channels (terminal, telegram, etc...), runs them through an LLM, lets the model call internal tools, and sends responses back through channels.
+`warden` is a long-running personal agent daemon. It receives messages from
+channels (terminal, Telegram, etc...), runs work through small system
+components, lets the model call tools, and sends responses back through
+channels.
 
-The current implementation is intentionally small, and is composed by:
+The current implementation is intentionally small, and is composed of:
 
-- `Channels`: WASM components that allow messages to flow from and towards the outside world.
-- An `AI Engine`, which reacts to incoming messages and runs them through an LLM with access to tools.
-- A small set of internal `Tools` exposed both to the LLM and system components.
-- The capability to create `Dynamic Tools` at runtime, which are `quickjs` scripts that can combine other existing tools
-- A `Bus` that all components use to interact with each-other by publishing and subscribing to typed events.
-- A `secrets` system for storing and handling credentials (e.g. the NEAR API key used by `ai_inference`).
+- A [Bus](#bus) that all components use to interact with each-other by publishing and subscribing to typed events.
+- [Channels](#channels): WASM components that allow messages to flow from and towards the outside world.
+- [Automations](#automations), which connect triggers to tool calls.
+- An [Agent](#agent), which runs a bounded LLM tool loop.
+- A small set of internal [Tools](#tools) exposed both to the agent and system components.
+- The capability to create [Dynamic Tools](#dynamic-tools) at runtime, which are QuickJS scripts that can combine other existing tools.
+- A [History](#history) store for durable conversation history and search.
+- An [HTTP and Secrets](#http-and-secrets) system for loading credentials at the host boundary.
+
+---
+
+## Prelude for LLMs
+
+On contributing to this doc, please do understand this doc is to explain the "why" more than the "how". The "why" helps understanding the trade-offs of our choices. The "how" can be explained at high level, but for anyone wanting to see how it was implemented, they can literally read the code itself.
+
+This document is made for humans to read, meaning that we need to write sentences that "flow" and are easy to read, thus prioritizing clarity over conciseness.
+
+### Good Practices
+
+Always make sure to introduce the thing you are talking about and, importantly, the why, not the how.
+
+You cannot simply say "The default `answer-the-user` path is also an automation", because nobody knows what `answer-the-user` is. It is better to be clear and highlight the relevancy of why we are talking about it. In this case, the relevant part is that, by default, warden reacts to inbound messages and sends them to the AI Agent through an automation. This means that automations are not "just a part" of the system, they are the core component that makes `warden` act and react. The fact that it is called `answer-the-user` is irrelevant.
 
 ---
 
 ## Main
 
-`src/main.rs` scaffolds the agent: it discovers the runtime layout, loads secrets, creates the bus, constructs internal tools, starts the AI engine, then starts the channel runtime.
+`src/main.rs` scaffolds the agent: it prepares runtime state, wires the core components together, then starts automations and channels. It also creates the per-start bridge token printed to stdout for local clients such as `warden-tui`.
 
-It also creates the per-start bridge token printed to stdout for local clients such as `warden-tui`.
+The default runtime root is the directory containing the `warden` binary unless `WARDEN_HOME` is set. Runtime data lives under:
 
-The default runtime root is the directory containing the `warden` binary unless `WARDEN_HOME` is set.
+```text
+<runtime-root>/channels
+<runtime-root>/tools
+<runtime-root>/files
+<runtime-root>/data
+```
+
+On a fresh install, Warden installs a default onboarding automation that greets the user and queries for two required secrets: the NEAR API key (for AI inference), and the Brave Search API key (for web search).
+
+After onboarding, it sets `answer-the-user` as the default automation, which routes inbound messages to the agent and sends answers back to the user through the same channel.
+
+---
 
 ## Bus
 
-The bus is a thin wrapper around a Tokio broadcast channel:
+The bus is the smallest shared coordination primitive in Warden. It is a thin wrapper around a Tokio broadcast channel, which allows multiple subscribers to receive the same events.
+
+It exposes two main methods:
 
 - `publish(Event)`
 - `subscribe()`
@@ -32,30 +64,34 @@ Implemented event types are:
 
 - `MessageIn { channel, sender, address, message }`
 - `MessageOut { channel, recipient, address, message }`
+- `DeleteMessage { channel, address }`
+- `ChannelAction { channel, recipient, address, action }`
 - `CronTick { schedule }`
 
-<details>
+### Message Types
 
-<summary> Address </summary>
-
-Channels tend to have some concept of `address`, generally, in which chat you are talking with the user.
-
-To keep the core engine channel-agnostic without making the address totally untyped, bus events use `ChannelAddress`:
+Warden's bus, history, and agent use Warden-owned message types:
 
 ```rust
-struct ChannelAddress {
-    channel: String,
-    conversation_id: String,
-    thread_id: Option<String>,
+enum Message {
+    System(String),
+    User { text, attachments },
+    Assistant { text, attachments, tool_calls },
+    ToolResult { tool_call_id, tool_name, result },
 }
 ```
 
-For Telegram, `conversation_id` maps to the chat id and `thread_id` maps to the optional topic/thread id.
+Attachments are local files identified by `file_id`, with metadata such as MIME type, optional filename, and local source path. They can appear on user messages received from channels and assistant messages produced for outbound delivery. The bus carries the same `Message` type in both directions; channel-specific payloads are only produced by the channel bridge.
 
-</details>
+#### Image and File Management
 
-<details>
+Warden handles files as first-class message attachments: images, PDFs, text files, and eventually other documents. The core agent sees the same shape regardless of whether a file came from Telegram, TUI, image generation, or another channel.
 
+Warden stores files locally and passes around typed attachments containing a numeric `file_id`, MIME type, optional filename, and source path. User messages and assistant messages both use the same attachment type on the bus; channels translate their provider-specific payloads into attachments on the way in, and the bridge translates attachments back into provider-ready outbound payloads on the way out.
+
+The model interacts with stored files through tools. `inspect_file(file_id, query)` can extract text from documents or call a vision model for images. `image_generation` stores the generated image locally and returns a `file_id`; `send_message` can then publish an assistant message with that attachment for channel delivery.
+
+All file ids are `u32` values for now. The current architecture treats that as the stable attachment identifier.
 
 ---
 
@@ -70,196 +106,229 @@ Channels are WASM components loaded dynamically at startup from:
 
 Each channel has a `.wasm` file with its logic, and a matching `.config.json` file with its channel-specific config.
 
-The channel runtime does four jobs:
+The channel runtime does five jobs:
 
 1. Bind to a local HTTP bridge.
-2. Optionally starts a ngrok for channels that need to receive external webhooks.
+2. Optionally start ngrok for channels that need to receive external webhooks.
 3. Discover and load channel manifests from the runtime `channels` directory.
-4. Start each WASM channel and run the bridge.
+4. Start each WASM channel with `on_start(config_json)`.
+5. Run the [bridge](#the-bridge).
+
+Channels do not receive raw secrets directly. They use the host-provided `http_request`, `http_request_base64`, and `http_multipart_base64` imports. The host wraps them with `HttpTool<ChannelSecrets>`, allowing configured credentials to be injected at the HTTP boundary.
+
+<details>
+
+<summary> Adding Channels </summary>
+
+Channel installation is partly implemented inside the agent through `list_channels` and `install_channel`. The install flow discovers local channel packages, asks deterministic setup questions, writes secrets to `.env`, copies the WASM/config into the runtime `channels` directory, and activates the channel in the running channel runtime.
+
+</details>
+
+<details>
+
+<summary> Address </summary>
+
+Channels tend to have some concept of `address`, generally, in which chat you are talking with the user.
+
+To keep the core engine channel-agnostic without making the address totally untyped, bus events use `ChannelAddress`:
+
+```rust
+struct ChannelAddress {
+    channel: String,
+    conversation_id: String,
+    thread_id: Option<String>,
+    message_id: Option<String>,
+}
+```
+
+For Telegram, `conversation_id` maps to the chat id, `thread_id` maps to the optional topic/thread id, and `message_id` maps to the provider message id when Warden knows it.
+
+</details>
+
+### The Bridge
 
 The bridge has two directional halves:
 
-- `message_channel_to_warden`: HTTP request from a channel provider/client into
-  Warden.
-- `message_warden_to_channel`: `MessageOut` event from Warden out through a channel WASM component.
+- `message_channel_to_warden`: HTTP request from a channel provider/client into Warden.
+- `message_warden_to_channel`: outbound bus events from Warden into a channel WASM component.
 
-Inbound flow:
+#### Inbound flow
 
 1. A channel provider/client posts to the bridge route configured by the channel.
 2. The bridge authorizes the request according to channel config.
 3. The bridge calls the WASM channel `handle_http(path, body, config_json)`.
-4. The WASM channel emits zero or more channel messages with the host-provided
-   `emit_message(message_json)` import.
+4. The WASM channel emits zero or more channel messages with the host-provided `emit_message(message_json)` import.
 5. The bridge validates ownership and channel identity.
 6. Accepted messages become `Event::MessageIn`.
 7. The bridge remembers the sender address as the channel `default_address`.
 
-Outbound flow:
+#### Outbound flow
 
 1. The bridge subscribes to the bus.
-2. It listens for `Event::MessageOut` addressed to `Sender::User`.
-3. It resolves the explicit address or falls back to the channel
-   `default_address`.
-4. It converts Warden's internal `Message` into the outbound channel payload,
-   including reading any local attachments and encoding them for the channel.
-5. It calls WASM `on_message_out(message_json, address_json, config_json)`.
-6. The WASM channel performs the provider-specific send.
-
-Channels do not receive raw secrets directly. They use the host-provided
-`http_request`, `http_request_base64`, and `http_multipart_base64` imports. The host wraps them with `HttpTool<ChannelSecrets>`,
-allowing configured credentials to be injected at the HTTP boundary.
+2. It listens for `MessageOut`, `DeleteMessage`, and `ChannelAction` events addressed to the user.
+3. For `MessageOut`, it resolves the explicit address or falls back to the channel `default_address`.
+4. It serializes the event for the channel, adding base64 payloads for local attachments.
+5. It calls WASM `on_outbound_event(event_json, config_json)`.
+6. The WASM channel performs the provider-specific send/delete/action.
 
 ---
 
-## Core AI
-
-When started, the engine subscribes to the bus and reacts to:
-
-```text
-Event::MessageIn { sender: Sender::User, ... }
-```
-
-For each accepted user message, the engine records the message in conversation history and lets the model run a bounded tool loop.
-
-Then the engine runs a bounded chat-completions tool loop:
-
-1. Append the incoming user message to durable history.
-2. Build model input from the system preamble and Warden's replayable
-   conversation history.
-3. Attach schemas for all internal tools.
-4. Use the tool `ai_inference.execute(request)` to call the model.
-5. If the model returns no tool calls, append the assistant message to history
-   and send it back through the current channel.
-6. If the model returns tool calls, append the assistant tool-call message,
-   execute the tools, append tool-result messages, and ask the model again.
-7. Stop after `MAX_TOOL_ROUNDS`.
-
-## History
-
-Warden keeps a "short term" hot memory, and a "long term" cold memory. The short memory keeps the latests messages in the current conversation, but goes offloading older messages as the conversation grows.
-
-The memory module exposes 4 methods:
-
-- `load(conversation_id) -> Vec<Message>` - load the active conversation history
-- `append(conversation_id, items)`
-- `compact(conversation_id, summary)` - replace all active items with a compacted summary item
-- `search(conversation_id, query) -> Vec<Message>`
-
-## Tools
-
-In Warden we currently distinguish between two types of tools: internal tools and dynamic ones.
-
-### Internal Tools
-Internal tools are async and model-callable. Every internal tool exposes:
-
-- `name()`
-- `tool_definition()`
-- `execute(args).await`
-
-Each concrete tool follows the same shape:
-
-- `new(...)`
-- typed async `execute(params).await`
-- `InternalTool` impl that uses shared adapters
-
-Adding a new internal tool requires:
-
-1. Define a params type with `serde::Deserialize` and `schemars::JsonSchema`.
-2. Define an output type with `serde::Serialize`.
-3. Implement typed async `execute(params)`.
-4. Implement `InternalTool` using the shared schema and execution helpers.
-5. Add the tool to `InternalTools`.
-
-Implemented internal tools:
-
-- `ai_inference`: Calls `/v1/chat/completions` using the configured NEAR API key.
-- `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image, and returns a `file_id` for later delivery.
-- `inspect_file`: inspects a locally stored file by numeric `file_id`, using text extraction for documents and a vision model for images.
-- `send_message`: publishes a message to a user through a channel.
-- `delete_message`: deletes a channel message when the channel supports it.
-
-`ai_inference` is both the engine's model-call primitive and a model-callable tool. This allows future model-to-model delegation while keeping inference
-credential handling centralized.
-
-`send_message` publishes `Event::MessageOut` with a Warden `Message`. If no explicit channel address is provided, the channel bridge can use that channel's stored `default_address`.
-
-TODO:
-
-- Change the channel outbound ABI so successful sends can return the provider message id; then `send_message` can wait for that result and persist history with `external_id` instead of `None`.
-
-### Dynamic Tools
-
-In order to allow the LLM to implement simple scripts, we added the `create_tool` tool, that allows the LLM to write `quickjs` scripts, that are then executed. 
-
-These scripts should be stored as `.qjs` files in the `tools` directory, and should expose which https endpoints they are allowed to call.
-
-TODO:
-
-- Store each dynamic tool with an explicit capability manifest next to its script: version, description, parameter schema, allowed tool calls, and allowed outbound HTTPS endpoints.
-- Decide the dynamic-tool lifecycle model for direct file edits: source of truth, update/delete semantics, startup discovery, and whether runtime reload/file watching is needed.
-- Decide whether some built-in/internal tools should eventually move to packaged WASM tools with declared capabilities and secret requirements.
-
-
-## HTTP And Secrets
+## HTTP and Secrets
 
 Secrets are loaded once at startup from:
 
-1. `WARDEN_ENV`, when set
-2. `<runtime-root>/.env`
-3. current working directory `.env`
+1. `WARDEN_ENV`, when set.
+2. `<runtime-root>/.env`.
+3. current working directory `.env`.
 
 They are exposed as separate namespaces:
 
 - `secrets.channels`
 - `secrets.tools`
 
-Today both namespaces read from environment variables after `.env` loading, but
-the API boundary is already separated so channel code does not ask for tool
-secrets and tool code does not ask for channel secrets.
+Today both namespaces read from environment variables after `.env` loading, but the API boundary is already separated so channel code does not ask for tool secrets and tool code does not ask for channel secrets.
 
 `HttpTool<S>` is a reusable HTTP helper for controlled credential injection. It:
 
-- only allows HTTPS except loopback HTTP
-- restricts non-loopback requests to configured hosts
-- injects credentials as headers or URL placeholder replacements
-- keeps secret lookup at the host boundary
+- only allows HTTPS except loopback HTTP.
+- restricts non-loopback requests to configured credential hosts.
+- injects credentials as headers or URL placeholder replacements.
+- keeps secret lookup at the host boundary.
 
-The generic `web_fetch` tool is read-only and unauthenticated. It rejects plain
-HTTP except localhost development URLs, rejects private/internal resolved IPs,
-and does not follow redirects.
+The generic `web_fetch` tool is read-only and unauthenticated. It rejects plain HTTP except localhost development URLs, rejects private/internal resolved IPs, and does not follow redirects.
 
-TODO:
+---
 
-- Connect dynamic-tool endpoint allowlists to the HTTP boundary so scripts can only call declared public HTTPS hosts.
-- Add durable tool/automation execution audit logs.
-- Replace plaintext `.env` secret storage with an encrypted local store or OS keychain-backed secret store.
-- Add a key reconfiguration flow for rotating or replacing `NEAR_API_KEY` and `BRAVE_SEARCH_API` after onboarding.
-- Add channel-level message deletion/redaction so pasted setup secrets can be removed from frontends after capture.
+## Automations
 
-Channels use this through the WASM host HTTP imports. The internal
-`ai_inference` tool is trusted code and directly owns the NEAR API key supplied
-from `secrets.tools`.
+Automations are the cornerstone of Warden's behavior. They are small, declarative rules that explain how `warden` reacts to internal (`cron`) or external (`event`) triggers.
 
-## Message Types
+Technically, an automation is defined as a triggering condition plus a tool call (be that an internal or dynamic tool). When the condition is met, the tool is called with pre-defined arguments that can contain information from the triggering event.
 
-Warden's bus, history, and AI engine use Warden-owned message types:
+Stored automations live in:
 
-```rust
-enum Message {
-    System(String),
-    User { text, attachments },
-    Assistant { text, attachments, tool_calls },
-    ToolResult { tool_call_id, tool_name, result },
-}
+```text
+<runtime-root>/data/automations.db
 ```
 
-Attachments are local files identified by `file_id`, with metadata such as MIME type, optional filename, and local source path. They can appear on user messages received from channels and assistant messages produced for outbound delivery. The bus carries the same `Message` type in both directions; channel-specific outbound payloads are only produced by the channel bridge.
+### Triggers
+
+A trigger can be one of:
+
+- `event`: a bus event, e.g. an inbound user message.
+- `cron`: a recurring cron expression, evaluated in local time.
+- `at`: one-shot absolute time.
+
+Once a trigger fires, the automation runs a single pre-defined tool call. The tool call can be any registered tool, including internal and dynamic tools.
+
+### Examples
+
+When `warden` starts, it installs a default automation that reacts to inbound user messages with an `onboarding` tool. This tool asks the user for required secrets (APIs to enable ai_inference and web_search), then installs the default `answer-the-user` automation, which reacts to inbound user messages by calling the agent and sending the final answer back to the user.
+
+```text answer-the-user
+MessageIn(User, any channel)
+-> answer_the_user({ message: "{{event.text}}", conversation_id: "{{event.conversation_id}}" })
+```
+
+---
+
+## Agent
+
+The agent is the bounded tool loop: history + raw inference + tool execution. It does not subscribe to the bus directly. Automations or tools call it through the `call_agent` tool.
+
+For each run:
+
+1. Build model input from the system preamble, durable conversation history, and the new transient messages.
+2. Attach schemas for all registered tools, internal and dynamic.
+3. Use `raw_inference.execute(request)` to call the model.
+4. If the model returns no tool calls, append the assistant message to history and return the final text.
+5. If the model returns tool calls, append the assistant tool-call message, execute tools, append tool-result messages, and ask the model again.
+6. Stop after `MAX_TOOL_ROUNDS`.
+
+When a run has a destination, the agent also publishes typing and progress events back to that channel.
+
+`raw_inference` is both the agent's model-call primitive and a model-callable tool. This keeps provider formatting and credential handling centralized while still allowing higher-level model-to-model delegation.
+
+---
+
+## History
+
+Warden stores durable conversation history in SQLite:
+
+```text
+<runtime-root>/data/history.db
+```
+
+The history module exposes:
+
+- `load(conversation_id) -> Vec<HistoryEntry>` - load active conversation history.
+- `append(conversation_id, entries)`
+- `delete_external_message(channel, conversation_id, thread_id, external_id)`
+- `compact(conversation_id, summary)` - replace active items with a summary while retaining originals for search.
+- `search(conversation_id, query) -> Vec<HistoryEntry>`
+
+Each history entry stores a Warden message plus metadata: Warden id, channel, conversation id, optional thread id, and optional provider-owned external id.
+
+Inbound user messages are persisted by the automation runtime before matching automations. Assistant/tool messages are persisted by the agent or by tools such as `send_message`.
+
+---
+
+## Tools
+
+In Warden we currently distinguish between internal tools and dynamic ones.
+
+### Internal Tools
+
+Internal tools are async and model-callable. Every internal tool exposes:
+
+- `name()`
+- `tool_definition()`
+- `execute(args, ctx).await`
+
+Each tool receives a `ToolContext` with the current destination, conversation id, and tool-call depth. This lets tools like `send_message` and `delete_message` default to the current conversation when that is what the user asked for.
+
+Implemented internal tools include:
+
+- `raw_inference`: calls `/v1/chat/completions` using the configured NEAR API key.
+- `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image, and returns a `file_id` for later delivery.
+- `inspect_file`: inspects a locally stored file by numeric `file_id`, using text extraction for documents and a vision model for images.
+- `web_search`: searches the web through Brave Search.
+- `web_fetch`: fetches a public URL with no credentials.
+- `send_message`: publishes a message to a user through a channel.
+- `delete_message`: deletes a channel message when the channel supports it.
+- `call_agent`: runs a sub-agent and returns its final answer as a tool result.
+- `create_tool`: writes and registers a new dynamic tool.
+- `create_automation`, `delete_automation`, `inspect_automation`, `list_automations`: manage persisted automations.
+- `list_channels`, `install_channel`: inspect and install local channel packages.
+- `onboarding`: collects required setup secrets and installs the normal answer automation.
+- `todo`: a small scratchpad-style tool.
+
+### Dynamic Tools
+
+Dynamic tools are JavaScript files executed in a QuickJS sandbox.
+
+They live in:
+
+```text
+<runtime-root>/tools/<name>.js
+<runtime-root>/tools/<name>.config.json
+```
+
+At startup, Warden discovers `.js` files in the tools directory and registers them in the same tool registry as internal tools.
+
+Scripts have no ambient filesystem or network access. They receive:
+
+- `args`: the tool call arguments.
+- `tool(name, args)`: a host function for calling existing tools.
+- `console.log(...)`: debug logging.
+
+The script's last expression becomes the tool result.
+
+---
 
 ## Example Flow: TUI Asks For A Telegram Message
 
-This example assumes Telegram has already received at least one valid owner
-message, so its `default_address` has been stored in
-`telegram.config.json`.
+This example assumes Telegram has already received at least one valid owner message, so its `default_address` has been stored in `telegram.config.json`.
 
 1. The user sends a message in the TUI:
 
@@ -287,19 +356,23 @@ message, so its `default_address` has been stored in
    }
    ```
 
-5. `AiEngine` receives `MessageIn` and starts the tool loop.
+5. The automation runtime stores the inbound message in history and matches the default `answer-the-user` automation.
 
-6. The engine calls `ai_inference.execute(AiInferenceRequest { ... })`.
-   The model receives schemas for all internal tools, including:
+6. `answer_the_user` calls `call_agent`, which starts the agent tool loop.
+
+7. The agent calls `raw_inference.execute(RawInferenceRequest { ... })`. The model receives schemas for the tools relevant to this flow, including:
 
    ```text
-   ai_inference
-   image_generation
-   inspect_file
+   raw_inference
    send_message
+   delete_message
+   call_agent
+   create_tool
+   create_automation
+   install_channel
    ```
 
-7. The model decides to call:
+8. The model decides to call:
 
    ```json
    {
@@ -311,8 +384,7 @@ message, so its `default_address` has been stored in
    }
    ```
 
-8. The engine executes the `send_message` tool. Because no explicit Telegram
-   `conversation_id` is provided, the tool publishes:
+9. The agent executes the `send_message` tool. Because no explicit Telegram `conversation_id` is provided, the tool publishes:
 
    ```text
    Event::MessageOut {
@@ -323,70 +395,39 @@ message, so its `default_address` has been stored in
    }
    ```
 
-9. The channel bridge receives `MessageOut`, finds the Telegram channel, and
-   resolves `address` from Telegram's stored `default_address`.
+10. The channel bridge receives `MessageOut`, finds the Telegram channel, and resolves `address` from Telegram's stored `default_address`.
 
-10. The bridge calls:
+11. The bridge calls:
 
     ```text
-    telegram.on_message_out(message_json, address_json, config_json)
+    telegram.on_outbound_event(event_json, config_json)
     ```
 
-11. The Telegram WASM channel sends the message to Telegram using its configured
-    HTTP credential injection.
+12. The Telegram WASM channel sends the message to Telegram using its configured HTTP credential injection.
 
-12. The model loop finishes and the engine sends the final response back to the
-    original TUI address, usually something like:
+13. The model loop finishes. `answer_the_user` sends the final response back to the original TUI address, usually something like:
 
     ```text
     ok
     ```
 
-This flow is the intended uniform shape: TUI and Telegram are both channels,
-and cross-channel effects happen through tools and bus events rather than
-special-case code paths.
+This flow is the intended uniform shape: TUI and Telegram are both channels, and cross-channel effects happen through tools and bus events rather than special-case code paths.
 
-## To Be Implemented
+---
 
-The implemented system is enough for the current MVP, but these pieces are still missing or incomplete.
+## Appendix: ToDo
 
-### Automations
-
-An `automation` is simply a small program that reacts to an event (be it scheduled or a world event) and executes a single call of a `Tool`.
-
-There are two main types of automations, those that react to `cron` events (i.e. scheduled events), and those that react to `events` (for now, only the `MessageIn` event).
-
-By triggering tools, we enable `warden` to decide if it needs to use the LLM to process the `automation` or not. 
-
-For example, by default all user messages trigger the `ai engine` tool, which means that the LLM will be called to handle the message and answer the user back.
-
-However, we added a test that showcases how `warden` can create a `tool` (using the `create_tool` tool) to fetch the 5 top stories from Hacker News and send them to the user, without calling the LLM at all. This makes sense, as "fetching top stories from HN" is a simple task that can be scripted once and repeated forever, without needing the LLM to figure out how to do it every single time.
-
-On a fresh install with no stored automations, Warden installs an in-memory
-`onboarding` automation instead of the normal `answer-the-user` automation
-when required API keys are missing. The onboarding tool asks for `NEAR_API_KEY`
-and `BRAVE_SEARCH_API`, writes them to `.env` for the current MVP, tests
-`raw_inference` and `web_search`, then removes itself and installs
-`answer-the-user`. If Warden restarts halfway through onboarding, the flow
-starts over from the first prompt.
-
-
-### Channel And Tool Management
-
-Channel installation and configuration are still manual. Setup should happen
-through onboarding, channels, and tools exposed inside the agent runtime.
-
-Expected future work:
-
-- install a channel through chat/onboarding
-- copy/build the channel WASM into the runtime `channels` directory
-- create or update `<channel>.config.json`
-- guide Telegram setup, including owner id, bot token secret, webhook secret, and ngrok settings
-- install, update, authenticate, and remove tools through chat-visible tool flows
+- Change the channel outbound ABI so successful sends can return the provider message id; then `send_message` can persist history with `external_id` instead of `None`.
+- Decide whether dynamic tools should have a richer manifest: version, description, parameter schema, allowed tool calls, and allowed outbound HTTPS endpoints.
+- Decide whether runtime reload/file watching is needed.
+- Decide whether some internal tools should eventually move to packaged WASM tools with declared capabilities and secret requirements.
+- Replace plaintext `.env` secret storage with an encrypted local store or OS keychain-backed secret store.
+- Add durable tool execution audit logs.
+- Add channel-level message deletion/redaction coverage for all setup flows.
 
 ### Better Config UX
 
-Channel config files currently work, but the user still has to know the exact JSON shape. We need validation, friendlier errors, and a setup flow.
+Channel config files currently work, and channel installation can handle some setup flows, but the user still sometimes has to know the exact JSON shape. We need broader validation, friendlier errors, and setup flows for more channels.
 
 ### Web / Browser Channel
 
@@ -394,57 +435,33 @@ The current architecture can support a web UI as another channel, but there is n
 
 ### External Tools
 
-Only internal Rust tools exist today. There is no external tool runtime yet for user-installed WASM tools, shell tools, or other sandboxed extensions.
+Only internal Rust tools and QuickJS dynamic tools exist today. There is no external tool runtime yet for user-installed WASM tools, shell tools, or other sandboxed extensions.
 
 ### Tool Permissions
 
-The model can call the internal tools exposed by `InternalTools`. There is not yet a permission layer for:
+The model can call the tools exposed by `InternalTools`. There is not yet a permission layer for:
 
-- allow/deny by tool
-- per-channel tool restrictions
-- confirmation before sensitive actions
-- audit logs of tool execution
+- allow/deny by tool.
+- per-channel tool restrictions.
+- confirmation before sensitive actions.
+- durable audit logs of tool execution.
 
 ### Outbound Documents In Telegram
 
-The bus and `send_message` tool support outbound image attachments, `image_generation` stores generated images as files, and Telegram can deliver images with `sendPhoto`. Telegram still needs document delivery for non-image files.
-
-### More Tests
-
-Current tests cover a few core pieces, but not full channel flows. Useful next tests:
-
-- TUI inbound -> bus -> AI engine -> TUI outbound
-- Telegram webhook auth and owner filtering
-- default address persistence
-- `send_message` with default Telegram address
-- generated image -> `send_message` -> Telegram attachment delivery
-
-
-## Image and File Management
-
-Warden should handle files as first-class message attachments: images, PDFs, text files, and eventually other documents. The core agent should see the same shape regardless of whether a file came from Telegram, TUI, image generation, or another channel.
-
-NEAR AI currently has no single model path that supports tool use, reasoning, arbitrary file uploads, and vision in the way Warden needs. It also does not currently give Warden a usable file-upload path for directly passing arbitrary local files to the tool-using model.
-
-Because of that, Warden stores files locally and passes around typed attachments containing a numeric `file_id`, MIME type, optional filename, and source path. User messages and assistant messages both use the same attachment type on the bus; channels translate their provider-specific payloads into attachments on the way in, and the bridge translates attachments back into provider-ready outbound payloads on the way out.
-
-The model interacts with stored files through tools. `inspect_file(file_id, query)` can extract text from documents or call a vision model for images. `image_generation` stores the generated image locally and returns a `file_id`; `send_message` can then publish an assistant message with that attachment for channel delivery.
-
-All file ids are `u32` values for now. The current architecture treats that as the stable attachment identifier.
+The bus and `send_message` tool support outbound attachments, `image_generation` stores generated images as files, and Telegram can deliver images with `sendPhoto`. Telegram still needs document delivery for non-image files.
 
 ---
 
-## Appendix: Things We Tried But Didn't Work 
+## Appendix: Things We Tried But Didn't Work
 
 ### Processing images through the model
 
-We ended up having multiple "if" to handle images vs other type of media, the engine ended up being too complex without any clear benefits.
+We ended up having multiple "if" branches to handle images vs other types of media, and the engine ended up too complex without clear benefits.
 
-The model seams to take well using a `inspect_file` tool to "see" the image, so we went with that simpler approach.
-
+The model seems to take well to using an `inspect_file` tool to "see" the image, so we went with that simpler approach.
 
 ### Responses API
 
 Tried using the `/responses` API, but NEAR AI's `previous_response_id` does not load conversation history into the model.
 
-The engine therefore does not rely on `previous_response_id` or `function_call_output` for its main agent loop.
+The agent therefore does not rely on `previous_response_id` or `function_call_output` for its main loop.
