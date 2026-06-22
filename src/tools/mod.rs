@@ -60,15 +60,7 @@ impl ToolContext {
     }
 }
 
-pub struct ToolOutput {
-    pub result: serde_json::Value,
-}
-
-impl ToolOutput {
-    pub fn json(result: serde_json::Value) -> Self {
-        Self { result }
-    }
-}
+pub type ToolOutput = serde_json::Value;
 
 pub struct InternalTools {
     pub raw_inference: RawInferenceTool,
@@ -216,28 +208,6 @@ impl InternalTools {
             registry,
         }
     }
-
-    /// Snapshot of every registered tool (internal and dynamic).
-    pub fn all(&self) -> Vec<Arc<dyn InternalTool>> {
-        self.registry.all()
-    }
-
-    /// Register a tool at runtime. Names must be unique.
-    pub fn add(&self, tool: Arc<dyn InternalTool>) -> Result<(), String> {
-        self.registry.add(tool)
-    }
-
-    pub fn contains(&self, name: &str) -> bool {
-        self.registry.contains(name)
-    }
-
-    pub fn validate_args_for_tool(
-        &self,
-        name: &str,
-        args: &serde_json::Value,
-    ) -> Result<(), String> {
-        self.registry.validate_args_for_tool(name, args)
-    }
 }
 
 #[async_trait]
@@ -293,7 +263,7 @@ pub async fn run_internal_tool(
         });
     }
     match tool.execute(args, &ctx.deeper()).await {
-        Ok(ToolOutput { result }) => result,
+        Ok(result) => result,
         Err(err) => serde_json::json!({ "ok": false, "error": err }),
     }
 }
@@ -481,7 +451,7 @@ mod tests {
             _args: serde_json::Value,
             ctx: &ToolContext,
         ) -> Result<ToolOutput, String> {
-            Ok(ToolOutput::json(serde_json::json!({ "depth": ctx.depth })))
+            Ok(serde_json::json!({ "depth": ctx.depth }))
         }
     }
 
@@ -511,7 +481,7 @@ mod tests {
             _args: serde_json::Value,
             _ctx: &ToolContext,
         ) -> Result<ToolOutput, String> {
-            Ok(ToolOutput::json(serde_json::json!({})))
+            Ok(serde_json::json!({}))
         }
     }
 
@@ -541,31 +511,46 @@ mod tests {
     #[test]
     fn duplicate_tool_names_are_rejected() {
         let tools = test_tools();
-        tools.add(Arc::new(FakeTool("fake"))).expect("first add");
-        assert!(tools.add(Arc::new(FakeTool("fake"))).is_err());
-        assert!(tools.add(Arc::new(FakeTool("send_message"))).is_err());
+        tools
+            .registry
+            .add(Arc::new(FakeTool("fake")))
+            .expect("first add");
+        assert!(tools.registry.add(Arc::new(FakeTool("fake"))).is_err());
+        assert!(
+            tools
+                .registry
+                .add(Arc::new(FakeTool("send_message")))
+                .is_err()
+        );
     }
 
     #[test]
     fn validate_args_rejects_unknown_tools() {
         let tools = test_tools();
-        let result = tools.validate_args_for_tool("not_a_tool", &serde_json::json!({}));
+        let result = tools
+            .registry
+            .validate_args_for_tool("not_a_tool", &serde_json::json!({}));
         assert!(result.unwrap_err().contains("unknown tool"));
     }
 
     #[test]
     fn validate_args_checks_required_and_extra_fields() {
         let tools = test_tools();
-        tools.add(Arc::new(SchemaTool)).expect("add schema tool");
+        tools
+            .registry
+            .add(Arc::new(SchemaTool))
+            .expect("add schema tool");
 
         assert!(
             tools
+                .registry
                 .validate_args_for_tool("schema_tool", &serde_json::json!({}))
                 .unwrap_err()
                 .contains("missing required field")
         );
         assert!(
             tools
+                .registry
                 .validate_args_for_tool(
                     "schema_tool",
                     &serde_json::json!({ "message": "hi", "extra": true })
@@ -575,6 +560,7 @@ mod tests {
         );
         assert!(
             tools
+                .registry
                 .validate_args_for_tool("schema_tool", &serde_json::json!({ "message": "hi" }))
                 .is_ok()
         );
@@ -583,7 +569,7 @@ mod tests {
     #[tokio::test]
     async fn run_tool_caps_call_depth() {
         let tools = test_tools();
-        tools.add(Arc::new(FakeTool("fake"))).expect("add");
+        tools.registry.add(Arc::new(FakeTool("fake"))).expect("add");
 
         let deep = ToolContext {
             depth: MAX_TOOL_DEPTH,

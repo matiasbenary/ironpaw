@@ -302,7 +302,6 @@ impl InternalTool for OnboardingTool {
             OnboardingTool::execute(self, params, ctx).await
         })
         .await
-        .map(ToolOutput::json)
     }
 }
 

@@ -104,8 +104,8 @@ impl InternalTool for TodoTool {
             lines.push("All tasks completed.".to_string());
         }
 
-        Ok(ToolOutput::json(serde_json::json!({
+        Ok(serde_json::json!({
             "result": lines.join("\n")
-        })))
+        }))
     }
 }

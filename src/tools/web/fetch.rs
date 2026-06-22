@@ -177,7 +177,6 @@ impl InternalTool for WebFetchTool {
             WebFetchTool::execute(self, params).await
         })
         .await
-        .map(ToolOutput::json)
     }
 }
 

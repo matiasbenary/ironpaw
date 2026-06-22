@@ -371,7 +371,6 @@ impl InternalTool for RawInferenceTool {
             RawInferenceTool::execute(self, request).await
         })
         .await
-        .map(tools::ToolOutput::json)
     }
 }
 

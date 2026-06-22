@@ -56,6 +56,7 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
         std::env::temp_dir().join(format!("warden-live-test-env-{}.env", uuid::Uuid::new_v4())),
     ));
     tools
+        .registry
         .add(Arc::new(OnboardingTool::new(setup_services)))
         .expect("onboarding registers");
     automations

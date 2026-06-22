@@ -31,20 +31,7 @@ pub struct AutomationSpec {
     pub effect: AutomationEffectSpec,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum AutomationEffectSpec {
-    Tool {
-        tool: String,
-        args: serde_json::Value,
-    },
-    AgentTask {
-        prompt: String,
-        tools: Vec<String>,
-    },
-    ContinueConversation {
-        conversation_id: String,
-    },
-}
+pub type AutomationEffectSpec = crate::automations::AutomationEffect;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AutomationTriggerSpec {

@@ -104,10 +104,10 @@ impl InternalTool for ImageGenerationTool {
         let path = self.files_dir.join(format!("{file_id}.png"));
         let bytes = base64_decode(&data_base64)?;
         std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-        Ok(ToolOutput::json(serde_json::json!({
+        Ok(serde_json::json!({
             "status": "ok",
             "file_id": file_id,
-        })))
+        }))
     }
 }
 

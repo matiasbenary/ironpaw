@@ -2,10 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::{
     agent::Agent,
-    bus::{
-        AutomationAction, AutomationEffectSpec, AutomationSpec, AutomationTriggerSpec, Bus, Event,
-        Sender,
-    },
+    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, Sender},
     tools::{InternalTools, ToolContext},
 };
 
@@ -219,32 +216,29 @@ impl Automations {
                 Trigger::MessageIn { sender, channel }
             }
         };
-        let effect = match spec.effect {
-            AutomationEffectSpec::Tool { tool, args } => {
+        match &spec.effect {
+            AutomationEffect::Tool { tool, args } => {
                 if tool.trim().is_empty() {
                     return Err("tool must not be empty".to_string());
                 }
-                self.tools.validate_args_for_tool(&tool, &args)?;
-                AutomationEffect::Tool { tool, args }
+                self.tools.registry.validate_args_for_tool(tool, args)?;
             }
-            AutomationEffectSpec::AgentTask { prompt, tools } => {
+            AutomationEffect::AgentTask { prompt, tools } => {
                 if prompt.trim().is_empty() {
                     return Err("prompt must not be empty".to_string());
                 }
                 self.tools.registry.named_tools(&tools)?;
-                AutomationEffect::AgentTask { prompt, tools }
             }
-            AutomationEffectSpec::ContinueConversation { conversation_id } => {
+            AutomationEffect::ContinueConversation { conversation_id } => {
                 if conversation_id.trim().is_empty() {
                     return Err("conversation_id must not be empty".to_string());
                 }
-                AutomationEffect::ContinueConversation { conversation_id }
             }
         };
         Ok(Automation {
             name: spec.name,
             trigger,
-            effect,
+            effect: spec.effect,
         })
     }
 

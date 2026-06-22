@@ -49,7 +49,10 @@ async fn main() -> std::io::Result<()> {
     for tool in DynamicTool::discover(&layout.tools_dir(), Arc::clone(&scripts))
         .map_err(std::io::Error::other)?
     {
-        tools.add(Arc::new(tool)).map_err(std::io::Error::other)?;
+        tools
+            .registry
+            .add(Arc::new(tool))
+            .map_err(std::io::Error::other)?;
     }
     let automation_store = Arc::new(
         SqliteAutomations::new(layout.data_dir().join("automations.db"))
@@ -72,9 +75,11 @@ async fn main() -> std::io::Result<()> {
         env_path,
     ));
     tools
+        .registry
         .add(Arc::new(OnboardingTool::new(Arc::clone(&setup_services))))
         .map_err(std::io::Error::other)?;
     tools
+        .registry
         .add(Arc::new(InstallChannelTool::new(Arc::clone(
             &setup_services,
         ))))

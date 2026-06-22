@@ -58,6 +58,5 @@ impl InternalTool for SearchHistoryTool {
             SearchHistoryTool::execute(self, params).await
         })
         .await
-        .map(ToolOutput::json)
     }
 }

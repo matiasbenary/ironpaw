@@ -108,7 +108,6 @@ impl InternalTool for CreateToolTool {
             CreateToolTool::execute(self, params).await
         })
         .await
-        .map(ToolOutput::json)
     }
 }
 
@@ -268,7 +267,7 @@ impl InternalTool for DynamicTool {
             .scripts
             .run(self.script.clone(), ctx.clone(), args)
             .await?;
-        Ok(ToolOutput::json(result))
+        Ok(result)
     }
 }
 
@@ -323,7 +322,7 @@ mod tests {
             .expect("tool should be created");
 
         assert_eq!(result["ok"], true);
-        assert!(tools.contains("hello_dynamic"));
+        assert!(tools.registry.contains("hello_dynamic"));
         assert_eq!(
             std::fs::read_to_string(tools_dir.join("hello_dynamic.js")).unwrap(),
             "return { greeting: 'hello' };"
@@ -375,7 +374,7 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        assert!(!tools.contains("bad_script"));
+        assert!(!tools.registry.contains("bad_script"));
         assert!(!tools_dir.join("bad_script.js").exists());
         assert!(!tools_dir.join("bad_script.config.json").exists());
     }

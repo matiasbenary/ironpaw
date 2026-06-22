@@ -172,9 +172,9 @@ fn text_item(text: String) -> Message {
 }
 
 fn inspection_output(file_id: u32, query: &str, answer: String) -> ToolOutput {
-    ToolOutput::json(serde_json::json!({
+    serde_json::json!({
         "file_id": file_id,
         "query": query,
         "answer": answer,
-    }))
+    })
 }

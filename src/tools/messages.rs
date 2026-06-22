@@ -79,9 +79,7 @@ impl InternalTool for SendMessageTool {
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_destination(ctx);
         let output = SendMessageTool::execute(self, input).await?;
-        Ok(tools::ToolOutput::json(
-            serde_json::to_value(output).map_err(|err| err.to_string())?,
-        ))
+        serde_json::to_value(output).map_err(|err| err.to_string())
     }
 }
 
@@ -216,9 +214,7 @@ impl InternalTool for DeleteMessageTool {
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_message(ctx);
         let output = DeleteMessageTool::execute(self, input).await?;
-        Ok(tools::ToolOutput::json(
-            serde_json::to_value(output).map_err(|err| err.to_string())?,
-        ))
+        serde_json::to_value(output).map_err(|err| err.to_string())
     }
 }
 

@@ -282,7 +282,6 @@ impl InternalTool for WebSearchTool {
             WebSearchTool::execute(self, params).await
         })
         .await
-        .map(ToolOutput::json)
     }
 }
 

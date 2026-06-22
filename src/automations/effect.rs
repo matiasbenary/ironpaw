@@ -8,7 +8,7 @@ use crate::{
 
 use super::render_args::render_args;
 
-#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AutomationEffect {
     Tool {

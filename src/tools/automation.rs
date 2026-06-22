@@ -1,9 +1,8 @@
 use async_trait::async_trait;
 
 use crate::{
-    bus::{
-        AutomationAction, AutomationEffectSpec, AutomationSpec, AutomationTriggerSpec, Bus, Event,
-    },
+    automations::AutomationEffect,
+    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event},
     message::ToolDefinition,
     tools::{self, InternalTool, ToolContext, ToolOutput},
 };
@@ -112,13 +111,13 @@ impl CreateAutomationTool {
         let effect = match (tool, agent_prompt) {
             (Some(tool), None) => {
                 let args = parse_args(params.args)?;
-                AutomationEffectSpec::Tool { tool, args }
+                AutomationEffect::Tool { tool, args }
             }
             (None, Some(prompt)) => {
                 if params.agent_tools.is_empty() {
                     return Err("agent_tools must not be empty for an agent task".to_string());
                 }
-                AutomationEffectSpec::AgentTask {
+                AutomationEffect::AgentTask {
                     prompt,
                     tools: params.agent_tools,
                 }
@@ -174,7 +173,6 @@ impl InternalTool for CreateAutomationTool {
             CreateAutomationTool::execute(self, params).await
         })
         .await
-        .map(ToolOutput::json)
     }
 }
 
@@ -218,7 +216,6 @@ impl InternalTool for DeleteAutomationTool {
             DeleteAutomationTool::execute(self, params).await
         })
         .await
-        .map(ToolOutput::json)
     }
 }
 
@@ -262,7 +259,6 @@ impl InternalTool for InspectAutomationTool {
             InspectAutomationTool::execute(self, params).await
         })
         .await
-        .map(ToolOutput::json)
     }
 }
 
@@ -305,6 +301,5 @@ impl InternalTool for ListAutomationsTool {
             ListAutomationsTool::execute(self, params).await
         })
         .await
-        .map(ToolOutput::json)
     }
 }

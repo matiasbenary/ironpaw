@@ -422,7 +422,7 @@ impl InternalTool for ListChannelsTool {
         _args: serde_json::Value,
         _ctx: &ToolContext,
     ) -> Result<ToolOutput, String> {
-        ListChannelsTool::execute(self).await.map(ToolOutput::json)
+        ListChannelsTool::execute(self).await
     }
 }
 
@@ -451,7 +451,6 @@ impl InternalTool for InstallChannelTool {
             InstallChannelTool::execute(self, params, ctx).await
         })
         .await
-        .map(ToolOutput::json)
     }
 }
 
