@@ -1,29 +1,18 @@
-use std::sync::{Arc, OnceLock};
-
 use async_trait::async_trait;
 
 use crate::{
     bus::{Bus, ChannelAddress, Event},
-    history::History,
     tools::{self, InternalTool, ToolContext},
 };
 
 #[derive(Clone)]
 pub struct DeleteMessageTool {
     bus: Bus,
-    history: OnceLock<Arc<dyn History>>,
 }
 
 impl DeleteMessageTool {
     pub fn new(bus: Bus) -> Self {
-        Self {
-            bus,
-            history: OnceLock::new(),
-        }
-    }
-
-    pub fn bind_history(&self, history: Arc<dyn History>) {
-        let _ = self.history.set(history);
+        Self { bus }
     }
 
     pub async fn execute(
@@ -43,14 +32,6 @@ impl DeleteMessageTool {
             .filter(|message_id| !message_id.trim().is_empty())
             .ok_or_else(|| "message_id is required".to_string())?;
 
-        if let Some(history) = self.history.get() {
-            history.delete_external_message(
-                &channel,
-                &conversation_id,
-                input.thread_id.as_deref(),
-                &message_id,
-            );
-        }
         self.bus.publish(Event::DeleteMessage {
             channel: channel.clone(),
             address: ChannelAddress {
@@ -144,22 +125,8 @@ pub struct DeleteMessageOutput {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::{
-        bus::{ChannelAddress, Event},
-        history::{History, HistoryEntry, MessageMetadata, SqliteHistory},
-        message::Message,
-    };
-
-    fn temp_history() -> Arc<SqliteHistory> {
-        let path = std::env::temp_dir().join(format!(
-            "warden-delete-message-tool-history-{}.db",
-            uuid::Uuid::new_v4()
-        ));
-        Arc::new(SqliteHistory::new(path).unwrap())
-    }
+    use crate::bus::{ChannelAddress, Event};
 
     #[tokio::test]
     async fn delete_message_defaults_to_current_message() {
@@ -192,26 +159,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_message_removes_matching_channel_history() {
+    async fn delete_message_publishes_channel_delete_request() {
         let bus = Bus::new(16);
-        let history = temp_history();
-        history.append(
-            "chat-1",
-            &[HistoryEntry {
-                message: Message::User {
-                    text: "secret".to_string(),
-                    attachments: Vec::new(),
-                },
-                metadata: MessageMetadata::new(
-                    "telegram",
-                    "chat-1",
-                    None,
-                    Some("provider-1".to_string()),
-                ),
-            }],
-        );
+        let mut events = bus.subscribe();
         let tool = DeleteMessageTool::new(bus);
-        tool.bind_history(history.clone());
 
         tool.execute(DeleteMessageToolInput {
             channel: Some("telegram".to_string()),
@@ -222,6 +173,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(history.load("chat-1").is_empty());
+        let Event::DeleteMessage { channel, address } = events.try_recv().unwrap() else {
+            panic!("expected delete message event");
+        };
+        assert_eq!(channel, "telegram");
+        assert_eq!(address.conversation_id, "chat-1");
+        assert_eq!(address.message_id.as_deref(), Some("provider-1"));
     }
 }

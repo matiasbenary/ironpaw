@@ -103,8 +103,6 @@ impl InternalTools {
         files_dir: std::path::PathBuf,
         history: Arc<dyn History>,
     ) -> Self {
-        send_message.bind_history(Arc::clone(&history));
-        delete_message.bind_history(Arc::clone(&history));
         let send_message = Arc::new(send_message);
         let delete_message = Arc::new(delete_message);
         let image_generation = Arc::new(ImageGenerationTool::new(files_dir.clone()));

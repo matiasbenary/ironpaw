@@ -5,7 +5,6 @@ use std::{
 
 use crate::{
     bus::{Bus, Event, Sender},
-    history::{HistoryEntry, MessageMetadata},
     tools::{self, InternalTools, ToolContext},
 };
 
@@ -307,7 +306,6 @@ impl Automations {
     }
 
     async fn handle(&self, event: &Event) {
-        self.store_inbound_history(event);
         let matching: Vec<_> = self
             .automations
             .read()
@@ -320,30 +318,6 @@ impl Automations {
             let (ctx, event_json) = event_context(event);
             self.execute(&automation, ctx, &event_json).await;
         }
-    }
-
-    fn store_inbound_history(&self, event: &Event) {
-        let Event::MessageIn {
-            channel,
-            sender: Sender::User,
-            address,
-            message,
-        } = event
-        else {
-            return;
-        };
-        self.tools.history.append(
-            &address.conversation_id,
-            &[HistoryEntry {
-                message: message.clone(),
-                metadata: MessageMetadata::new(
-                    channel.clone(),
-                    address.conversation_id.clone(),
-                    address.thread_id.clone(),
-                    address.message_id.clone(),
-                ),
-            }],
-        );
     }
 
     fn spawn_at(
@@ -631,23 +605,6 @@ mod tests {
         }
     }
 
-    fn message_in_with_id(channel: &str, message_id: &str) -> Event {
-        Event::MessageIn {
-            channel: channel.to_string(),
-            sender: Sender::User,
-            address: ChannelAddress {
-                channel: channel.to_string(),
-                conversation_id: "c1".to_string(),
-                thread_id: Some("thread-1".to_string()),
-                message_id: Some(message_id.to_string()),
-            },
-            message: Message::User {
-                text: "secret".to_string(),
-                attachments: Vec::new(),
-            },
-        }
-    }
-
     #[test]
     fn default_automation_matches_user_messages_from_any_channel() {
         let trigger = &Automations::handle_conversation().trigger;
@@ -777,29 +734,5 @@ mod tests {
 
         assert!(result.is_err());
         assert!(automations.is_registered("handle-conversation"));
-    }
-
-    #[tokio::test]
-    async fn inbound_user_messages_are_stored_before_automation_matching() {
-        let bus = Bus::new(4);
-        let tools = test_tools(&bus);
-        let automations = Arc::new(Automations::new(bus, Arc::clone(&tools), None));
-        let event = message_in_with_id("telegram", "provider-1");
-
-        automations.handle(&event).await;
-
-        let entries = tools.history.load("c1");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].metadata.channel, "telegram");
-        assert_eq!(entries[0].metadata.channel_conversation_id, "c1");
-        assert_eq!(entries[0].metadata.thread_id.as_deref(), Some("thread-1"));
-        assert_eq!(
-            entries[0].metadata.external_id.as_deref(),
-            Some("provider-1")
-        );
-        let Message::User { text, .. } = &entries[0].message else {
-            panic!("expected user message");
-        };
-        assert_eq!(text, "secret");
     }
 }

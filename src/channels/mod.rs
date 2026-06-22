@@ -2,7 +2,7 @@ use std::{io, sync::Arc};
 
 use tokio::{sync::Mutex, task::JoinHandle};
 
-use crate::{bus::Bus, config::RuntimeLayout, secrets::ChannelSecrets};
+use crate::{bus::Bus, config::RuntimeLayout, history::History, secrets::ChannelSecrets};
 
 mod bridge;
 pub mod config;
@@ -75,6 +75,7 @@ impl ChannelRuntime {
 
 pub async fn start(
     bus: Bus,
+    history: Arc<dyn History>,
     layout: &RuntimeLayout,
     secrets: ChannelSecrets,
     addr: &str,
@@ -131,6 +132,7 @@ pub async fn start(
         if let Err(err) = bridge::run_server(
             listener,
             bus,
+            history,
             &bridge_addr,
             token,
             bridge_secrets,

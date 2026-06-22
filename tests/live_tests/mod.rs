@@ -6,7 +6,7 @@ use warden::{
     agent::Agent,
     automations::{Automations, SqliteAutomations},
     bus::{Bus, ChannelAddress, Event, Sender},
-    history::SqliteHistory,
+    history::{History, HistoryEntry, MessageMetadata, SqliteHistory},
     message::{Attachment, Message},
     scripts::ScriptRuntime,
     tools::{
@@ -16,7 +16,15 @@ use warden::{
     },
 };
 
-fn start_warden(bus: &Bus, tools: InternalTools) -> tokio::task::JoinHandle<()> {
+fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, Arc<dyn History>) {
+    let history = temp_history();
+    let tools = InternalTools::new(
+        RawInferenceTool::new().unwrap(),
+        send_message_tool(bus, files_dir.clone()),
+        DeleteMessageTool::new(bus.clone()),
+        files_dir,
+        Arc::clone(&history),
+    );
     let tools = Arc::new(tools);
     let agent = Arc::new(Agent::new(bus.clone(), Arc::clone(&tools)));
     tools.call_agent.bind(Arc::clone(&agent));
@@ -57,13 +65,39 @@ fn start_warden(bus: &Bus, tools: InternalTools) -> tokio::task::JoinHandle<()> 
     automations
         .add(Automations::handle_conversation())
         .expect("stock automation registers");
-    automations.start()
+    (automations.start(), history)
 }
 
-fn temp_history() -> Arc<SqliteHistory> {
+fn temp_history() -> Arc<dyn History> {
     let path =
         std::env::temp_dir().join(format!("warden-test-history-{}.db", uuid::Uuid::new_v4()));
     Arc::new(SqliteHistory::new(path).expect("temp history"))
+}
+
+fn publish_user_message(
+    bus: &Bus,
+    history: &dyn History,
+    address: ChannelAddress,
+    message: Message,
+) {
+    history.append(
+        &address.conversation_id,
+        &[HistoryEntry {
+            message: message.clone(),
+            metadata: MessageMetadata::new(
+                address.channel.clone(),
+                address.conversation_id.clone(),
+                address.thread_id.clone(),
+                address.message_id.clone(),
+            ),
+        }],
+    );
+    bus.publish(Event::MessageIn {
+        channel: address.channel.clone(),
+        sender: Sender::User,
+        address,
+        message,
+    });
 }
 
 fn send_message_tool(bus: &Bus, files_dir: PathBuf) -> SendMessageTool {
@@ -87,30 +121,21 @@ async fn agent_replies_to_hi() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-
-    let tools = InternalTools::new(
-        RawInferenceTool::new().unwrap(),
-        send_message_tool(&bus, files_dir.clone()),
-        DeleteMessageTool::new(bus.clone()),
-        files_dir,
-        temp_history(),
-    );
-
-    let _task = start_warden(&bus, tools);
+    let (_task, history) = start_warden(&bus, files_dir);
 
     let message = user_message("hi");
 
-    bus.publish(Event::MessageIn {
-        channel: "tui".to_string(),
-        sender: Sender::User,
-        address: ChannelAddress {
+    publish_user_message(
+        &bus,
+        history.as_ref(),
+        ChannelAddress {
             channel: "tui".to_string(),
             conversation_id: "live-test-hi".to_string(),
             thread_id: None,
             message_id: None,
         },
         message,
-    });
+    );
 
     let reply = timeout(Duration::from_secs(30), async {
         loop {
@@ -153,16 +178,7 @@ async fn send_message_routes_to_telegram() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-
-    let tools = InternalTools::new(
-        RawInferenceTool::new().unwrap(),
-        send_message_tool(&bus, files_dir.clone()),
-        DeleteMessageTool::new(bus.clone()),
-        files_dir.clone(),
-        temp_history(),
-    );
-
-    let _task = start_warden(&bus, tools);
+    let (_task, history) = start_warden(&bus, files_dir);
 
     let address = ChannelAddress {
         channel: "tui".to_string(),
@@ -173,12 +189,7 @@ async fn send_message_routes_to_telegram() {
 
     let message = user_message("Please send me a message on telegram saying hello.");
 
-    bus.publish(Event::MessageIn {
-        channel: "tui".to_string(),
-        sender: Sender::User,
-        address,
-        message,
-    });
+    publish_user_message(&bus, history.as_ref(), address, message);
 
     let deadline = Duration::from_secs(30);
     let result = timeout(deadline, async {
@@ -217,16 +228,7 @@ async fn image_generation_routes_to_telegram() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-
-    let tools = InternalTools::new(
-        RawInferenceTool::new().unwrap(),
-        send_message_tool(&bus, files_dir.clone()),
-        DeleteMessageTool::new(bus.clone()),
-        files_dir.clone(),
-        temp_history(),
-    );
-
-    let _task = start_warden(&bus, tools);
+    let (_task, history) = start_warden(&bus, files_dir);
 
     let address = ChannelAddress {
         channel: "tui".to_string(),
@@ -237,12 +239,7 @@ async fn image_generation_routes_to_telegram() {
 
     let message = user_message("Create an image of a dog and send it to me in telegram.");
 
-    bus.publish(Event::MessageIn {
-        channel: "tui".to_string(),
-        sender: Sender::User,
-        address,
-        message,
-    });
+    publish_user_message(&bus, history.as_ref(), address, message);
 
     // Collect MessageOut events for up to 30 s, looking for a telegram delivery with attachment.
     let deadline = Duration::from_secs(30);
@@ -289,16 +286,7 @@ async fn agent_reads_pdf_content() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-
-    let tools = InternalTools::new(
-        RawInferenceTool::new().unwrap(),
-        send_message_tool(&bus, files_dir.clone()),
-        DeleteMessageTool::new(bus.clone()),
-        files_dir.clone(),
-        temp_history(),
-    );
-
-    let _task = start_warden(&bus, tools);
+    let (_task, history) = start_warden(&bus, files_dir.clone());
 
     let address = ChannelAddress {
         channel: "tui".to_string(),
@@ -331,12 +319,7 @@ async fn agent_reads_pdf_content() {
         }],
     };
 
-    bus.publish(Event::MessageIn {
-        channel: "tui".to_string(),
-        sender: Sender::User,
-        address,
-        message,
-    });
+    publish_user_message(&bus, history.as_ref(), address, message);
 
     let deadline = Duration::from_secs(10);
     let result = timeout(deadline, async {
@@ -382,16 +365,7 @@ async fn agent_identifies_dog_image() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-
-    let tools = InternalTools::new(
-        RawInferenceTool::new().unwrap(),
-        send_message_tool(&bus, files_dir.clone()),
-        DeleteMessageTool::new(bus.clone()),
-        files_dir.clone(),
-        temp_history(),
-    );
-
-    let _task = start_warden(&bus, tools);
+    let (_task, history) = start_warden(&bus, files_dir.clone());
 
     let image_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -415,17 +389,17 @@ async fn agent_identifies_dog_image() {
         }],
     };
 
-    bus.publish(Event::MessageIn {
-        channel: "tui".to_string(),
-        sender: Sender::User,
-        address: ChannelAddress {
+    publish_user_message(
+        &bus,
+        history.as_ref(),
+        ChannelAddress {
             channel: "tui".to_string(),
             conversation_id: "live-test-image".to_string(),
             thread_id: None,
             message_id: None,
         },
         message,
-    });
+    );
 
     timeout(Duration::from_secs(10), async {
         loop {
@@ -467,16 +441,7 @@ async fn agent_uses_web_search_for_wikipedia() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-
-    let tools = InternalTools::new(
-        RawInferenceTool::new().unwrap(),
-        send_message_tool(&bus, files_dir.clone()),
-        DeleteMessageTool::new(bus.clone()),
-        files_dir,
-        temp_history(),
-    );
-
-    let _task = start_warden(&bus, tools);
+    let (_task, history) = start_warden(&bus, files_dir);
 
     let message = user_message(
         "Use web_search to search the web for Illia Polosukhin Wikipedia. \
@@ -484,17 +449,17 @@ async fn agent_uses_web_search_for_wikipedia() {
          Illia Polosukhin and NEAR.",
     );
 
-    bus.publish(Event::MessageIn {
-        channel: "tui".to_string(),
-        sender: Sender::User,
-        address: ChannelAddress {
+    publish_user_message(
+        &bus,
+        history.as_ref(),
+        ChannelAddress {
             channel: "tui".to_string(),
             conversation_id: "live-test-web-search".to_string(),
             thread_id: None,
             message_id: None,
         },
         message,
-    });
+    );
 
     let result = timeout(Duration::from_secs(60), async {
         let mut saw_web_search = false;
@@ -543,33 +508,24 @@ async fn delayed_message_automation() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-
-    let tools = InternalTools::new(
-        RawInferenceTool::new().unwrap(),
-        send_message_tool(&bus, files_dir.clone()),
-        DeleteMessageTool::new(bus.clone()),
-        files_dir,
-        temp_history(),
-    );
-
-    let _task = start_warden(&bus, tools);
+    let (_task, history) = start_warden(&bus, files_dir);
 
     let message = user_message(
         "In 3 seconds, send me a message that says exactly: BANANA. \
          The delayed message must contain only that single word.",
     );
 
-    bus.publish(Event::MessageIn {
-        channel: "tui".to_string(),
-        sender: Sender::User,
-        address: ChannelAddress {
+    publish_user_message(
+        &bus,
+        history.as_ref(),
+        ChannelAddress {
             channel: "tui".to_string(),
             conversation_id: "live-test-automation".to_string(),
             thread_id: None,
             message_id: None,
         },
         message,
-    });
+    );
 
     let result = timeout(Duration::from_secs(60), async {
         loop {
@@ -613,16 +569,7 @@ async fn scheduled_message_at_wall_clock_time() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-
-    let tools = InternalTools::new(
-        RawInferenceTool::new().unwrap(),
-        send_message_tool(&bus, files_dir.clone()),
-        DeleteMessageTool::new(bus.clone()),
-        files_dir,
-        temp_history(),
-    );
-
-    let _task = start_warden(&bus, tools);
+    let (_task, history) = start_warden(&bus, files_dir);
 
     let target = chrono::Local::now() + chrono::Duration::seconds(8);
     let message = user_message(&format!(
@@ -631,17 +578,17 @@ async fn scheduled_message_at_wall_clock_time() {
         target.format("%H:%M:%S"),
     ));
 
-    bus.publish(Event::MessageIn {
-        channel: "tui".to_string(),
-        sender: Sender::User,
-        address: ChannelAddress {
+    publish_user_message(
+        &bus,
+        history.as_ref(),
+        ChannelAddress {
             channel: "tui".to_string(),
             conversation_id: "live-test-at".to_string(),
             thread_id: None,
             message_id: None,
         },
         message,
-    });
+    );
 
     let result = timeout(Duration::from_secs(60), async {
         loop {
@@ -685,16 +632,7 @@ async fn hacker_news_automation() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-
-    let tools = InternalTools::new(
-        RawInferenceTool::new().unwrap(),
-        send_message_tool(&bus, files_dir.clone()),
-        DeleteMessageTool::new(bus.clone()),
-        files_dir,
-        temp_history(),
-    );
-
-    let _task = start_warden(&bus, tools);
+    let (_task, history) = start_warden(&bus, files_dir);
 
     let message = user_message(
         "Create a tool that fetches the titles of the current top 5 Hacker News \
@@ -704,17 +642,17 @@ async fn hacker_news_automation() {
          'HN TOP 5'. Then schedule that tool to run once, 5 seconds from now.",
     );
 
-    bus.publish(Event::MessageIn {
-        channel: "tui".to_string(),
-        sender: Sender::User,
-        address: ChannelAddress {
+    publish_user_message(
+        &bus,
+        history.as_ref(),
+        ChannelAddress {
             channel: "tui".to_string(),
             conversation_id: "live-test-hn".to_string(),
             thread_id: None,
             message_id: None,
         },
         message,
-    });
+    );
 
     let result = timeout(Duration::from_secs(120), async {
         loop {

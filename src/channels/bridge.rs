@@ -19,6 +19,7 @@ use crate::{
         config::{ChannelAuth, ChannelConfig, ChannelManifest},
         wasm::WasmChannel,
     },
+    history::{History, HistoryEntry, MessageMetadata},
     message::{Attachment, Message},
     secrets::ChannelSecrets,
 };
@@ -42,6 +43,7 @@ pub struct LoadedChannelState {
 #[derive(Clone)]
 struct BridgeState {
     bus: Bus,
+    history: Arc<dyn History>,
     token: Arc<String>,
     secrets: ChannelSecrets,
     registry: Arc<ChannelRegistry>,
@@ -87,6 +89,7 @@ impl ChannelRegistry {
 pub async fn run_server(
     listener: TcpListener,
     bus: Bus,
+    history: Arc<dyn History>,
     addr: &str,
     token: String,
     secrets: ChannelSecrets,
@@ -95,11 +98,13 @@ pub async fn run_server(
 ) -> io::Result<()> {
     tokio::spawn(message_warden_to_channel(
         bus.clone(),
+        Arc::clone(&history),
         Arc::clone(&registry),
     ));
 
     let state = BridgeState {
         bus,
+        history,
         token: Arc::new(token),
         secrets,
         registry,
@@ -192,11 +197,20 @@ async fn message_channel_to_warden(
             .await
             .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
 
+        let message = content_to_input_item(inbound.content, &state.files_dir);
+        append_channel_history(
+            state.history.as_ref(),
+            &inbound.channel,
+            &inbound.address,
+            inbound.address.message_id.clone(),
+            &message,
+        );
+
         state.bus.publish(Event::MessageIn {
             channel: inbound.channel.clone(),
             sender,
             address: inbound.address,
-            message: content_to_input_item(inbound.content, &state.files_dir),
+            message,
         });
         accepted += 1;
     }
@@ -208,7 +222,11 @@ async fn message_channel_to_warden(
     })))
 }
 
-async fn message_warden_to_channel(bus: Bus, registry: Arc<ChannelRegistry>) {
+async fn message_warden_to_channel(
+    bus: Bus,
+    history: Arc<dyn History>,
+    registry: Arc<ChannelRegistry>,
+) {
     let mut events = bus.subscribe();
     loop {
         let (channel, event) = match events.recv().await {
@@ -231,6 +249,7 @@ async fn message_warden_to_channel(bus: Bus, registry: Arc<ChannelRegistry>) {
                     eprintln!("{channel} message out was not deliverable to a channel");
                     continue;
                 }
+                append_channel_history(history.as_ref(), &channel, &address, None, &message);
                 (
                     channel.clone(),
                     Event::MessageOut {
@@ -242,10 +261,16 @@ async fn message_warden_to_channel(bus: Bus, registry: Arc<ChannelRegistry>) {
                 )
             }
             Ok(Event::DeleteMessage { channel, address }) => {
-                if address.message_id.is_none() {
+                let Some(message_id) = address.message_id.as_deref() else {
                     eprintln!("{channel} delete message has no message_id");
                     continue;
-                }
+                };
+                history.delete_external_message(
+                    &channel,
+                    &address.conversation_id,
+                    address.thread_id.as_deref(),
+                    message_id,
+                );
                 (channel.clone(), Event::DeleteMessage { channel, address })
             }
             Ok(Event::ChannelAction {
@@ -279,6 +304,27 @@ async fn message_warden_to_channel(bus: Bus, registry: Arc<ChannelRegistry>) {
         )
         .await;
     }
+}
+
+fn append_channel_history(
+    history: &dyn History,
+    channel: &str,
+    address: &ChannelAddress,
+    external_id: Option<String>,
+    message: &Message,
+) {
+    history.append(
+        &address.conversation_id,
+        &[HistoryEntry {
+            message: message.clone(),
+            metadata: MessageMetadata::new(
+                channel.to_string(),
+                address.conversation_id.clone(),
+                address.thread_id.clone(),
+                external_id,
+            ),
+        }],
+    );
 }
 
 async fn dispatch_channel_event(
@@ -724,8 +770,105 @@ mod tests {
         assert_eq!(payload["ChannelAction"]["action"], "typing");
     }
 
+    #[test]
+    fn inbound_history_is_stored_at_channel_boundary() {
+        let history = temp_history();
+        let address = ChannelAddress {
+            channel: "telegram".to_string(),
+            conversation_id: "chat".to_string(),
+            thread_id: Some("topic".to_string()),
+            message_id: Some("provider-1".to_string()),
+        };
+        let message = Message::User {
+            text: "secret".to_string(),
+            attachments: Vec::new(),
+        };
+
+        append_channel_history(
+            &history,
+            "telegram",
+            &address,
+            address.message_id.clone(),
+            &message,
+        );
+
+        let entries = history.load("chat");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].metadata.channel, "telegram");
+        assert_eq!(entries[0].metadata.channel_conversation_id, "chat");
+        assert_eq!(entries[0].metadata.thread_id.as_deref(), Some("topic"));
+        assert_eq!(
+            entries[0].metadata.external_id.as_deref(),
+            Some("provider-1")
+        );
+        assert_eq!(entries[0].message, message);
+    }
+
+    #[test]
+    fn outbound_history_is_stored_at_channel_boundary() {
+        let history = temp_history();
+        let address = ChannelAddress {
+            channel: "telegram".to_string(),
+            conversation_id: "chat".to_string(),
+            thread_id: Some("topic".to_string()),
+            message_id: None,
+        };
+        let message = Message::Assistant {
+            text: Some("hi".to_string()),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+        };
+
+        append_channel_history(&history, "telegram", &address, None, &message);
+
+        let entries = history.load("chat");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].metadata.channel, "telegram");
+        assert_eq!(entries[0].metadata.channel_conversation_id, "chat");
+        assert_eq!(entries[0].metadata.thread_id.as_deref(), Some("topic"));
+        assert_eq!(entries[0].metadata.external_id, None);
+        assert_eq!(entries[0].message, message);
+    }
+
+    #[test]
+    fn delete_history_removes_matching_channel_message_at_boundary() {
+        let history = temp_history();
+        let address = ChannelAddress {
+            channel: "telegram".to_string(),
+            conversation_id: "chat".to_string(),
+            thread_id: None,
+            message_id: Some("provider-1".to_string()),
+        };
+        let message = Message::User {
+            text: "secret".to_string(),
+            attachments: Vec::new(),
+        };
+        append_channel_history(
+            &history,
+            "telegram",
+            &address,
+            address.message_id.clone(),
+            &message,
+        );
+
+        history.delete_external_message(
+            "telegram",
+            &address.conversation_id,
+            address.thread_id.as_deref(),
+            address.message_id.as_deref().unwrap(),
+        );
+
+        assert!(history.load("chat").is_empty());
+    }
+
     fn unique_test_files_dir() -> PathBuf {
         std::env::temp_dir().join(format!("warden-bridge-test-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn temp_history() -> crate::history::SqliteHistory {
+        let path =
+            std::env::temp_dir().join(format!("warden-bridge-history-{}.db", uuid::Uuid::new_v4()));
+        crate::history::SqliteHistory::new(path).unwrap()
     }
 
     fn attachment_file_id(input: &InboundMessagePart) -> u32 {

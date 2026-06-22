@@ -6,7 +6,7 @@ use warden::{
     bus::Bus,
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
-    history::SqliteHistory,
+    history::{History, SqliteHistory},
     message::Attachment,
     scripts::ScriptRuntime,
     secrets::Secrets,
@@ -35,7 +35,7 @@ async fn main() -> std::io::Result<()> {
         .loaded_env()
         .cloned()
         .unwrap_or_else(|| layout.root().join(".env"));
-    let history = Arc::new(
+    let history: Arc<dyn History> = Arc::new(
         SqliteHistory::new(layout.data_dir().join("history.db")).map_err(std::io::Error::other)?,
     );
     let tools = Arc::new(InternalTools::new(
@@ -46,7 +46,7 @@ async fn main() -> std::io::Result<()> {
         }),
         DeleteMessageTool::new(bus.clone()),
         layout.files_dir(),
-        history,
+        Arc::clone(&history),
     ));
     let agent = Arc::new(Agent::new(bus.clone(), Arc::clone(&tools)));
     tools.call_agent.bind(Arc::clone(&agent));
@@ -115,9 +115,16 @@ async fn main() -> std::io::Result<()> {
     let token = uuid::Uuid::new_v4().to_string();
     let addr = std::env::var("WARDEN_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
     let channel_runtime = Arc::new(
-        channels::start(bus, &layout, secrets.channels.clone(), &addr, token.clone())
-            .await
-            .map_err(std::io::Error::other)?,
+        channels::start(
+            bus,
+            Arc::clone(&history),
+            &layout,
+            secrets.channels.clone(),
+            &addr,
+            token.clone(),
+        )
+        .await
+        .map_err(std::io::Error::other)?,
     );
     tools
         .install_channel
