@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use rquickjs::{CatchResultExt, Context, Ctx, Runtime, Value, function::Func};
 
-use crate::tools::{self, InternalTool, InternalTools, ToolContext};
+use crate::tools::{self, InternalTools, ToolContext};
 
 /// Wall-clock budget for one script execution: a runaway loop gets
 /// interrupted instead of wedging the executor.
@@ -16,15 +16,11 @@ const SCRIPT_MEMORY_LIMIT: usize = 32 * 1024 * 1024;
 /// script returns the tool result with an explicit `return`.
 pub struct ScriptRuntime {
     tools: Arc<InternalTools>,
-    continue_conversation: Arc<dyn InternalTool>,
 }
 
 impl ScriptRuntime {
-    pub fn new(tools: Arc<InternalTools>, continue_conversation: Arc<dyn InternalTool>) -> Self {
-        Self {
-            tools,
-            continue_conversation,
-        }
+    pub fn new(tools: Arc<InternalTools>) -> Self {
+        Self { tools }
     }
 
     pub async fn run(
@@ -34,13 +30,10 @@ impl ScriptRuntime {
         args: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let tools = Arc::clone(&self.tools);
-        let continue_conversation = self.continue_conversation.clone();
         let handle = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || {
-            execute_script(tools, continue_conversation, handle, source, ctx, args)
-        })
-        .await
-        .map_err(|err| format!("script task failed: {err}"))?
+        tokio::task::spawn_blocking(move || execute_script(tools, handle, source, ctx, args))
+            .await
+            .map_err(|err| format!("script task failed: {err}"))?
     }
 }
 
@@ -61,7 +54,6 @@ pub fn validate_source(source: &str) -> Result<(), String> {
 
 fn execute_script(
     tools: Arc<InternalTools>,
-    continue_conversation: Arc<dyn InternalTool>,
     handle: tokio::runtime::Handle,
     source: String,
     ctx: ToolContext,
@@ -86,18 +78,7 @@ fn execute_script(
         let tool_json = Func::from(move |name: String, args: String| -> String {
             let args: serde_json::Value =
                 serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
-            let mut available_tools = tools.all();
-            available_tools.push(Arc::clone(&continue_conversation));
-            let result = match available_tools
-                .iter()
-                .find(|tool| tool.name() == name)
-                .cloned()
-            {
-                Some(tool) => handle.block_on(tools::run_internal_tool(tool, args, &ctx)),
-                None => {
-                    serde_json::json!({ "ok": false, "error": format!("unknown tool: {name}") })
-                }
-            };
+            let result = handle.block_on(tools::run_tool(&tools, &name, args, &ctx));
             serde_json::to_string(&result)
                 .unwrap_or_else(|err| format!(r#"{{"ok":false,"error":"{err}"}}"#))
         });
@@ -110,13 +91,7 @@ fn execute_script(
 
         const PRELUDE: &str = r#"
             globalThis.tool = (name, args) => {
-                const result = JSON.parse(__tool_json(name, JSON.stringify(args === undefined ? {} : args)));
-                if (name === "web_fetch" && typeof result === "string") {
-                    const boxed = new String(result);
-                    boxed.body = result;
-                    return boxed;
-                }
-                return result;
+                return JSON.parse(__tool_json(name, JSON.stringify(args === undefined ? {} : args)));
             };
             globalThis.console = { log: (...a) => __log(a.map(String).join(" ")) };
         "#;
@@ -164,10 +139,7 @@ mod tests {
         bus::{Bus, Event},
         history::SqliteHistory,
         message::Message,
-        tools::{
-            InternalTools, continue_conversation::ContinueConversationTool,
-            raw_inference::RawInferenceTool, send_message::SendMessageTool,
-        },
+        tools::{InternalTools, raw_inference::RawInferenceTool, send_message::SendMessageTool},
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
@@ -187,7 +159,7 @@ mod tests {
     }
 
     fn test_runtime(bus: &Bus) -> ScriptRuntime {
-        ScriptRuntime::new(test_tools(bus), Arc::new(ContinueConversationTool::new()))
+        ScriptRuntime::new(test_tools(bus))
     }
 
     #[tokio::test]
@@ -265,7 +237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_fetch_result_works_as_string_and_body_property() {
+    async fn web_fetch_result_is_plain_string() {
         let bus = Bus::new(16);
         let runtime = test_runtime(&bus);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -288,7 +260,7 @@ mod tests {
                 format!(
                     r#"
 	                const r = tool("web_fetch", {{ url: "{url}" }});
-	                return {{ direct: JSON.parse(r)[0], body: JSON.parse(r.body)[2] }};
+	                return {{ first: JSON.parse(r)[0], third: JSON.parse(r)[2] }};
 	                "#
                 ),
                 ToolContext::default(),
@@ -297,7 +269,7 @@ mod tests {
             .await
             .expect("script should run");
 
-        assert_eq!(result, serde_json::json!({ "direct": 1, "body": 3 }));
+        assert_eq!(result, serde_json::json!({ "first": 1, "third": 3 }));
     }
 
     #[tokio::test]

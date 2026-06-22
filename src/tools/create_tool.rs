@@ -31,7 +31,7 @@ pub struct CreateToolParams {
     /// tool is meant to notify the user, the script must call send_message
     /// itself, with explicit channel and conversation_id.
     /// Example: `const r = tool("web_fetch", { url: "https://example.com" });
-    /// return { length: r.body.length };`
+    /// return { length: r.length };`
     pub script: String,
 }
 
@@ -120,10 +120,7 @@ mod tests {
     use crate::{
         bus::Bus,
         history::SqliteHistory,
-        tools::{
-            InternalTools, continue_conversation::ContinueConversationTool,
-            raw_inference::RawInferenceTool, send_message::SendMessageTool,
-        },
+        tools::{InternalTools, raw_inference::RawInferenceTool, send_message::SendMessageTool},
     };
 
     fn bound_create_tool() -> (Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf) {
@@ -144,10 +141,7 @@ mod tests {
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
         ));
-        let scripts = Arc::new(ScriptRuntime::new(
-            Arc::clone(&tools),
-            Arc::new(ContinueConversationTool::new()),
-        ));
+        let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&tools)));
         let tools_dir = std::env::temp_dir().join(format!(
             "warden-create-tool-test-tools-{}",
             uuid::Uuid::new_v4()

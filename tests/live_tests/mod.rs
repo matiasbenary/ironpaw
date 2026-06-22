@@ -10,9 +10,8 @@ use warden::{
     message::{Attachment, Message},
     scripts::ScriptRuntime,
     tools::{
-        InternalTools, continue_conversation::ContinueConversationTool,
-        delete_message::DeleteMessageTool, dynamic::DynamicTool, raw_inference::RawInferenceTool,
-        send_message::SendMessageTool,
+        InternalTools, delete_message::DeleteMessageTool, dynamic::DynamicTool,
+        raw_inference::RawInferenceTool, send_message::SendMessageTool,
     },
 };
 
@@ -28,12 +27,8 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
     let tools = Arc::new(tools);
     let agent = Arc::new(Agent::new(bus.clone(), Arc::clone(&tools)));
     tools.call_agent.bind(Arc::clone(&agent));
-    let continue_conversation = Arc::new(ContinueConversationTool::new());
-    continue_conversation.bind(agent);
-    let scripts = Arc::new(ScriptRuntime::new(
-        Arc::clone(&tools),
-        continue_conversation,
-    ));
+    tools.continue_conversation.bind(agent);
+    let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&tools)));
     let tools_dir =
         std::env::temp_dir().join(format!("warden-live-test-tools-{}", uuid::Uuid::new_v4()));
     tools

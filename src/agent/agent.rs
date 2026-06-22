@@ -86,7 +86,8 @@ impl Agent {
             let available_tools: Vec<_> = self
                 .internal_tools
                 .all()
-                .iter()
+                .into_iter()
+                .filter(|tool| tool.name() != "continue_conversation")
                 .map(|tool| tools::definition_for_model(tool.as_ref()))
                 .collect();
             let model_messages =

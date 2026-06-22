@@ -11,9 +11,8 @@ use warden::{
     scripts::ScriptRuntime,
     secrets::Secrets,
     tools::{
-        InternalTools, continue_conversation::ContinueConversationTool,
-        delete_message::DeleteMessageTool, dynamic::DynamicTool, raw_inference::RawInferenceTool,
-        send_message::SendMessageTool,
+        InternalTools, delete_message::DeleteMessageTool, dynamic::DynamicTool,
+        raw_inference::RawInferenceTool, send_message::SendMessageTool,
     },
 };
 
@@ -50,12 +49,8 @@ async fn main() -> std::io::Result<()> {
     ));
     let agent = Arc::new(Agent::new(bus.clone(), Arc::clone(&tools)));
     tools.call_agent.bind(Arc::clone(&agent));
-    let continue_conversation = Arc::new(ContinueConversationTool::new());
-    continue_conversation.bind(agent);
-    let scripts = Arc::new(ScriptRuntime::new(
-        Arc::clone(&tools),
-        continue_conversation,
-    ));
+    tools.continue_conversation.bind(agent);
+    let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&tools)));
     tools
         .create_tool
         .bind(Arc::clone(&tools), Arc::clone(&scripts), layout.tools_dir());

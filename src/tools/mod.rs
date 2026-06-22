@@ -26,6 +26,7 @@ use crate::{bus::ChannelAddress, history::History, message::ToolDefinition};
 
 use self::{
     call_agent::CallAgentTool,
+    continue_conversation::ContinueConversationTool,
     create_automation::CreateAutomationTool,
     create_tool::CreateToolTool,
     delete_automation::DeleteAutomationTool,
@@ -83,6 +84,7 @@ pub struct InternalTools {
     pub send_message: Arc<SendMessageTool>,
     pub delete_message: Arc<DeleteMessageTool>,
     pub call_agent: Arc<CallAgentTool>,
+    pub continue_conversation: Arc<ContinueConversationTool>,
     pub create_automation: Arc<CreateAutomationTool>,
     pub delete_automation: Arc<DeleteAutomationTool>,
     pub inspect_automation: Arc<InspectAutomationTool>,
@@ -109,6 +111,7 @@ impl InternalTools {
         let inspect_file = Arc::new(InspectFileTool::new(files_dir, raw_inference.clone()));
         let todo = Arc::new(TodoTool::new());
         let call_agent = Arc::new(CallAgentTool::new());
+        let continue_conversation = Arc::new(ContinueConversationTool::new());
         let create_automation = Arc::new(CreateAutomationTool::new());
         let delete_automation = Arc::new(DeleteAutomationTool::new());
         let inspect_automation = Arc::new(InspectAutomationTool::new());
@@ -125,6 +128,7 @@ impl InternalTools {
             send_message: Arc::clone(&send_message),
             delete_message: Arc::clone(&delete_message),
             call_agent: Arc::clone(&call_agent),
+            continue_conversation: Arc::clone(&continue_conversation),
             create_automation: Arc::clone(&create_automation),
             delete_automation: Arc::clone(&delete_automation),
             inspect_automation: Arc::clone(&inspect_automation),
@@ -142,6 +146,7 @@ impl InternalTools {
                 inspect_file,
                 todo,
                 call_agent,
+                continue_conversation,
                 create_automation,
                 delete_automation,
                 inspect_automation,
