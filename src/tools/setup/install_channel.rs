@@ -164,8 +164,7 @@ impl InstallChannelTool {
     fn automation(channel_name: &str) -> Automation {
         Automation {
             name: format!("channel_auth:{channel_name}"),
-            enabled: true,
-            trigger: Trigger::Event {
+            trigger: Trigger::MessageIn {
                 sender: Some(Sender::User),
                 channel: None,
             },
@@ -199,7 +198,8 @@ impl InstallChannelTool {
             stage: InstallStage::Confirm,
             config_values: BTreeMap::new(),
         });
-        automations.replace_persistent(HANDLE_CONVERSATION_AUTOMATION, Self::automation(name))?;
+        automations.delete(HANDLE_CONVERSATION_AUTOMATION)?;
+        automations.add(Self::automation(name))?;
         send(
             tools,
             &format!("Install the {name} channel? Reply yes to continue, or no to cancel."),
@@ -334,10 +334,10 @@ impl InstallChannelTool {
         ctx: &ToolContext,
     ) -> Result<(), String> {
         *self.session.lock().expect("install channel session lock") = None;
-        automations.replace_persistent(
-            &format!("channel_auth:{name}"),
-            Automations::handle_conversation(),
-        )?;
+        automations.delete(&format!("channel_auth:{name}"))?;
+        if !automations.contains(HANDLE_CONVERSATION_AUTOMATION) {
+            automations.add(Automations::handle_conversation())?;
+        }
         send(
             tools,
             "Channel installation cancelled. I will answer normally again.",
@@ -354,10 +354,10 @@ impl InstallChannelTool {
         ctx: &ToolContext,
     ) -> Result<(), String> {
         *self.session.lock().expect("install channel session lock") = None;
-        automations.replace_persistent(
-            &format!("channel_auth:{name}"),
-            Automations::handle_conversation(),
-        )?;
+        automations.delete(&format!("channel_auth:{name}"))?;
+        if !automations.contains(HANDLE_CONVERSATION_AUTOMATION) {
+            automations.add(Automations::handle_conversation())?;
+        }
         send(
             tools,
             &format!("The {name} channel is installed and running."),

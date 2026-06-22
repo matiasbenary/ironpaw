@@ -1,20 +1,14 @@
+pub mod agents;
 pub mod automation;
-pub mod call_agent;
-pub mod continue_conversation;
-pub mod create_tool;
-pub mod delete_message;
 pub mod dynamic;
 pub mod image_generation;
 pub mod inspect_file;
-pub mod install_channel;
-pub mod onboarding;
+pub mod messages;
 pub mod raw_inference;
 pub mod search_history;
-pub mod send_message;
 pub mod setup;
 pub mod todo;
-pub mod web_fetch;
-pub mod web_search;
+pub mod web;
 
 use std::sync::{Arc, RwLock};
 
@@ -29,22 +23,19 @@ use crate::{
 };
 
 use self::{
+    agents::{CallAgentTool, ContinueConversationTool},
     automation::{
         CreateAutomationTool, DeleteAutomationTool, InspectAutomationTool, ListAutomationsTool,
     },
-    call_agent::CallAgentTool,
-    continue_conversation::ContinueConversationTool,
-    create_tool::CreateToolTool,
-    delete_message::DeleteMessageTool,
+    dynamic::CreateToolTool,
     image_generation::ImageGenerationTool,
     inspect_file::InspectFileTool,
-    install_channel::ListChannelsTool,
+    messages::{DeleteMessageTool, SendMessageTool},
     raw_inference::RawInferenceTool,
     search_history::SearchHistoryTool,
-    send_message::SendMessageTool,
+    setup::ListChannelsTool,
     todo::TodoTool,
-    web_fetch::WebFetchTool,
-    web_search::WebSearchTool,
+    web::{WebFetchTool, WebSearchTool},
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can

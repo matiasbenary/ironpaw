@@ -1,16 +1,80 @@
-use std::{
-    str::FromStr,
-    sync::{Arc, RwLock},
-};
+use std::sync::{Arc, RwLock};
 
 use crate::{
-    bus::{AutomationAction, Bus, Event, Sender},
+    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, Sender},
     tools::{self, InternalTools, ToolContext},
 };
 
+mod render_args;
 mod store;
+mod trigger;
 
 pub use store::SqliteAutomations;
+pub use trigger::Trigger;
+
+use render_args::render_args;
+
+enum AutomationEvent<'a> {
+    Bus(&'a Event),
+    Timer {
+        kind: &'static str,
+        automation_name: &'a str,
+    },
+}
+
+impl AutomationEvent<'_> {
+    fn context(&self) -> (ToolContext, serde_json::Value) {
+        match self {
+            AutomationEvent::Bus(event) => match event {
+                Event::MessageIn {
+                    channel,
+                    sender,
+                    address,
+                    message,
+                } => {
+                    let text = match message {
+                        crate::message::Message::User { text, .. } => text.clone(),
+                        _ => String::new(),
+                    };
+                    let ctx = ToolContext {
+                        destination: Some((channel.clone(), address.clone())),
+                        conversation_id: Some(address.conversation_id.clone()),
+                        ..ToolContext::default()
+                    };
+                    let event = serde_json::json!({
+                        "type": "message_in",
+                        "channel": channel,
+                        "sender": sender_name(sender),
+                        "conversation_id": address.conversation_id,
+                        "thread_id": address.thread_id,
+                        "message_id": address.message_id,
+                        "text": text,
+                    });
+                    (ctx, event)
+                }
+                other => (
+                    ToolContext::default(),
+                    serde_json::json!({ "type": format!("{other:?}") }),
+                ),
+            },
+            AutomationEvent::Timer {
+                kind,
+                automation_name,
+            } => (
+                ToolContext::default(),
+                serde_json::json!({ "type": kind, "automation": automation_name }),
+            ),
+        }
+    }
+}
+
+fn sender_name(sender: &Sender) -> &'static str {
+    match sender {
+        Sender::User => "user",
+        Sender::Guest => "guest",
+        Sender::System => "system",
+    }
+}
 
 /// An automation is a trigger plus a tool call. The stored args may contain
 /// `{{event.field}}` placeholders, filled from the triggering event. Logic
@@ -18,7 +82,6 @@ pub use store::SqliteAutomations;
 #[derive(Clone)]
 pub struct Automation {
     pub name: String,
-    pub enabled: bool,
     pub trigger: Trigger,
     pub tool: String,
     pub args: serde_json::Value,
@@ -27,79 +90,9 @@ pub struct Automation {
 #[derive(serde::Serialize)]
 pub struct AutomationInfo {
     pub name: String,
-    pub enabled: bool,
     pub trigger: serde_json::Value,
     pub tool: String,
     pub args: serde_json::Value,
-}
-
-#[derive(Clone)]
-pub enum Trigger {
-    /// Recurring, standard cron expression, evaluated in local time.
-    Cron {
-        expression: String,
-        schedule: Box<cron::Schedule>,
-    },
-    /// One-shot, fires once at the given instant.
-    At {
-        datetime: chrono::DateTime<chrono::FixedOffset>,
-    },
-    /// Fires on bus events. `None` fields match anything.
-    Event {
-        sender: Option<Sender>,
-        channel: Option<String>,
-    },
-}
-
-impl Trigger {
-    /// Accepts the common 5-field cron form (min hour dom mon dow) as well
-    /// as the 6/7-field form with seconds (and optional year).
-    pub fn cron(expression: &str) -> Result<Self, String> {
-        let expression = match expression.split_whitespace().count() {
-            5 => format!("0 {expression}"),
-            _ => expression.to_string(),
-        };
-        let schedule = cron::Schedule::from_str(&expression)
-            .map_err(|err| format!("invalid cron expression: {err}"))?;
-        Ok(Trigger::Cron {
-            expression,
-            schedule: Box::new(schedule),
-        })
-    }
-
-    /// Accepts RFC 3339 (`2026-06-11T09:00:00+02:00`); a timestamp without
-    /// an offset is interpreted as local time. A timestamp in the recent
-    /// past fires immediately — the model computes the time while reasoning,
-    /// but several tool round-trips may pass before this call lands, so a
-    /// short "in N seconds" can legitimately arrive already overdue. Only
-    /// clearly-stale timestamps are rejected.
-    pub fn at(datetime: &str) -> Result<Self, String> {
-        const GRACE: chrono::Duration = chrono::Duration::minutes(5);
-        let datetime = parse_datetime(datetime)?;
-        if datetime <= chrono::Local::now() - GRACE {
-            return Err(format!("'{datetime}' is in the past"));
-        }
-        Ok(Trigger::At { datetime })
-    }
-
-    fn matches(&self, event: &Event) -> bool {
-        match (self, event) {
-            (
-                Trigger::Event { sender, channel },
-                Event::MessageIn {
-                    sender: event_sender,
-                    channel: event_channel,
-                    ..
-                },
-            ) => {
-                sender.as_ref().is_none_or(|sender| sender == event_sender)
-                    && channel
-                        .as_ref()
-                        .is_none_or(|channel| channel == event_channel)
-            }
-            _ => false,
-        }
-    }
 }
 
 /// Holds the automations, watches the bus for event triggers, and runs a
@@ -108,11 +101,11 @@ pub struct Automations {
     bus: Bus,
     tools: Arc<InternalTools>,
     automations: RwLock<Vec<Arc<Automation>>>,
-    store: Option<Arc<SqliteAutomations>>,
+    store: Arc<SqliteAutomations>,
 }
 
 impl Automations {
-    pub fn new(bus: Bus, tools: Arc<InternalTools>, store: Option<Arc<SqliteAutomations>>) -> Self {
+    pub fn new(bus: Bus, tools: Arc<InternalTools>, store: Arc<SqliteAutomations>) -> Self {
         Self {
             bus,
             tools,
@@ -126,8 +119,7 @@ impl Automations {
     pub fn handle_conversation() -> Automation {
         Automation {
             name: "handle-conversation".to_string(),
-            enabled: true,
-            trigger: Trigger::Event {
+            trigger: Trigger::MessageIn {
                 sender: Some(Sender::User),
                 channel: None,
             },
@@ -141,40 +133,13 @@ impl Automations {
     /// Register an automation. Cron and at automations get their timer task
     /// spawned immediately.
     pub fn add(self: &Arc<Self>, automation: Automation) -> Result<(), String> {
-        self.add_runtime(automation)
-    }
-
-    pub fn add_persistent(self: &Arc<Self>, automation: Automation) -> Result<(), String> {
         self.ensure_unique_name(&automation.name)?;
-        if let Some(store) = &self.store {
-            store.insert(&automation)?;
-        }
-        self.add_runtime(automation)
-    }
-
-    pub fn replace_persistent(
-        self: &Arc<Self>,
-        remove_name: &str,
-        automation: Automation,
-    ) -> Result<(), String> {
-        self.remove_runtime(remove_name);
-        if let Some(store) = &self.store {
-            store.delete(remove_name)?;
-        }
-        if self.is_registered(&automation.name) {
-            return Ok(());
-        }
-        if let Some(store) = &self.store {
-            store.insert(&automation)?;
-        }
+        self.store.insert(&automation)?;
         self.add_runtime(automation)
     }
 
     pub fn load_stored(self: &Arc<Self>) -> Result<usize, String> {
-        let Some(store) = &self.store else {
-            return Ok(0);
-        };
-        let automations = store.load_all()?;
+        let automations = self.store.load_all()?;
         let count = automations.len();
         for automation in automations {
             self.add_runtime(automation)?;
@@ -183,16 +148,11 @@ impl Automations {
     }
 
     pub fn delete(&self, name: &str) -> Result<(), String> {
-        if name == "handle-conversation" {
-            return Err("cannot delete the built-in handle-conversation automation".to_string());
-        }
         let removed = self.remove_runtime(name);
         if !removed {
             return Err(format!("unknown automation: {name}"));
         }
-        if let Some(store) = &self.store {
-            store.delete(name)?;
-        }
+        self.store.delete(name)?;
         Ok(())
     }
 
@@ -210,16 +170,11 @@ impl Automations {
         }
         for name in names {
             self.remove_runtime(&name);
-            if let Some(store) = &self.store {
-                store.delete(&name)?;
-            }
+            self.store.delete(&name)?;
         }
         if !self.is_registered("handle-conversation") {
             let automation = Automations::handle_conversation();
-            if let Some(store) = &self.store {
-                store.insert(&automation)?;
-            }
-            self.add_runtime(automation)?;
+            self.add(automation)?;
         }
         Ok(())
     }
@@ -243,8 +198,31 @@ impl Automations {
             .ok_or_else(|| format!("unknown automation: {name}"))
     }
 
-    pub fn validate_tool_call(&self, tool: &str, args: &serde_json::Value) -> Result<(), String> {
-        self.tools.validate_args_for_tool(tool, args)
+    pub fn contains(&self, name: &str) -> bool {
+        self.is_registered(name)
+    }
+
+    pub fn automation_from_spec(&self, spec: AutomationSpec) -> Result<Automation, String> {
+        if spec.name.trim().is_empty() {
+            return Err("name must not be empty".to_string());
+        }
+        if spec.tool.trim().is_empty() {
+            return Err("tool must not be empty".to_string());
+        }
+        let trigger = match spec.trigger {
+            AutomationTriggerSpec::At { datetime } => Trigger::at(&datetime)?,
+            AutomationTriggerSpec::Cron { expression } => Trigger::cron(&expression)?,
+            AutomationTriggerSpec::MessageIn { sender, channel } => {
+                Trigger::MessageIn { sender, channel }
+            }
+        };
+        self.tools.validate_args_for_tool(&spec.tool, &spec.args)?;
+        Ok(Automation {
+            name: spec.name,
+            trigger,
+            tool: spec.tool,
+            args: spec.args,
+        })
     }
 
     fn add_runtime(self: &Arc<Self>, automation: Automation) -> Result<(), String> {
@@ -257,7 +235,7 @@ impl Automations {
         match &automation.trigger {
             Trigger::At { datetime } => self.spawn_at(automation.clone(), *datetime),
             Trigger::Cron { .. } => self.spawn_cron(automation.clone()),
-            Trigger::Event { .. } => {}
+            Trigger::MessageIn { .. } => {}
         }
         Ok(())
     }
@@ -320,12 +298,11 @@ impl Automations {
             .read()
             .expect("automations lock")
             .iter()
-            .filter(|automation| automation.enabled && automation.trigger.matches(event))
+            .filter(|automation| automation.trigger.matches(event))
             .cloned()
             .collect();
         for automation in matching {
-            let (ctx, event_json) = event_context(event);
-            self.execute(&automation, ctx, &event_json).await;
+            self.execute(&automation, AutomationEvent::Bus(event)).await;
         }
     }
 
@@ -334,42 +311,10 @@ impl Automations {
         action: AutomationAction,
     ) -> Result<serde_json::Value, String> {
         match action {
-            AutomationAction::Create {
-                name,
-                at,
-                cron,
-                tool,
-                args,
-            } => {
-                let cron = cron
-                    .as_deref()
-                    .filter(|expression| !expression.trim().is_empty());
-                let at = at.as_deref().filter(|datetime| !datetime.trim().is_empty());
-                let trigger = match (at, cron) {
-                    (Some(datetime), None) => Trigger::at(datetime)?,
-                    (None, Some(expression)) => Trigger::cron(expression)?,
-                    _ => return Err("set exactly one of at or cron".to_string()),
-                };
-                if tool.trim().is_empty() {
-                    return Err("tool must not be empty".to_string());
-                }
-                let args = match args {
-                    None => serde_json::json!({}),
-                    Some(serde_json::Value::String(text)) => {
-                        serde_json::from_str(&text).map_err(|err| {
-                            format!("args must be a JSON object, got a string: {err}")
-                        })?
-                    }
-                    Some(value) => value,
-                };
-                self.validate_tool_call(&tool, &args)?;
-                self.add_persistent(Automation {
-                    name: name.clone(),
-                    enabled: true,
-                    trigger,
-                    tool,
-                    args,
-                })?;
+            AutomationAction::Create { automation } => {
+                let automation = self.automation_from_spec(automation)?;
+                let name = automation.name.clone();
+                self.add(automation)?;
                 Ok(serde_json::json!({ "ok": true, "name": name }))
             }
             AutomationAction::Delete { name } => {
@@ -407,17 +352,20 @@ impl Automations {
             if !this.is_registered(&automation.name) {
                 return;
             }
-            let event = serde_json::json!({ "type": "at", "automation": automation.name });
-            this.execute(&automation, ToolContext::default(), &event)
-                .await;
+            this.execute(
+                &automation,
+                AutomationEvent::Timer {
+                    kind: "at",
+                    automation_name: &automation.name,
+                },
+            )
+            .await;
             this.remove_runtime(&automation.name);
-            if let Some(store) = &this.store {
-                if let Err(err) = store.delete(&automation.name) {
-                    eprintln!(
-                        "failed to delete one-shot automation '{}': {err}",
-                        automation.name
-                    );
-                }
+            if let Err(err) = this.store.delete(&automation.name) {
+                eprintln!(
+                    "failed to delete one-shot automation '{}': {err}",
+                    automation.name
+                );
             }
         });
     }
@@ -437,15 +385,21 @@ impl Automations {
                 if !this.is_registered(&automation.name) {
                     break;
                 }
-                let event = serde_json::json!({ "type": "cron", "automation": automation.name });
-                this.execute(&automation, ToolContext::default(), &event)
-                    .await;
+                this.execute(
+                    &automation,
+                    AutomationEvent::Timer {
+                        kind: "cron",
+                        automation_name: &automation.name,
+                    },
+                )
+                .await;
             }
         });
     }
 
-    async fn execute(&self, automation: &Automation, ctx: ToolContext, event: &serde_json::Value) {
-        let args = render_args(&automation.args, event);
+    async fn execute(&self, automation: &Automation, event: AutomationEvent<'_>) {
+        let (ctx, event) = event.context();
+        let args = render_args(&automation.args, &event);
         let result = tools::run_tool(&self.tools, &automation.tool, args, &ctx).await;
         if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
             eprintln!(
@@ -463,7 +417,6 @@ impl Automations {
 fn automation_info(automation: &Automation) -> AutomationInfo {
     AutomationInfo {
         name: automation.name.clone(),
-        enabled: automation.enabled,
         trigger: trigger_json(&automation.trigger),
         tool: automation.tool.clone(),
         args: automation.args.clone(),
@@ -480,137 +433,11 @@ fn trigger_json(trigger: &Trigger) -> serde_json::Value {
             "type": "at",
             "datetime": datetime.to_rfc3339(),
         }),
-        Trigger::Event { sender, channel } => serde_json::json!({
-            "type": "event",
+        Trigger::MessageIn { sender, channel } => serde_json::json!({
+            "type": "message_in",
             "sender": sender,
             "channel": channel,
         }),
-    }
-}
-
-/// Build the tool context and the flattened event object templates see.
-fn event_context(event: &Event) -> (ToolContext, serde_json::Value) {
-    match event {
-        Event::MessageIn {
-            channel,
-            sender,
-            address,
-            message,
-        } => {
-            let text = match message {
-                crate::message::Message::User { text, .. } => text.clone(),
-                _ => String::new(),
-            };
-            let ctx = ToolContext {
-                destination: Some((channel.clone(), address.clone())),
-                conversation_id: Some(address.conversation_id.clone()),
-                ..ToolContext::default()
-            };
-            let event = serde_json::json!({
-                "type": "message_in",
-                "channel": channel,
-                "sender": sender_name(sender),
-                "conversation_id": address.conversation_id,
-                "thread_id": address.thread_id,
-                "message_id": address.message_id,
-                "text": text,
-            });
-            (ctx, event)
-        }
-        other => (
-            ToolContext::default(),
-            serde_json::json!({ "type": format!("{other:?}") }),
-        ),
-    }
-}
-
-/// Fill `{{event.field}}` placeholders in stored args from the triggering
-/// event. A string that is exactly one placeholder takes the field's JSON
-/// value; placeholders embedded in longer strings are stringified in place.
-fn render_args(args: &serde_json::Value, event: &serde_json::Value) -> serde_json::Value {
-    match args {
-        serde_json::Value::String(text) => render_string(text, event),
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.iter().map(|item| render_args(item, event)).collect())
-        }
-        serde_json::Value::Object(object) => serde_json::Value::Object(
-            object
-                .iter()
-                .map(|(key, value)| (key.clone(), render_args(value, event)))
-                .collect(),
-        ),
-        other => other.clone(),
-    }
-}
-
-fn render_string(text: &str, event: &serde_json::Value) -> serde_json::Value {
-    let trimmed = text.trim();
-    if let Some(path) = exact_placeholder(trimmed) {
-        return lookup(event, path)
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-    }
-
-    let mut result = String::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("{{") {
-        result.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let Some(end) = after.find("}}") else {
-            result.push_str(&rest[start..]);
-            rest = "";
-            break;
-        };
-        let path = after[..end].trim();
-        match lookup(event, path) {
-            Some(serde_json::Value::String(value)) => result.push_str(value),
-            Some(value) => result.push_str(&value.to_string()),
-            None => {}
-        }
-        rest = &after[end + 2..];
-    }
-    result.push_str(rest);
-    serde_json::Value::String(result)
-}
-
-fn exact_placeholder(text: &str) -> Option<&str> {
-    let inner = text.strip_prefix("{{")?.strip_suffix("}}")?;
-    let inner = inner.trim();
-    if inner.contains("{{") || inner.contains("}}") {
-        return None;
-    }
-    Some(inner)
-}
-
-/// Look up a dot path like `event.text`; the leading `event.` is optional.
-fn lookup<'a>(event: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
-    let path = path.strip_prefix("event.").unwrap_or(path);
-    let mut current = event;
-    for part in path.split('.') {
-        current = current.get(part)?;
-    }
-    Some(current)
-}
-
-pub(super) fn parse_datetime(text: &str) -> Result<chrono::DateTime<chrono::FixedOffset>, String> {
-    if let Ok(datetime) = chrono::DateTime::parse_from_rfc3339(text) {
-        return Ok(datetime);
-    }
-    // No offset: interpret as local time.
-    let naive = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S")
-        .map_err(|err| format!("invalid datetime '{text}' (use RFC 3339): {err}"))?;
-    naive
-        .and_local_timezone(chrono::Local)
-        .single()
-        .map(|datetime| datetime.fixed_offset())
-        .ok_or_else(|| format!("ambiguous local datetime '{text}'"))
-}
-
-fn sender_name(sender: &Sender) -> &'static str {
-    match sender {
-        Sender::User => "user",
-        Sender::Guest => "guest",
-        Sender::System => "system",
     }
 }
 
@@ -621,7 +448,7 @@ mod tests {
         bus::ChannelAddress,
         history::SqliteHistory,
         message::Message,
-        tools::{InternalTools, raw_inference::RawInferenceTool, send_message::SendMessageTool},
+        tools::{InternalTools, messages::SendMessageTool, raw_inference::RawInferenceTool},
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
@@ -640,7 +467,7 @@ mod tests {
             layout,
             RawInferenceTool::new().unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
-            crate::tools::delete_message::DeleteMessageTool::new(bus.clone()),
+            crate::tools::messages::DeleteMessageTool::new(bus.clone()),
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
         ))
@@ -657,7 +484,6 @@ mod tests {
     fn send_message_automation(name: &str, trigger: Trigger) -> Automation {
         Automation {
             name: name.to_string(),
-            enabled: true,
             trigger,
             tool: "send_message".to_string(),
             args: serde_json::json!({ "content": "hi" }),
@@ -682,29 +508,8 @@ mod tests {
     }
 
     #[test]
-    fn default_automation_matches_user_messages_from_any_channel() {
-        let trigger = &Automations::handle_conversation().trigger;
-        assert!(trigger.matches(&message_in("tui", Sender::User)));
-        assert!(trigger.matches(&message_in("telegram", Sender::User)));
-        assert!(!trigger.matches(&message_in("telegram", Sender::Guest)));
-        assert!(!trigger.matches(&Event::CronTick {
-            schedule: "* * * * *".to_string()
-        }));
-    }
-
-    #[test]
-    fn channel_filter_restricts_channel() {
-        let trigger = Trigger::Event {
-            sender: None,
-            channel: Some("telegram".to_string()),
-        };
-        assert!(trigger.matches(&message_in("telegram", Sender::Guest)));
-        assert!(!trigger.matches(&message_in("tui", Sender::User)));
-    }
-
-    #[test]
-    fn message_in_event_is_flattened_for_templates() {
-        let (ctx, event) = event_context(&message_in("tui", Sender::User));
+    fn message_in_event_is_flattened_for_execution() {
+        let (ctx, event) = AutomationEvent::Bus(&message_in("tui", Sender::User)).context();
         assert_eq!(event["type"], "message_in");
         assert_eq!(event["text"], "hi");
         assert_eq!(event["conversation_id"], "c1");
@@ -714,80 +519,18 @@ mod tests {
     }
 
     #[test]
-    fn args_templates_fill_from_the_event() {
-        let (_, event) = event_context(&message_in("tui", Sender::User));
-        let args = serde_json::json!({
-            "message": "{{event.text}}",
-            "summary": "got '{{event.text}}' on {{event.channel}}",
-            "missing": "{{event.nope}}",
-            "untouched": 42,
-        });
-
-        let rendered = render_args(&args, &event);
-
-        assert_eq!(rendered["message"], "hi");
-        assert_eq!(rendered["summary"], "got 'hi' on tui");
-        assert_eq!(rendered["missing"], serde_json::Value::Null);
-        assert_eq!(rendered["untouched"], 42);
-    }
-
-    #[test]
-    fn exact_placeholder_takes_the_json_value() {
-        let event = serde_json::json!({ "thread_id": null, "count": 3 });
-        assert_eq!(
-            render_args(&serde_json::json!("{{event.count}}"), &event),
-            serde_json::json!(3)
-        );
-        assert_eq!(
-            render_args(&serde_json::json!("{{event.thread_id}}"), &event),
-            serde_json::Value::Null
-        );
-    }
-
-    #[test]
-    fn cron_trigger_parses_valid_expressions() {
-        assert!(Trigger::cron("0 0 9 * * * *").is_ok());
-        assert!(Trigger::cron("not a cron").is_err());
-    }
-
-    #[test]
-    fn cron_trigger_accepts_standard_five_field_form() {
-        assert!(Trigger::cron("0 9 * * 1").is_ok());
-        assert!(Trigger::cron("*/5 * * * *").is_ok());
-    }
-
-    #[test]
-    fn at_trigger_accepts_future_rejects_past() {
-        let future = (chrono::Local::now() + chrono::Duration::hours(1)).to_rfc3339();
-        assert!(Trigger::at(&future).is_ok());
-
-        let past = (chrono::Local::now() - chrono::Duration::hours(1)).to_rfc3339();
-        assert!(Trigger::at(&past).is_err());
-
-        assert!(Trigger::at("not a date").is_err());
-    }
-
-    #[test]
-    fn at_trigger_accepts_offsetless_local_datetime() {
-        let future = (chrono::Local::now() + chrono::Duration::hours(1))
-            .format("%Y-%m-%dT%H:%M:%S")
-            .to_string();
-        assert!(Trigger::at(&future).is_ok());
-    }
-
-    #[test]
-    fn delete_removes_runtime_and_persistent_automation() {
+    fn delete_removes_runtime_and_stored_automation() {
         let bus = Bus::new(4);
         let store = temp_store();
         let automations = Arc::new(Automations::new(
             bus,
             test_tools(&Bus::new(4)),
-            Some(Arc::clone(&store)),
+            Arc::clone(&store),
         ));
         automations
-            .add_persistent(send_message_automation(
+            .add(send_message_automation(
                 "daily-news",
-                Trigger::Event {
+                Trigger::MessageIn {
                     sender: Some(Sender::User),
                     channel: None,
                 },
@@ -801,14 +544,18 @@ mod tests {
     }
 
     #[test]
-    fn delete_rejects_builtin_automation() {
+    fn delete_allows_builtin_automation() {
         let bus = Bus::new(4);
-        let automations = Arc::new(Automations::new(bus.clone(), test_tools(&bus), None));
+        let automations = Arc::new(Automations::new(
+            bus.clone(),
+            test_tools(&bus),
+            temp_store(),
+        ));
         automations.add(Automations::handle_conversation()).unwrap();
 
         let result = automations.delete("handle-conversation");
 
-        assert!(result.is_err());
-        assert!(automations.is_registered("handle-conversation"));
+        assert!(result.is_ok());
+        assert!(!automations.is_registered("handle-conversation"));
     }
 }

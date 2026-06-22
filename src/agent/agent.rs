@@ -336,7 +336,7 @@ fn history_metadata(destination: Destination<'_>, conversation_id: &str) -> Mess
             None,
         );
     }
-    MessageMetadata::new("warden", conversation_id.to_string(), None, None)
+    MessageMetadata::new("internal", conversation_id.to_string(), None, None)
 }
 
 async fn execute_tool_call(
@@ -419,11 +419,11 @@ mod tests {
         InternalTools::new(
             bus.clone(),
             layout,
-            crate::tools::raw_inference::RawInferenceTool::new().unwrap(),
-            crate::tools::send_message::SendMessageTool::new(bus.clone(), |_| {
+            crate::tools::raw_inference::RawInferenceTool::nexw().unwrap(),
+            crate::tools::messages::SendMessageTool::new(bus.clone(), |_| {
                 Err("unexpected attachment lookup".to_string())
             }),
-            crate::tools::delete_message::DeleteMessageTool::new(bus.clone()),
+            crate::tools::messages::DeleteMessageTool::new(bus.clone()),
             files_dir,
             Arc::new(crate::history::SqliteHistory::new(history).unwrap()),
         )

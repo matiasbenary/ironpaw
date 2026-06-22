@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::{
-    bus::{AutomationAction, Bus, Event},
+    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event},
     message::ToolDefinition,
     tools::{self, InternalTool, ToolContext, ToolOutput},
 };
@@ -89,14 +89,33 @@ impl CreateAutomationTool {
         &self,
         params: CreateAutomationParams,
     ) -> Result<serde_json::Value, String> {
+        let cron = params
+            .cron
+            .filter(|expression| !expression.trim().is_empty());
+        let at = params.at.filter(|datetime| !datetime.trim().is_empty());
+        let trigger = match (at, cron) {
+            (Some(datetime), None) => AutomationTriggerSpec::At { datetime },
+            (None, Some(expression)) => AutomationTriggerSpec::Cron { expression },
+            _ => return Err("set exactly one of at or cron".to_string()),
+        };
+        if params.tool.trim().is_empty() {
+            return Err("tool must not be empty".to_string());
+        }
+        let args = match params.args {
+            None => serde_json::json!({}),
+            Some(serde_json::Value::String(text)) => serde_json::from_str(&text)
+                .map_err(|err| format!("args must be a JSON object, got a string: {err}"))?,
+            Some(value) => value,
+        };
         request_automation(
             &self.bus,
             AutomationAction::Create {
-                name: params.name,
-                at: params.at,
-                cron: params.cron,
-                tool: params.tool,
-                args: params.args,
+                automation: AutomationSpec {
+                    name: params.name,
+                    trigger,
+                    tool: params.tool,
+                    args,
+                },
             },
         )
         .await
@@ -204,7 +223,7 @@ impl InternalTool for InspectAutomationTool {
         tools::tool_definition::<InspectAutomationParams>(
             self.name(),
             "Inspect an automation by exact name. Returns its trigger, target \
-             tool, args, and enabled state. Durable run logs are not implemented yet.",
+             tool, and args. Durable run logs are not implemented yet.",
         )
     }
 

@@ -10,9 +10,11 @@ use warden::{
     message::Attachment,
     secrets::Secrets,
     tools::{
-        InternalTools, delete_message::DeleteMessageTool, dynamic::DynamicTool,
-        install_channel::InstallChannelTool, onboarding::OnboardingTool,
-        raw_inference::RawInferenceTool, send_message::SendMessageTool, setup::SetupServices,
+        InternalTools,
+        dynamic::DynamicTool,
+        messages::{DeleteMessageTool, SendMessageTool},
+        raw_inference::RawInferenceTool,
+        setup::{InstallChannelTool, OnboardingTool, SetupServices},
     },
 };
 
@@ -22,18 +24,6 @@ async fn main() -> std::io::Result<()> {
     let secrets = Secrets::load(&layout);
 
     let bus = Bus::new(16);
-    let setup_complete = secrets
-        .tools
-        .get("NEAR_API_KEY")
-        .is_some_and(|value| !value.trim().is_empty())
-        && secrets
-            .tools
-            .get("BRAVE_SEARCH_API")
-            .is_some_and(|value| !value.trim().is_empty());
-    let env_path = secrets
-        .loaded_env()
-        .cloned()
-        .unwrap_or_else(|| layout.root().join(".env"));
     let history: Arc<dyn History> = Arc::new(
         SqliteHistory::new(layout.data_dir().join("history.db")).map_err(std::io::Error::other)?,
     );
@@ -74,8 +64,12 @@ async fn main() -> std::io::Result<()> {
     let automations = Arc::new(Automations::new(
         bus.clone(),
         Arc::clone(&tools),
-        Some(automation_store),
+        automation_store,
     ));
+    let env_path = secrets
+        .loaded_env()
+        .cloned()
+        .unwrap_or_else(|| layout.root().join(".env"));
     let setup_services = Arc::new(SetupServices::new(
         Arc::clone(&tools),
         Arc::clone(&automations),
@@ -95,6 +89,14 @@ async fn main() -> std::io::Result<()> {
         .recover_stale_channel_auth()
         .map_err(std::io::Error::other)?;
     if stored_count == 0 {
+        let setup_complete = secrets
+            .tools
+            .get("NEAR_API_KEY")
+            .is_some_and(|value| !value.trim().is_empty())
+            && secrets
+                .tools
+                .get("BRAVE_SEARCH_API")
+                .is_some_and(|value| !value.trim().is_empty());
         if setup_complete {
             automations
                 .add(Automations::handle_conversation())

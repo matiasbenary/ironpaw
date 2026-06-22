@@ -42,8 +42,7 @@ impl OnboardingTool {
     pub fn automation() -> Automation {
         Automation {
             name: "onboarding".to_string(),
-            enabled: true,
-            trigger: Trigger::Event {
+            trigger: Trigger::MessageIn {
                 sender: Some(Sender::User),
                 channel: None,
             },

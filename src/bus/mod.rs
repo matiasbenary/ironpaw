@@ -1,6 +1,9 @@
 mod event;
 
-pub use event::{AgentRequest, AutomationAction, ChannelAction, ChannelAddress, Event, Sender};
+pub use event::{
+    AgentRequest, AutomationAction, AutomationSpec, AutomationTriggerSpec, ChannelAction,
+    ChannelAddress, Event, Sender,
+};
 use tokio::sync::broadcast;
 
 #[derive(Clone)]

@@ -9,9 +9,11 @@ use warden::{
     history::{History, HistoryEntry, MessageMetadata, SqliteHistory},
     message::{Attachment, Message},
     tools::{
-        InternalTools, delete_message::DeleteMessageTool, dynamic::DynamicTool,
-        onboarding::OnboardingTool, raw_inference::RawInferenceTool, send_message::SendMessageTool,
-        setup::SetupServices,
+        InternalTools,
+        dynamic::DynamicTool,
+        messages::{DeleteMessageTool, SendMessageTool},
+        raw_inference::RawInferenceTool,
+        setup::{OnboardingTool, SetupServices},
     },
 };
 
@@ -50,7 +52,7 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
     let automations = Arc::new(Automations::new(
         bus.clone(),
         Arc::clone(&tools),
-        Some(automation_store),
+        automation_store,
     ));
     let setup_services = Arc::new(SetupServices::new(
         Arc::clone(&tools),

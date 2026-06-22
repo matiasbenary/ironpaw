@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 
 use crate::bus::Sender;
 
-use super::{Automation, Trigger, parse_datetime};
+use super::{Automation, Trigger, trigger::parse_datetime};
 
 pub struct SqliteAutomations {
     conn: Mutex<Connection>,
@@ -20,7 +20,6 @@ impl SqliteAutomations {
             "PRAGMA journal_mode=WAL;
              CREATE TABLE IF NOT EXISTS automations (
                  name         TEXT    PRIMARY KEY,
-                 enabled      INTEGER NOT NULL,
                  trigger_json TEXT    NOT NULL,
                  tool         TEXT    NOT NULL,
                  args_json    TEXT    NOT NULL,
@@ -40,11 +39,10 @@ impl SqliteAutomations {
         let created_at = chrono::Utc::now().to_rfc3339();
         let conn = self.conn.lock().expect("automations mutex poisoned");
         conn.execute(
-            "INSERT INTO automations(name, enabled, trigger_json, tool, args_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO automations(name, trigger_json, tool, args_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 &automation.name,
-                automation.enabled as i64,
                 trigger_json,
                 &automation.tool,
                 args_json,
@@ -74,7 +72,7 @@ impl SqliteAutomations {
         let conn = self.conn.lock().expect("automations mutex poisoned");
         let mut stmt = conn
             .prepare(
-                "SELECT name, enabled, trigger_json, tool, args_json
+                "SELECT name, trigger_json, tool, args_json
                  FROM automations
                  ORDER BY created_at ASC, name ASC",
             )
@@ -83,10 +81,9 @@ impl SqliteAutomations {
             .query_map([], |row| {
                 Ok(StoredAutomationRow {
                     name: row.get(0)?,
-                    enabled: row.get::<_, i64>(1)? != 0,
-                    trigger_json: row.get(2)?,
-                    tool: row.get(3)?,
-                    args_json: row.get(4)?,
+                    trigger_json: row.get(1)?,
+                    tool: row.get(2)?,
+                    args_json: row.get(3)?,
                 })
             })
             .map_err(|err| err.to_string())?;
@@ -102,7 +99,6 @@ impl SqliteAutomations {
 
 struct StoredAutomationRow {
     name: String,
-    enabled: bool,
     trigger_json: String,
     tool: String,
     args_json: String,
@@ -115,7 +111,6 @@ impl StoredAutomationRow {
         let args = serde_json::from_str(&self.args_json).map_err(|err| err.to_string())?;
         Ok(Automation {
             name: self.name,
-            enabled: self.enabled,
             trigger: trigger.into_trigger()?,
             tool: self.tool,
             args,
@@ -132,7 +127,8 @@ enum StoredTrigger {
     At {
         datetime: String,
     },
-    Event {
+    #[serde(alias = "event")]
+    MessageIn {
         #[serde(default)]
         sender: Option<Sender>,
         #[serde(default)]
@@ -149,7 +145,7 @@ impl StoredTrigger {
             Trigger::At { datetime } => Self::At {
                 datetime: datetime.to_rfc3339(),
             },
-            Trigger::Event { sender, channel } => Self::Event {
+            Trigger::MessageIn { sender, channel } => Self::MessageIn {
                 sender: sender.clone(),
                 channel: channel.clone(),
             },
@@ -162,7 +158,7 @@ impl StoredTrigger {
             Self::At { datetime } => Ok(Trigger::At {
                 datetime: parse_datetime(&datetime)?,
             }),
-            Self::Event { sender, channel } => Ok(Trigger::Event { sender, channel }),
+            Self::MessageIn { sender, channel } => Ok(Trigger::MessageIn { sender, channel }),
         }
     }
 }
@@ -182,7 +178,6 @@ mod tests {
     fn send_message_automation(name: &str, trigger: Trigger) -> Automation {
         Automation {
             name: name.to_string(),
-            enabled: true,
             trigger,
             tool: "send_message".to_string(),
             args: serde_json::json!({ "content": "hi" }),
@@ -208,7 +203,7 @@ mod tests {
         store
             .insert(&send_message_automation(
                 "telegram-in",
-                Trigger::Event {
+                Trigger::MessageIn {
                     sender: Some(Sender::User),
                     channel: Some("telegram".to_string()),
                 },
@@ -238,8 +233,8 @@ mod tests {
             .iter()
             .find(|automation| automation.name == "telegram-in")
             .expect("telegram-in");
-        let Trigger::Event { sender, channel } = &telegram.trigger else {
-            panic!("expected event");
+        let Trigger::MessageIn { sender, channel } = &telegram.trigger else {
+            panic!("expected message_in");
         };
         assert_eq!(sender, &Some(Sender::User));
         assert_eq!(channel.as_deref(), Some("telegram"));

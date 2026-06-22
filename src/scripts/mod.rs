@@ -139,7 +139,7 @@ mod tests {
         bus::{Bus, Event},
         history::SqliteHistory,
         message::Message,
-        tools::{InternalTools, raw_inference::RawInferenceTool, send_message::SendMessageTool},
+        tools::{InternalTools, messages::SendMessageTool, raw_inference::RawInferenceTool},
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
@@ -159,7 +159,7 @@ mod tests {
             layout,
             RawInferenceTool::new().unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
-            crate::tools::delete_message::DeleteMessageTool::new(bus.clone()),
+            crate::tools::messages::DeleteMessageTool::new(bus.clone()),
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
         ))

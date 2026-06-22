@@ -31,23 +31,34 @@ pub enum AgentRequest {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AutomationSpec {
+    pub name: String,
+    pub trigger: AutomationTriggerSpec,
+    pub tool: String,
+    pub args: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum AutomationTriggerSpec {
+    At {
+        datetime: String,
+    },
+    Cron {
+        expression: String,
+    },
+    MessageIn {
+        #[serde(default)]
+        sender: Option<Sender>,
+        #[serde(default)]
+        channel: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AutomationAction {
-    Create {
-        name: String,
-        #[serde(default)]
-        at: Option<String>,
-        #[serde(default)]
-        cron: Option<String>,
-        tool: String,
-        #[serde(default)]
-        args: Option<serde_json::Value>,
-    },
-    Delete {
-        name: String,
-    },
-    Inspect {
-        name: String,
-    },
+    Create { automation: AutomationSpec },
+    Delete { name: String },
+    Inspect { name: String },
     List,
 }
 
@@ -93,8 +104,5 @@ pub enum Event {
     AutomationResult {
         id: String,
         result: Result<serde_json::Value, String>,
-    },
-    CronTick {
-        schedule: String,
     },
 }

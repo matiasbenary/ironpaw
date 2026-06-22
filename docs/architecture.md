@@ -66,7 +66,10 @@ Implemented event types are:
 - `MessageOut { channel, recipient, address, message }`
 - `DeleteMessage { channel, address }`
 - `ChannelAction { channel, recipient, address, action }`
-- `CronTick { schedule }`
+- `AgentRequest { request_id, destination, request }`
+- `AgentResponse { request_id, response }`
+- `Automation { id, action }`
+- `AutomationResult { id, result }`
 
 ### Message Types
 
