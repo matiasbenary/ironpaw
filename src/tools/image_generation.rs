@@ -89,12 +89,11 @@ impl InternalTool for ImageGenerationTool {
 
     async fn execute(
         &self,
-        _args: serde_json::Value,
+        args: serde_json::Value,
         _ctx: &crate::tools::ToolContext,
     ) -> Result<ToolOutput, String> {
-        #[allow(unreachable_code)]
         let params: ImageGenerationParams =
-            serde_json::from_value(_args).map_err(|err| err.to_string())?;
+            serde_json::from_value(args).map_err(|err| err.to_string())?;
         let data_base64 = self.generate(&params.prompt).await?;
         let file_id = SystemTime::now()
             .duration_since(UNIX_EPOCH)

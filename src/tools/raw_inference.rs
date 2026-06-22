@@ -212,25 +212,23 @@ impl RawInferenceTool {
             "text": user_text_with_attachment_hints(text, attachments),
         })];
         for attachment in attachments {
-            if attachment.mime_type.starts_with("image/")
-                && let Some(data_url) = self.attachment_data_url(attachment)?
-            {
+            if attachment.mime_type.starts_with("image/") {
                 parts.push(serde_json::json!({
                     "type": "image_url",
-                    "image_url": { "url": data_url },
+                    "image_url": { "url": self.attachment_data_url(attachment)? },
                 }));
             }
         }
         Ok(serde_json::Value::Array(parts))
     }
 
-    fn attachment_data_url(&self, attachment: &Attachment) -> Result<Option<String>, String> {
+    fn attachment_data_url(&self, attachment: &Attachment) -> Result<String, String> {
         let data = attachment.read().map_err(|err| err.to_string())?;
-        Ok(Some(format!(
+        Ok(format!(
             "data:{};base64,{}",
             attachment.mime_type,
             base64::engine::general_purpose::STANDARD.encode(data)
-        )))
+        ))
     }
 }
 

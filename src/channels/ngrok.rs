@@ -41,15 +41,6 @@ pub struct ActiveNgrok {
     _process: NgrokProcess,
 }
 
-impl ActiveNgrok {
-    fn new(public_url: String, process: NgrokProcess) -> Self {
-        Self {
-            public_url,
-            _process: process,
-        }
-    }
-}
-
 pub async fn start_if_configured(
     runtime_root: &Path,
     secrets: &ChannelSecrets,
@@ -110,14 +101,14 @@ async fn start(
         })
     });
 
-    Ok(ActiveNgrok::new(
+    Ok(ActiveNgrok {
         public_url,
-        NgrokProcess {
+        _process: NgrokProcess {
             child,
             _stdout_drain: stdout_drain,
             _stderr_drain: stderr_drain,
         },
-    ))
+    })
 }
 
 struct NgrokProcess {

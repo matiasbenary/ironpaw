@@ -274,9 +274,7 @@ impl InstallChannelTool {
             InstallStage::Secret { index } => {
                 let mut session = session;
                 let secrets = required_secrets(&session.package);
-                let Some(secret) = secrets.get(index) else {
-                    return Err("channel setup secret index is out of range".to_string());
-                };
+                let secret = &secrets[index];
                 let value = secret_value(secret, message)?;
                 delete_current_message(tools, ctx).await;
                 write_env_secret(env_path, &env_secret_name(&secret.name), &value)?;
@@ -295,9 +293,7 @@ impl InstallChannelTool {
             InstallStage::Config { index } => {
                 let mut session = session;
                 let configs = required_config(&session.package);
-                let Some(config) = configs.get(index) else {
-                    return Err("channel setup config index is out of range".to_string());
-                };
+                let config = &configs[index];
                 session
                     .config_values
                     .insert(config.path.clone(), config_value(config, message)?);

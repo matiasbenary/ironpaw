@@ -132,13 +132,13 @@ async fn main() -> std::io::Result<()> {
     } else {
         println!("loaded env: <none>");
     }
-    if channel_runtime.statuses().is_empty() {
+    if channel_runtime.statuses.is_empty() {
         println!(
             "no channels loaded from {}; add *.wasm with matching *.config.json",
             layout.channels_dir().display()
         );
     } else {
-        for status in channel_runtime.statuses() {
+        for status in &channel_runtime.statuses {
             println!("loaded channel: {status}");
         }
     }

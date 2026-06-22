@@ -13,8 +13,8 @@ impl Secrets {
     pub fn load(layout: &RuntimeLayout) -> Self {
         Self {
             loaded_env: load_env(layout),
-            channels: ChannelSecrets::new(),
-            tools: ToolSecrets::new(),
+            channels: ChannelSecrets,
+            tools: ToolSecrets,
         }
     }
 
@@ -27,10 +27,6 @@ impl Secrets {
 pub struct ChannelSecrets;
 
 impl ChannelSecrets {
-    fn new() -> Self {
-        Self
-    }
-
     pub fn get(&self, name: &str) -> Option<String> {
         env::var(name).ok()
     }
@@ -46,10 +42,6 @@ impl crate::http::SecretLookup for ChannelSecrets {
 pub struct ToolSecrets;
 
 impl ToolSecrets {
-    fn new() -> Self {
-        Self
-    }
-
     pub fn get(&self, name: &str) -> Option<String> {
         env::var(name).ok()
     }

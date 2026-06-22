@@ -12,7 +12,7 @@ pub mod wasm;
 pub use bridge::DEFAULT_ADDR;
 
 pub struct ChannelRuntime {
-    statuses: Vec<String>,
+    pub statuses: Vec<String>,
     layout: RuntimeLayout,
     addr: String,
     secrets: ChannelSecrets,
@@ -22,10 +22,6 @@ pub struct ChannelRuntime {
 }
 
 impl ChannelRuntime {
-    pub fn statuses(&self) -> &[String] {
-        &self.statuses
-    }
-
     pub async fn activate_installed_channel(
         &self,
         name: &str,

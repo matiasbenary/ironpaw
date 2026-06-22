@@ -93,10 +93,6 @@ impl ToolRegistry {
         self.tools.read().expect("tools lock").clone()
     }
 
-    pub fn model_tools(&self) -> Vec<Arc<dyn InternalTool>> {
-        self.all()
-    }
-
     pub fn named_tools(&self, names: &[String]) -> Result<Vec<Arc<dyn InternalTool>>, String> {
         let tools = self.all();
         names

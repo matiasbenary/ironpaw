@@ -53,7 +53,7 @@ impl Agent {
             destination,
             conversation_id,
             transient_messages: Vec::new(),
-            tools: self.tools.model_tools(),
+            tools: self.tools.all(),
             allowed_tool_names: None,
             persist_history: true,
         })

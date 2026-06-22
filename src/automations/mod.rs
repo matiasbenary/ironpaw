@@ -251,7 +251,7 @@ impl Automations {
             .push(Arc::clone(&automation));
         match &automation.trigger {
             Trigger::At { datetime } => self.spawn_at(automation.clone(), *datetime),
-            Trigger::Cron { .. } => self.spawn_cron(automation.clone()),
+            Trigger::Cron { schedule, .. } => self.spawn_cron(automation.clone(), schedule.clone()),
             Trigger::MessageIn { .. } => {}
         }
         Ok(())
@@ -387,12 +387,9 @@ impl Automations {
         });
     }
 
-    fn spawn_cron(self: &Arc<Self>, automation: Arc<Automation>) {
+    fn spawn_cron(self: &Arc<Self>, automation: Arc<Automation>, schedule: Box<cron::Schedule>) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            let Trigger::Cron { schedule, .. } = &automation.trigger else {
-                return;
-            };
             loop {
                 let Some(next) = schedule.upcoming(chrono::Local).next() else {
                     break;
