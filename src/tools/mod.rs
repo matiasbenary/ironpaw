@@ -1,4 +1,3 @@
-pub mod agents;
 pub mod automation;
 pub mod dynamic;
 pub mod image_generation;
@@ -23,7 +22,6 @@ use crate::{
 };
 
 use self::{
-    agents::{CallAgentTool, ContinueConversationTool},
     automation::{
         CreateAutomationTool, DeleteAutomationTool, InspectAutomationTool, ListAutomationsTool,
     },
@@ -76,8 +74,6 @@ pub struct InternalTools {
     pub raw_inference: RawInferenceTool,
     pub send_message: Arc<SendMessageTool>,
     pub delete_message: Arc<DeleteMessageTool>,
-    pub call_agent: Arc<CallAgentTool>,
-    pub continue_conversation: Arc<ContinueConversationTool>,
     pub create_automation: Arc<CreateAutomationTool>,
     pub delete_automation: Arc<DeleteAutomationTool>,
     pub inspect_automation: Arc<InspectAutomationTool>,
@@ -103,6 +99,24 @@ impl ToolRegistry {
     /// Snapshot of every registered tool (internal and dynamic).
     pub fn all(&self) -> Vec<Arc<dyn InternalTool>> {
         self.tools.read().expect("tools lock").clone()
+    }
+
+    pub fn model_tools(&self) -> Vec<Arc<dyn InternalTool>> {
+        self.all()
+    }
+
+    pub fn named_tools(&self, names: &[String]) -> Result<Vec<Arc<dyn InternalTool>>, String> {
+        let tools = self.all();
+        names
+            .iter()
+            .map(|name| {
+                tools
+                    .iter()
+                    .find(|tool| tool.name() == name)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown tool: {name}"))
+            })
+            .collect()
     }
 
     /// Register a tool at runtime. Names must be unique.
@@ -155,8 +169,6 @@ impl InternalTools {
         let image_generation = Arc::new(ImageGenerationTool::new(files_dir.clone()));
         let inspect_file = Arc::new(InspectFileTool::new(files_dir, raw_inference.clone()));
         let todo = Arc::new(TodoTool::new());
-        let call_agent = Arc::new(CallAgentTool::new(bus.clone()));
-        let continue_conversation = Arc::new(ContinueConversationTool::new(bus.clone()));
         let create_automation = Arc::new(CreateAutomationTool::new(bus.clone()));
         let delete_automation = Arc::new(DeleteAutomationTool::new(bus.clone()));
         let inspect_automation = Arc::new(InspectAutomationTool::new(bus.clone()));
@@ -177,8 +189,6 @@ impl InternalTools {
             image_generation,
             inspect_file,
             todo,
-            Arc::clone(&call_agent) as Arc<dyn InternalTool>,
-            Arc::clone(&continue_conversation) as Arc<dyn InternalTool>,
             Arc::clone(&create_automation) as Arc<dyn InternalTool>,
             Arc::clone(&delete_automation) as Arc<dyn InternalTool>,
             Arc::clone(&inspect_automation) as Arc<dyn InternalTool>,
@@ -195,8 +205,6 @@ impl InternalTools {
             raw_inference: raw_inference.clone(),
             send_message: Arc::clone(&send_message),
             delete_message: Arc::clone(&delete_message),
-            call_agent: Arc::clone(&call_agent),
-            continue_conversation: Arc::clone(&continue_conversation),
             create_automation: Arc::clone(&create_automation),
             delete_automation: Arc::clone(&delete_automation),
             inspect_automation: Arc::clone(&inspect_automation),

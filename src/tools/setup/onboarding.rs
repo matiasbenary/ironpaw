@@ -6,7 +6,7 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    automations::{Automation, Automations, Trigger},
+    automations::{Automation, AutomationEffect, Automations, Trigger},
     bus::Sender,
     message::ToolDefinition,
     tools::{self, InternalTool, InternalTools, ToolContext, ToolOutput, setup::SetupServices},
@@ -46,10 +46,12 @@ impl OnboardingTool {
                 sender: Some(Sender::User),
                 channel: None,
             },
-            tool: "onboarding".to_string(),
-            args: serde_json::json!({
-                "message": "{{event.text}}",
-            }),
+            effect: AutomationEffect::Tool {
+                tool: "onboarding".to_string(),
+                args: serde_json::json!({
+                    "message": "{{event.text}}",
+                }),
+            },
         }
     }
 

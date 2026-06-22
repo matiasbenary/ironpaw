@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    automations::{Automation, Automations, Trigger},
+    automations::{Automation, AutomationEffect, Automations, Trigger},
     bus::Sender,
     channels,
     config::RuntimeLayout,
@@ -168,11 +168,13 @@ impl InstallChannelTool {
                 sender: Some(Sender::User),
                 channel: None,
             },
-            tool: "install_channel".to_string(),
-            args: serde_json::json!({
-                "name": channel_name,
-                "message": "{{event.text}}",
-            }),
+            effect: AutomationEffect::Tool {
+                tool: "install_channel".to_string(),
+                args: serde_json::json!({
+                    "name": channel_name,
+                    "message": "{{event.text}}",
+                }),
+            },
         }
     }
 

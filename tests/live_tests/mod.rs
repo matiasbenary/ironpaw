@@ -10,7 +10,6 @@ use warden::{
     message::{Attachment, Message},
     tools::{
         InternalTools,
-        dynamic::DynamicTool,
         messages::{DeleteMessageTool, SendMessageTool},
         raw_inference::RawInferenceTool,
         setup::{OnboardingTool, SetupServices},
@@ -38,11 +37,6 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
         Arc::clone(&history),
         tools.raw_inference.clone(),
     ));
-    let _agent_task = Arc::clone(&agent).start();
-    let scripts = Arc::clone(&tools.scripts);
-    tools
-        .add(Arc::new(DynamicTool::handle_conversation(scripts)))
-        .expect("stock tool registers");
     let automations_db = std::env::temp_dir().join(format!(
         "warden-live-test-automations-{}.db",
         uuid::Uuid::new_v4()
@@ -52,6 +46,7 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
     let automations = Arc::new(Automations::new(
         bus.clone(),
         Arc::clone(&tools),
+        Arc::clone(&agent),
         automation_store,
     ));
     let setup_services = Arc::new(SetupServices::new(

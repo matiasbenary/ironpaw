@@ -210,38 +210,6 @@ impl DynamicTool {
         fs::write(&config_path, manifest_json)
             .map_err(|err| format!("failed to write {}: {err}", config_path.display()))
     }
-
-    /// The stock tool behind warden's default automation: run the agent on
-    /// the current conversation and deliver its answer back there.
-    pub fn handle_conversation(scripts: Arc<ScriptRuntime>) -> Self {
-        const SCRIPT: &str = r#"
-	const r = tool("continue_conversation", { conversation_id: args.conversation_id });
-	if (r.ok && r.result) {
-	    tool("send_message", { content: r.result });
-	    return { ok: true };
-	} else if (!r.ok) {
-	    tool("send_message", { content: "agent failed: " + r.error });
-	    return r;
-	}
-	return { ok: true };
-	"#;
-        Self::new(
-            "handle_conversation".to_string(),
-            "Handle a user message: run the agent on it and deliver the \
-             answer back to the conversation it came from."
-                .to_string(),
-            Some(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "conversation_id": { "type": "string" }
-                },
-                "required": ["conversation_id"],
-                "additionalProperties": false
-            })),
-            SCRIPT.to_string(),
-            scripts,
-        )
-    }
 }
 
 fn tool_name_from_script_path(script_path: &Path) -> Result<String, String> {

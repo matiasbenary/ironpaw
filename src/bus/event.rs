@@ -25,17 +25,25 @@ pub enum ChannelAction {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum AgentRequest {
-    RunTask { task: String },
-    ContinueConversation { conversation_id: String },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AutomationSpec {
     pub name: String,
     pub trigger: AutomationTriggerSpec,
-    pub tool: String,
-    pub args: serde_json::Value,
+    pub effect: AutomationEffectSpec,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum AutomationEffectSpec {
+    Tool {
+        tool: String,
+        args: serde_json::Value,
+    },
+    AgentTask {
+        prompt: String,
+        tools: Vec<String>,
+    },
+    ContinueConversation {
+        conversation_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -86,16 +94,6 @@ pub enum Event {
         recipient: Sender,
         address: ChannelAddress,
         action: ChannelAction,
-    },
-    AgentRequest {
-        request_id: String,
-        #[serde(default)]
-        destination: Option<(String, ChannelAddress)>,
-        request: AgentRequest,
-    },
-    AgentResponse {
-        request_id: String,
-        response: Result<Option<String>, String>,
     },
     Automation {
         id: String,

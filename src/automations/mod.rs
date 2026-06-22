@@ -1,18 +1,22 @@
 use std::sync::{Arc, RwLock};
 
 use crate::{
-    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, Sender},
-    tools::{self, InternalTools, ToolContext},
+    agent::Agent,
+    bus::{
+        AutomationAction, AutomationEffectSpec, AutomationSpec, AutomationTriggerSpec, Bus, Event,
+        Sender,
+    },
+    tools::{InternalTools, ToolContext},
 };
 
+mod effect;
 mod render_args;
 mod store;
 mod trigger;
 
+pub use effect::AutomationEffect;
 pub use store::SqliteAutomations;
 pub use trigger::Trigger;
-
-use render_args::render_args;
 
 enum AutomationEvent<'a> {
     Bus(&'a Event),
@@ -76,23 +80,20 @@ fn sender_name(sender: &Sender) -> &'static str {
     }
 }
 
-/// An automation is a trigger plus a tool call. The stored args may contain
-/// `{{event.field}}` placeholders, filled from the triggering event. Logic
-/// beyond a single tool call belongs in a (dynamic) tool, not here.
+/// An automation is a trigger plus an effect. Effect fields may contain
+/// `{{event.field}}` placeholders, filled from the triggering event.
 #[derive(Clone)]
 pub struct Automation {
     pub name: String,
     pub trigger: Trigger,
-    pub tool: String,
-    pub args: serde_json::Value,
+    pub effect: AutomationEffect,
 }
 
 #[derive(serde::Serialize)]
 pub struct AutomationInfo {
     pub name: String,
     pub trigger: serde_json::Value,
-    pub tool: String,
-    pub args: serde_json::Value,
+    pub effect: serde_json::Value,
 }
 
 /// Holds the automations, watches the bus for event triggers, and runs a
@@ -100,22 +101,28 @@ pub struct AutomationInfo {
 pub struct Automations {
     bus: Bus,
     tools: Arc<InternalTools>,
+    agent: Arc<Agent>,
     automations: RwLock<Vec<Arc<Automation>>>,
     store: Arc<SqliteAutomations>,
 }
 
 impl Automations {
-    pub fn new(bus: Bus, tools: Arc<InternalTools>, store: Arc<SqliteAutomations>) -> Self {
+    pub fn new(
+        bus: Bus,
+        tools: Arc<InternalTools>,
+        agent: Arc<Agent>,
+        store: Arc<SqliteAutomations>,
+    ) -> Self {
         Self {
             bus,
             tools,
+            agent,
             automations: RwLock::new(Vec::new()),
             store,
         }
     }
 
-    /// The default automation: every user message goes to the stock
-    /// `handle_conversation` tool.
+    /// The default automation: every user message continues the conversation.
     pub fn handle_conversation() -> Automation {
         Automation {
             name: "handle-conversation".to_string(),
@@ -123,10 +130,9 @@ impl Automations {
                 sender: Some(Sender::User),
                 channel: None,
             },
-            tool: "handle_conversation".to_string(),
-            args: serde_json::json!({
-                "conversation_id": "{{event.conversation_id}}",
-            }),
+            effect: AutomationEffect::ContinueConversation {
+                conversation_id: "{{event.conversation_id}}".to_string(),
+            },
         }
     }
 
@@ -206,9 +212,6 @@ impl Automations {
         if spec.name.trim().is_empty() {
             return Err("name must not be empty".to_string());
         }
-        if spec.tool.trim().is_empty() {
-            return Err("tool must not be empty".to_string());
-        }
         let trigger = match spec.trigger {
             AutomationTriggerSpec::At { datetime } => Trigger::at(&datetime)?,
             AutomationTriggerSpec::Cron { expression } => Trigger::cron(&expression)?,
@@ -216,12 +219,32 @@ impl Automations {
                 Trigger::MessageIn { sender, channel }
             }
         };
-        self.tools.validate_args_for_tool(&spec.tool, &spec.args)?;
+        let effect = match spec.effect {
+            AutomationEffectSpec::Tool { tool, args } => {
+                if tool.trim().is_empty() {
+                    return Err("tool must not be empty".to_string());
+                }
+                self.tools.validate_args_for_tool(&tool, &args)?;
+                AutomationEffect::Tool { tool, args }
+            }
+            AutomationEffectSpec::AgentTask { prompt, tools } => {
+                if prompt.trim().is_empty() {
+                    return Err("prompt must not be empty".to_string());
+                }
+                self.tools.registry.named_tools(&tools)?;
+                AutomationEffect::AgentTask { prompt, tools }
+            }
+            AutomationEffectSpec::ContinueConversation { conversation_id } => {
+                if conversation_id.trim().is_empty() {
+                    return Err("conversation_id must not be empty".to_string());
+                }
+                AutomationEffect::ContinueConversation { conversation_id }
+            }
+        };
         Ok(Automation {
             name: spec.name,
             trigger,
-            tool: spec.tool,
-            args: spec.args,
+            effect,
         })
     }
 
@@ -399,8 +422,10 @@ impl Automations {
 
     async fn execute(&self, automation: &Automation, event: AutomationEvent<'_>) {
         let (ctx, event) = event.context();
-        let args = render_args(&automation.args, &event);
-        let result = tools::run_tool(&self.tools, &automation.tool, args, &ctx).await;
+        let result = automation
+            .effect
+            .execute(&self.bus, &self.tools, &self.agent, &ctx, &event)
+            .await;
         if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
             eprintln!(
                 "automation '{}' failed: {}",
@@ -418,8 +443,7 @@ fn automation_info(automation: &Automation) -> AutomationInfo {
     AutomationInfo {
         name: automation.name.clone(),
         trigger: trigger_json(&automation.trigger),
-        tool: automation.tool.clone(),
-        args: automation.args.clone(),
+        effect: automation.effect.to_json(),
     }
 }
 
@@ -445,6 +469,7 @@ fn trigger_json(trigger: &Trigger) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::{
+        agent::Agent,
         bus::ChannelAddress,
         history::SqliteHistory,
         message::Message,
@@ -481,12 +506,23 @@ mod tests {
         Arc::new(SqliteAutomations::new(path).expect("store"))
     }
 
+    fn test_agent(bus: &Bus, tools: &Arc<InternalTools>) -> Arc<Agent> {
+        Arc::new(Agent::new(
+            bus.clone(),
+            Arc::clone(&tools.registry),
+            Arc::clone(&tools.history),
+            tools.raw_inference.clone(),
+        ))
+    }
+
     fn send_message_automation(name: &str, trigger: Trigger) -> Automation {
         Automation {
             name: name.to_string(),
             trigger,
-            tool: "send_message".to_string(),
-            args: serde_json::json!({ "content": "hi" }),
+            effect: AutomationEffect::Tool {
+                tool: "send_message".to_string(),
+                args: serde_json::json!({ "content": "hi" }),
+            },
         }
     }
 
@@ -522,9 +558,11 @@ mod tests {
     fn delete_removes_runtime_and_stored_automation() {
         let bus = Bus::new(4);
         let store = temp_store();
+        let tools = test_tools(&bus);
         let automations = Arc::new(Automations::new(
-            bus,
-            test_tools(&Bus::new(4)),
+            bus.clone(),
+            Arc::clone(&tools),
+            test_agent(&bus, &tools),
             Arc::clone(&store),
         ));
         automations
@@ -546,9 +584,11 @@ mod tests {
     #[test]
     fn delete_allows_builtin_automation() {
         let bus = Bus::new(4);
+        let tools = test_tools(&bus);
         let automations = Arc::new(Automations::new(
             bus.clone(),
-            test_tools(&bus),
+            Arc::clone(&tools),
+            test_agent(&bus, &tools),
             temp_store(),
         ));
         automations.add(Automations::handle_conversation()).unwrap();

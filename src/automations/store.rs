@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 
 use crate::bus::Sender;
 
-use super::{Automation, Trigger, trigger::parse_datetime};
+use super::{Automation, AutomationEffect, Trigger, trigger::parse_datetime};
 
 pub struct SqliteAutomations {
     conn: Mutex<Connection>,
@@ -16,13 +16,13 @@ impl SqliteAutomations {
             std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
         let conn = Connection::open(path).map_err(|err| err.to_string())?;
+        drop_old_schema(&conn)?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              CREATE TABLE IF NOT EXISTS automations (
                  name         TEXT    PRIMARY KEY,
                  trigger_json TEXT    NOT NULL,
-                 tool         TEXT    NOT NULL,
-                 args_json    TEXT    NOT NULL,
+                 effect_json  TEXT    NOT NULL,
                  created_at   TEXT    NOT NULL
              );",
         )
@@ -35,19 +35,14 @@ impl SqliteAutomations {
     pub fn insert(&self, automation: &Automation) -> Result<(), String> {
         let trigger_json = serde_json::to_string(&StoredTrigger::from_trigger(&automation.trigger))
             .map_err(|err| err.to_string())?;
-        let args_json = serde_json::to_string(&automation.args).map_err(|err| err.to_string())?;
+        let effect_json = serde_json::to_string(&StoredEffect::from_effect(&automation.effect))
+            .map_err(|err| err.to_string())?;
         let created_at = chrono::Utc::now().to_rfc3339();
         let conn = self.conn.lock().expect("automations mutex poisoned");
         conn.execute(
-            "INSERT INTO automations(name, trigger_json, tool, args_json, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                &automation.name,
-                trigger_json,
-                &automation.tool,
-                args_json,
-                created_at,
-            ],
+            "INSERT INTO automations(name, trigger_json, effect_json, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![&automation.name, trigger_json, effect_json, created_at,],
         )
         .map(|_| ())
         .map_err(|err| {
@@ -72,7 +67,7 @@ impl SqliteAutomations {
         let conn = self.conn.lock().expect("automations mutex poisoned");
         let mut stmt = conn
             .prepare(
-                "SELECT name, trigger_json, tool, args_json
+                "SELECT name, trigger_json, effect_json
                  FROM automations
                  ORDER BY created_at ASC, name ASC",
             )
@@ -82,8 +77,7 @@ impl SqliteAutomations {
                 Ok(StoredAutomationRow {
                     name: row.get(0)?,
                     trigger_json: row.get(1)?,
-                    tool: row.get(2)?,
-                    args_json: row.get(3)?,
+                    effect_json: row.get(2)?,
                 })
             })
             .map_err(|err| err.to_string())?;
@@ -97,24 +91,95 @@ impl SqliteAutomations {
     }
 }
 
+fn drop_old_schema(conn: &Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'automations'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    if exists == 0 {
+        return Ok(());
+    }
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(automations)")
+        .map_err(|err| err.to_string())?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| err.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())?;
+    if !columns.iter().any(|column| column == "effect_json") {
+        conn.execute("DROP TABLE automations", [])
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
 struct StoredAutomationRow {
     name: String,
     trigger_json: String,
-    tool: String,
-    args_json: String,
+    effect_json: String,
 }
 
 impl StoredAutomationRow {
     fn into_automation(self) -> Result<Automation, String> {
         let trigger: StoredTrigger =
             serde_json::from_str(&self.trigger_json).map_err(|err| err.to_string())?;
-        let args = serde_json::from_str(&self.args_json).map_err(|err| err.to_string())?;
+        let effect: StoredEffect =
+            serde_json::from_str(&self.effect_json).map_err(|err| err.to_string())?;
         Ok(Automation {
             name: self.name,
             trigger: trigger.into_trigger()?,
-            tool: self.tool,
-            args,
+            effect: effect.into_effect(),
         })
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StoredEffect {
+    Tool {
+        tool: String,
+        args: serde_json::Value,
+    },
+    AgentTask {
+        prompt: String,
+        tools: Vec<String>,
+    },
+    ContinueConversation {
+        conversation_id: String,
+    },
+}
+
+impl StoredEffect {
+    fn from_effect(effect: &AutomationEffect) -> Self {
+        match effect {
+            AutomationEffect::Tool { tool, args } => Self::Tool {
+                tool: tool.clone(),
+                args: args.clone(),
+            },
+            AutomationEffect::AgentTask { prompt, tools } => Self::AgentTask {
+                prompt: prompt.clone(),
+                tools: tools.clone(),
+            },
+            AutomationEffect::ContinueConversation { conversation_id } => {
+                Self::ContinueConversation {
+                    conversation_id: conversation_id.clone(),
+                }
+            }
+        }
+    }
+
+    fn into_effect(self) -> AutomationEffect {
+        match self {
+            Self::Tool { tool, args } => AutomationEffect::Tool { tool, args },
+            Self::AgentTask { prompt, tools } => AutomationEffect::AgentTask { prompt, tools },
+            Self::ContinueConversation { conversation_id } => {
+                AutomationEffect::ContinueConversation { conversation_id }
+            }
+        }
     }
 }
 
@@ -179,8 +244,10 @@ mod tests {
         Automation {
             name: name.to_string(),
             trigger,
-            tool: "send_message".to_string(),
-            args: serde_json::json!({ "content": "hi" }),
+            effect: AutomationEffect::Tool {
+                tool: "send_message".to_string(),
+                args: serde_json::json!({ "content": "hi" }),
+            },
         }
     }
 

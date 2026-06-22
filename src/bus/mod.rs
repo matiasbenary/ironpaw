@@ -1,7 +1,7 @@
 mod event;
 
 pub use event::{
-    AgentRequest, AutomationAction, AutomationSpec, AutomationTriggerSpec, ChannelAction,
+    AutomationAction, AutomationEffectSpec, AutomationSpec, AutomationTriggerSpec, ChannelAction,
     ChannelAddress, Event, Sender,
 };
 use tokio::sync::broadcast;

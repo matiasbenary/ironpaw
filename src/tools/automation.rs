@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 
 use crate::{
-    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event},
+    bus::{
+        AutomationAction, AutomationEffectSpec, AutomationSpec, AutomationTriggerSpec, Bus, Event,
+    },
     message::ToolDefinition,
     tools::{self, InternalTool, ToolContext, ToolOutput},
 };
@@ -22,16 +24,21 @@ pub struct CreateAutomationParams {
     /// e.g. '0 9 * * *' for every day at 09:00.
     #[serde(default)]
     pub cron: Option<String>,
-    /// Name of the tool to run when the automation fires. Any existing tool
-    /// works, including tools you created with create_tool. For multi-step
-    /// logic, create a tool first and reference it here.
-    pub tool: String,
-    /// Arguments the tool is called with, matching its schema. Automations
-    /// run outside any conversation, so include explicit `channel` and
-    /// `conversation_id` when the tool is send_message. Example:
-    /// {"channel": "tui", "conversation_id": "abc", "content": "hi"}
+    /// Name of the tool to run when the automation fires. Set this for a
+    /// direct tool automation. For multi-step logic, create a tool first and
+    /// reference it here.
+    #[serde(default)]
+    pub tool: Option<String>,
+    /// Arguments the tool is called with, matching its schema.
     #[serde(default)]
     pub args: Option<serde_json::Value>,
+    /// Prompt for an agent task automation. Set this instead of `tool` when
+    /// the automation should let the agent solve a task.
+    #[serde(default)]
+    pub agent_prompt: Option<String>,
+    /// Exact tools the agent task may use. Required with `agent_prompt`.
+    #[serde(default)]
+    pub agent_tools: Vec<String>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -98,14 +105,25 @@ impl CreateAutomationTool {
             (None, Some(expression)) => AutomationTriggerSpec::Cron { expression },
             _ => return Err("set exactly one of at or cron".to_string()),
         };
-        if params.tool.trim().is_empty() {
-            return Err("tool must not be empty".to_string());
-        }
-        let args = match params.args {
-            None => serde_json::json!({}),
-            Some(serde_json::Value::String(text)) => serde_json::from_str(&text)
-                .map_err(|err| format!("args must be a JSON object, got a string: {err}"))?,
-            Some(value) => value,
+        let tool = params.tool.filter(|tool| !tool.trim().is_empty());
+        let agent_prompt = params
+            .agent_prompt
+            .filter(|prompt| !prompt.trim().is_empty());
+        let effect = match (tool, agent_prompt) {
+            (Some(tool), None) => {
+                let args = parse_args(params.args)?;
+                AutomationEffectSpec::Tool { tool, args }
+            }
+            (None, Some(prompt)) => {
+                if params.agent_tools.is_empty() {
+                    return Err("agent_tools must not be empty for an agent task".to_string());
+                }
+                AutomationEffectSpec::AgentTask {
+                    prompt,
+                    tools: params.agent_tools,
+                }
+            }
+            _ => return Err("set exactly one of tool or agent_prompt".to_string()),
         };
         request_automation(
             &self.bus,
@@ -113,12 +131,20 @@ impl CreateAutomationTool {
                 automation: AutomationSpec {
                     name: params.name,
                     trigger,
-                    tool: params.tool,
-                    args,
+                    effect,
                 },
             },
         )
         .await
+    }
+}
+
+fn parse_args(args: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    match args {
+        None => Ok(serde_json::json!({})),
+        Some(serde_json::Value::String(text)) => serde_json::from_str(&text)
+            .map_err(|err| format!("args must be a JSON object, got a string: {err}")),
+        Some(value) => Ok(value),
     }
 }
 

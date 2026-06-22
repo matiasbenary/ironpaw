@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::{
-    bus::{AgentRequest, Bus, ChannelAction, ChannelAddress, Event},
+    bus::{Bus, ChannelAction, ChannelAddress},
     history::{History, HistoryEntry, MessageMetadata},
-    message::{Message, ToolCall},
+    message::{Message, ToolCall, ToolDefinition},
     models,
-    tools::{self, ToolContext, ToolRegistry},
+    tools::{self, InternalTool, ToolContext, ToolRegistry},
 };
 
 use super::{
@@ -18,12 +18,10 @@ const MAX_TOOL_ROUNDS: usize = 8;
 const COMPACT_AFTER_PROMPT_TOKENS: u64 = 12_000;
 
 /// The destination a run replies to: the channel and address the triggering
-/// event came from. `None` for background runs (e.g. `call_agent` tasks).
+/// event came from.
 pub type Destination<'a> = Option<(&'a str, &'a ChannelAddress)>;
 
-/// The bounded tool loop: history + raw_inference + tool execution. Who sees
-/// the final text is the caller's decision: an automation publishes it to a
-/// channel, a parent agent consumes it as a tool result.
+/// The bounded tool loop: history + raw_inference + tool execution.
 pub struct Agent {
     bus: Bus,
     tools: Arc<ToolRegistry>,
@@ -51,95 +49,56 @@ impl Agent {
         destination: Destination<'_>,
         conversation_id: &str,
     ) -> Result<Option<String>, String> {
-        self.run(destination, conversation_id, Vec::new()).await
-    }
-
-    pub fn start(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-        let bus = self.bus.clone();
-        let mut events = bus.subscribe();
-        tokio::spawn(async move {
-            loop {
-                match events.recv().await {
-                    Ok(Event::AgentRequest {
-                        request_id,
-                        destination,
-                        request,
-                    }) => {
-                        let response = match request {
-                            AgentRequest::RunTask { task } => {
-                                let destination = destination
-                                    .as_ref()
-                                    .map(|(channel, address)| (channel.as_str(), address));
-                                self.run_task(destination, task).await
-                            }
-                            AgentRequest::ContinueConversation { conversation_id } => {
-                                let destination = destination
-                                    .as_ref()
-                                    .map(|(channel, address)| (channel.as_str(), address));
-                                self.handle_conversation(destination, &conversation_id)
-                                    .await
-                            }
-                        };
-                        bus.publish(Event::AgentResponse {
-                            request_id,
-                            response,
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
+        self.run(AgentRun {
+            destination,
+            conversation_id,
+            transient_messages: Vec::new(),
+            tools: self.tools.model_tools(),
+            allowed_tool_names: None,
+            persist_history: true,
         })
+        .await
     }
 
     pub async fn run_task(
         &self,
-        destination: Destination<'_>,
-        task: String,
+        prompt: String,
+        tool_names: Vec<String>,
     ) -> Result<Option<String>, String> {
-        let conversation_id = format!("agent-task-{}", uuid::Uuid::new_v4());
-        self.run(
-            destination,
-            &conversation_id,
-            vec![Message::User {
-                text: task,
+        let tools = self.tools.named_tools(&tool_names)?;
+        self.run(AgentRun {
+            destination: None,
+            conversation_id: "agent-task",
+            transient_messages: vec![Message::User {
+                text: prompt,
                 attachments: Vec::new(),
             }],
-        )
+            tools,
+            allowed_tool_names: Some(tool_names),
+            persist_history: false,
+        })
         .await
     }
 
     /// Shared bounded tool loop. `transient_messages` are included in the
     /// model input for this run but are not persisted by the agent as user
     /// history.
-    async fn run(
-        &self,
-        destination: Destination<'_>,
-        conversation_id: &str,
-        mut transient_messages: Vec<Message>,
-    ) -> Result<Option<String>, String> {
+    async fn run(&self, mut run: AgentRun<'_>) -> Result<Option<String>, String> {
         let ctx = ToolContext {
-            destination: destination
+            destination: run
+                .destination
                 .map(|(channel, address)| (channel.to_string(), address.clone())),
-            conversation_id: Some(conversation_id.to_string()),
+            conversation_id: Some(run.conversation_id.to_string()),
             ..ToolContext::default()
         };
         let mut prompt_tokens = 0;
 
         for round in 0..MAX_TOOL_ROUNDS {
-            if let Some((channel, address)) = destination {
+            if let Some((channel, address)) = run.destination {
                 publish_channel_action(&self.bus, channel, address, ChannelAction::Typing);
             }
-            let available_tools: Vec<_> = self
-                .tools
-                .all()
-                .into_iter()
-                .filter(|tool| tool.name() != "continue_conversation")
-                .map(|tool| tools::definition_for_model(tool.as_ref()))
-                .collect();
-            let model_messages =
-                self.model_messages(destination, conversation_id, transient_messages.clone());
+            let available_tools = tool_definitions(&run.tools);
+            let model_messages = self.model_messages(&run);
             debug_log(format!(
                 "agent: round {} calling chat_completions(messages={}, tools={})",
                 round + 1,
@@ -159,8 +118,8 @@ impl Agent {
                 .await
                 .map_err(|err| err.to_string())?;
             prompt_tokens += output.usage.prompt_tokens;
-            if prompt_tokens >= COMPACT_AFTER_PROMPT_TOKENS {
-                self.compact_history(conversation_id).await?;
+            if run.persist_history && prompt_tokens >= COMPACT_AFTER_PROMPT_TOKENS {
+                self.compact_history(run.conversation_id).await?;
                 prompt_tokens = 0;
             }
             let output = output.message;
@@ -170,16 +129,20 @@ impl Agent {
             else {
                 return Err("model did not return an assistant message".to_string());
             };
-            transient_messages.clear();
+            run.transient_messages.clear();
             if tool_calls.is_empty() {
                 debug_log(format!(
                     "agent: round {} finished with assistant text",
                     round + 1
                 ));
-                if text.as_deref().is_some_and(|text| !text.is_empty()) {
+                if run.persist_history && text.as_deref().is_some_and(|text| !text.is_empty()) {
                     self.history.append(
-                        conversation_id,
-                        &[history_entry(output.clone(), destination, conversation_id)],
+                        run.conversation_id,
+                        &[history_entry(
+                            output.clone(),
+                            run.destination,
+                            run.conversation_id,
+                        )],
                     );
                 }
                 return Ok(text.filter(|text| !text.is_empty()));
@@ -198,55 +161,64 @@ impl Agent {
                 }
             }
             for tool_call in tool_calls {
-                self.publish_tool_progress(destination, &tool_call.name);
-                let tool_result = execute_tool_call(&self.tools, tool_call, &ctx).await;
+                self.publish_tool_progress(run.destination, &tool_call.name);
+                let tool_result = execute_tool_call(
+                    &self.tools,
+                    tool_call,
+                    &ctx,
+                    run.allowed_tool_names.as_deref(),
+                )
+                .await;
                 tool_results.push(tool_result);
             }
             if has_malformed_tool_call {
-                transient_messages.push(assistant_message_for_history(output));
-                transient_messages.extend(tool_results);
+                run.transient_messages
+                    .push(assistant_message_for_history(output));
+                run.transient_messages.extend(tool_results);
+            } else if run.persist_history {
+                self.history.append(
+                    run.conversation_id,
+                    &[history_entry(output, run.destination, run.conversation_id)],
+                );
+                self.history.append(
+                    run.conversation_id,
+                    &history_entries(tool_results, run.destination, run.conversation_id),
+                );
             } else {
-                self.history.append(
-                    conversation_id,
-                    &[history_entry(output, destination, conversation_id)],
-                );
-                self.history.append(
-                    conversation_id,
-                    &history_entries(tool_results, destination, conversation_id),
-                );
+                run.transient_messages.push(output);
+                run.transient_messages.extend(tool_results);
             }
         }
 
         let stopped = "stopped after too many tool calls".to_string();
-        self.history.append(
-            conversation_id,
-            &[history_entry(
-                Message::Assistant {
-                    text: Some(format!("[tool use] {stopped}")),
-                    attachments: Vec::new(),
-                    tool_calls: Vec::new(),
-                },
-                destination,
-                conversation_id,
-            )],
-        );
+        if run.persist_history {
+            self.history.append(
+                run.conversation_id,
+                &[history_entry(
+                    Message::Assistant {
+                        text: Some(format!("[tool use] {stopped}")),
+                        attachments: Vec::new(),
+                        tool_calls: Vec::new(),
+                    },
+                    run.destination,
+                    run.conversation_id,
+                )],
+            );
+        }
         Ok(Some(stopped))
     }
 
-    fn model_messages(
-        &self,
-        destination: Destination<'_>,
-        conversation_id: &str,
-        transient_messages: Vec<Message>,
-    ) -> Vec<Message> {
-        let mut messages = system_preamble(destination);
-        messages.extend(
-            self.history
-                .load(conversation_id)
-                .into_iter()
-                .map(|entry| entry.message),
-        );
-        messages.extend(transient_messages);
+    fn model_messages(&self, run: &AgentRun<'_>) -> Vec<Message> {
+        let mut messages = system_preamble(run.destination);
+        if run.persist_history {
+            messages.extend(
+                self.history
+                    .load(run.conversation_id)
+                    .into_iter()
+                    .map(|entry| entry.message),
+            );
+        }
+        messages.extend(run.transient_messages.clone());
         messages
     }
 
@@ -305,6 +277,22 @@ impl Agent {
     }
 }
 
+struct AgentRun<'a> {
+    destination: Destination<'a>,
+    conversation_id: &'a str,
+    transient_messages: Vec<Message>,
+    tools: Vec<Arc<dyn InternalTool>>,
+    allowed_tool_names: Option<Vec<String>>,
+    persist_history: bool,
+}
+
+fn tool_definitions(tools: &[Arc<dyn InternalTool>]) -> Vec<ToolDefinition> {
+    tools
+        .iter()
+        .map(|tool| tools::definition_for_model(tool.as_ref()))
+        .collect()
+}
+
 fn history_entries(
     messages: Vec<Message>,
     destination: Destination<'_>,
@@ -343,8 +331,16 @@ async fn execute_tool_call(
     tools: &ToolRegistry,
     tool_call: ToolCall,
     ctx: &ToolContext,
+    allowed_tool_names: Option<&[String]>,
 ) -> Message {
     let tool_name = tool_call.name;
+    if allowed_tool_names.is_some_and(|names| !names.iter().any(|name| name == &tool_name)) {
+        return Message::ToolResult {
+            tool_call_id: tool_call.id,
+            tool_name,
+            result: error_result("tool is not allowed in this agent run"),
+        };
+    }
     let args: serde_json::Value = match serde_json::from_str(&tool_call.arguments) {
         Ok(args) => args,
         Err(err) => {
@@ -444,7 +440,8 @@ mod tests {
             .to_string(),
         };
 
-        let result = execute_tool_call(&tools.registry, tool_call, &ToolContext::default()).await;
+        let result =
+            execute_tool_call(&tools.registry, tool_call, &ToolContext::default(), None).await;
         let Message::ToolResult {
             tool_call_id,
             tool_name,
@@ -489,7 +486,8 @@ mod tests {
             arguments: "{\"channel\":\"telegram\"".to_string(),
         };
 
-        let result = execute_tool_call(&tools.registry, tool_call, &ToolContext::default()).await;
+        let result =
+            execute_tool_call(&tools.registry, tool_call, &ToolContext::default(), None).await;
         let Message::ToolResult {
             tool_call_id,
             tool_name,

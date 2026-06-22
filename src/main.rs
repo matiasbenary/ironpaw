@@ -45,13 +45,7 @@ async fn main() -> std::io::Result<()> {
         Arc::clone(&history),
         tools.raw_inference.clone(),
     ));
-    let _agent_task = Arc::clone(&agent).start();
     let scripts = Arc::clone(&tools.scripts);
-    tools
-        .add(Arc::new(DynamicTool::handle_conversation(Arc::clone(
-            &scripts,
-        ))))
-        .map_err(std::io::Error::other)?;
     for tool in DynamicTool::discover(&layout.tools_dir(), Arc::clone(&scripts))
         .map_err(std::io::Error::other)?
     {
@@ -64,6 +58,7 @@ async fn main() -> std::io::Result<()> {
     let automations = Arc::new(Automations::new(
         bus.clone(),
         Arc::clone(&tools),
+        Arc::clone(&agent),
         automation_store,
     ));
     let env_path = secrets
