@@ -8,16 +8,21 @@ use warden::{
     bus::{Bus, ChannelAddress, Event, Sender},
     history::{History, HistoryEntry, MessageMetadata, SqliteHistory},
     message::{Attachment, Message},
-    scripts::ScriptRuntime,
     tools::{
         InternalTools, delete_message::DeleteMessageTool, dynamic::DynamicTool,
-        raw_inference::RawInferenceTool, send_message::SendMessageTool,
+        onboarding::OnboardingTool, raw_inference::RawInferenceTool, send_message::SendMessageTool,
+        setup::SetupServices,
     },
 };
 
 fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, Arc<dyn History>) {
     let history = temp_history();
+    let layout = warden::config::RuntimeLayout::from_root(
+        std::env::temp_dir().join(format!("warden-live-test-runtime-{}", uuid::Uuid::new_v4())),
+    );
     let tools = InternalTools::new(
+        bus.clone(),
+        layout.clone(),
         RawInferenceTool::new().unwrap(),
         send_message_tool(bus, files_dir.clone()),
         DeleteMessageTool::new(bus.clone()),
@@ -25,15 +30,14 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
         Arc::clone(&history),
     );
     let tools = Arc::new(tools);
-    let agent = Arc::new(Agent::new(bus.clone(), Arc::clone(&tools)));
-    tools.call_agent.bind(Arc::clone(&agent));
-    tools.continue_conversation.bind(agent);
-    let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&tools)));
-    let tools_dir =
-        std::env::temp_dir().join(format!("warden-live-test-tools-{}", uuid::Uuid::new_v4()));
-    tools
-        .create_tool
-        .bind(Arc::clone(&tools), Arc::clone(&scripts), tools_dir);
+    let agent = Arc::new(Agent::new(
+        bus.clone(),
+        Arc::clone(&tools.registry),
+        Arc::clone(&history),
+        tools.raw_inference.clone(),
+    ));
+    let _agent_task = Arc::clone(&agent).start();
+    let scripts = Arc::clone(&tools.scripts);
     tools
         .add(Arc::new(DynamicTool::handle_conversation(scripts)))
         .expect("stock tool registers");
@@ -48,15 +52,15 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
         Arc::clone(&tools),
         Some(automation_store),
     ));
-    tools.create_automation.bind(Arc::clone(&automations));
-    tools.delete_automation.bind(Arc::clone(&automations));
-    tools.inspect_automation.bind(Arc::clone(&automations));
-    tools.list_automations.bind(Arc::clone(&automations));
-    tools.onboarding.bind(
+    let setup_services = Arc::new(SetupServices::new(
         Arc::clone(&tools),
         Arc::clone(&automations),
+        layout,
         std::env::temp_dir().join(format!("warden-live-test-env-{}.env", uuid::Uuid::new_v4())),
-    );
+    ));
+    tools
+        .add(Arc::new(OnboardingTool::new(setup_services)))
+        .expect("onboarding registers");
     automations
         .add(Automations::handle_conversation())
         .expect("stock automation registers");

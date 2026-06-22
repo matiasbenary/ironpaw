@@ -1,7 +1,4 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, OnceLock},
-};
+use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -9,7 +6,7 @@ use crate::{
     message::ToolDefinition,
     scripts::ScriptRuntime,
     tools::{
-        self, InternalTool, InternalTools, ToolContext, ToolOutput,
+        self, InternalTool, ToolContext, ToolOutput, ToolRegistry,
         dynamic::{DynamicTool, DynamicToolManifest, valid_tool_name},
     },
 };
@@ -35,32 +32,32 @@ pub struct CreateToolParams {
     pub script: String,
 }
 
-/// Lets the model author new tools as sandboxed scripts. Bound to the tool
-/// registry and the script runtime after construction.
-#[derive(Default)]
+/// Lets the model author new tools as sandboxed scripts.
 pub struct CreateToolTool {
-    registry: OnceLock<(Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf)>,
+    registry: Arc<ToolRegistry>,
+    scripts: Arc<ScriptRuntime>,
+    tools_dir: PathBuf,
 }
 
 impl CreateToolTool {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn bind(&self, tools: Arc<InternalTools>, scripts: Arc<ScriptRuntime>, tools_dir: PathBuf) {
-        let _ = self.registry.set((tools, scripts, tools_dir));
+    pub fn new(
+        registry: Arc<ToolRegistry>,
+        scripts: Arc<ScriptRuntime>,
+        tools_dir: PathBuf,
+    ) -> Self {
+        Self {
+            registry,
+            scripts,
+            tools_dir,
+        }
     }
 
     pub async fn execute(&self, params: CreateToolParams) -> Result<serde_json::Value, String> {
-        let (tools, scripts, tools_dir) = self
-            .registry
-            .get()
-            .ok_or_else(|| "the tool registry is not available".to_string())?;
         let name = params.name.trim().to_string();
         if !valid_tool_name(&name) {
             return Err("name must be non-empty snake_case (letters, digits, '_')".to_string());
         }
-        if tools.contains(&name) {
+        if self.registry.contains(&name) {
             return Err(format!("a tool named '{name}' already exists"));
         }
         if params.script.trim().is_empty() {
@@ -72,13 +69,13 @@ impl CreateToolTool {
             description: params.description.clone(),
             parameters: None,
         };
-        DynamicTool::write_files(tools_dir, &name, &params.script, &manifest)?;
-        tools.add(Arc::new(DynamicTool::new(
+        DynamicTool::write_files(&self.tools_dir, &name, &params.script, &manifest)?;
+        self.registry.add(Arc::new(DynamicTool::new(
             name.clone(),
             params.description,
             None,
             params.script,
-            Arc::clone(scripts),
+            Arc::clone(&self.scripts),
         )))?;
         Ok(serde_json::json!({ "ok": true, "name": name }))
     }
@@ -125,30 +122,27 @@ mod tests {
 
     fn bound_create_tool() -> (Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf) {
         let bus = Bus::new(4);
-        let files_dir = std::env::temp_dir().join(format!(
-            "warden-create-tool-test-files-{}",
+        let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
+            "warden-create-tool-test-runtime-{}",
             uuid::Uuid::new_v4()
-        ));
+        )));
+        let files_dir = layout.files_dir();
         std::fs::create_dir_all(&files_dir).unwrap();
         let history = std::env::temp_dir().join(format!(
             "warden-create-tool-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
         let tools = Arc::new(InternalTools::new(
+            bus.clone(),
+            layout.clone(),
             RawInferenceTool::new().unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             crate::tools::delete_message::DeleteMessageTool::new(bus),
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
         ));
-        let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&tools)));
-        let tools_dir = std::env::temp_dir().join(format!(
-            "warden-create-tool-test-tools-{}",
-            uuid::Uuid::new_v4()
-        ));
-        tools
-            .create_tool
-            .bind(Arc::clone(&tools), Arc::clone(&scripts), tools_dir.clone());
+        let scripts = Arc::clone(&tools.scripts);
+        let tools_dir = layout.tools_dir();
         (tools, scripts, tools_dir)
     }
 

@@ -1,18 +1,18 @@
 use std::sync::Arc;
 
 use crate::{
-    bus::{Bus, ChannelAction, ChannelAddress},
-    history::{HistoryEntry, MessageMetadata},
+    bus::{AgentRequest, Bus, ChannelAction, ChannelAddress, Event},
+    history::{History, HistoryEntry, MessageMetadata},
     message::{Message, ToolCall},
     models,
-    tools::{self, InternalTools, ToolContext},
+    tools::{self, ToolContext, ToolRegistry},
 };
 
 use super::{
     preamble::system_preamble,
     utils::{publish_channel_action, publish_progress},
 };
-use crate::tools::raw_inference::RawInferenceRequest;
+use crate::tools::raw_inference::{RawInferenceRequest, RawInferenceTool};
 
 const MAX_TOOL_ROUNDS: usize = 8;
 const COMPACT_AFTER_PROMPT_TOKENS: u64 = 12_000;
@@ -26,14 +26,23 @@ pub type Destination<'a> = Option<(&'a str, &'a ChannelAddress)>;
 /// channel, a parent agent consumes it as a tool result.
 pub struct Agent {
     bus: Bus,
-    internal_tools: Arc<InternalTools>,
+    tools: Arc<ToolRegistry>,
+    history: Arc<dyn History>,
+    raw_inference: RawInferenceTool,
 }
 
 impl Agent {
-    pub fn new(bus: Bus, internal_tools: Arc<InternalTools>) -> Self {
+    pub fn new(
+        bus: Bus,
+        tools: Arc<ToolRegistry>,
+        history: Arc<dyn History>,
+        raw_inference: RawInferenceTool,
+    ) -> Self {
         Self {
             bus,
-            internal_tools,
+            tools,
+            history,
+            raw_inference,
         }
     }
 
@@ -43,6 +52,45 @@ impl Agent {
         conversation_id: &str,
     ) -> Result<Option<String>, String> {
         self.run(destination, conversation_id, Vec::new()).await
+    }
+
+    pub fn start(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let bus = self.bus.clone();
+        let mut events = bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(Event::AgentRequest {
+                        request_id,
+                        destination,
+                        request,
+                    }) => {
+                        let response = match request {
+                            AgentRequest::RunTask { task } => {
+                                let destination = destination
+                                    .as_ref()
+                                    .map(|(channel, address)| (channel.as_str(), address));
+                                self.run_task(destination, task).await
+                            }
+                            AgentRequest::ContinueConversation { conversation_id } => {
+                                let destination = destination
+                                    .as_ref()
+                                    .map(|(channel, address)| (channel.as_str(), address));
+                                self.handle_conversation(destination, &conversation_id)
+                                    .await
+                            }
+                        };
+                        bus.publish(Event::AgentResponse {
+                            request_id,
+                            response,
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
     }
 
     pub async fn run_task(
@@ -84,7 +132,7 @@ impl Agent {
                 publish_channel_action(&self.bus, channel, address, ChannelAction::Typing);
             }
             let available_tools: Vec<_> = self
-                .internal_tools
+                .tools
                 .all()
                 .into_iter()
                 .filter(|tool| tool.name() != "continue_conversation")
@@ -106,7 +154,6 @@ impl Agent {
             };
 
             let output = self
-                .internal_tools
                 .raw_inference
                 .execute(request)
                 .await
@@ -130,7 +177,7 @@ impl Agent {
                     round + 1
                 ));
                 if text.as_deref().is_some_and(|text| !text.is_empty()) {
-                    self.internal_tools.history.append(
+                    self.history.append(
                         conversation_id,
                         &[history_entry(output.clone(), destination, conversation_id)],
                     );
@@ -152,18 +199,18 @@ impl Agent {
             }
             for tool_call in tool_calls {
                 self.publish_tool_progress(destination, &tool_call.name);
-                let tool_result = execute_tool_call(&self.internal_tools, tool_call, &ctx).await;
+                let tool_result = execute_tool_call(&self.tools, tool_call, &ctx).await;
                 tool_results.push(tool_result);
             }
             if has_malformed_tool_call {
                 transient_messages.push(assistant_message_for_history(output));
                 transient_messages.extend(tool_results);
             } else {
-                self.internal_tools.history.append(
+                self.history.append(
                     conversation_id,
                     &[history_entry(output, destination, conversation_id)],
                 );
-                self.internal_tools.history.append(
+                self.history.append(
                     conversation_id,
                     &history_entries(tool_results, destination, conversation_id),
                 );
@@ -171,7 +218,7 @@ impl Agent {
         }
 
         let stopped = "stopped after too many tool calls".to_string();
-        self.internal_tools.history.append(
+        self.history.append(
             conversation_id,
             &[history_entry(
                 Message::Assistant {
@@ -194,8 +241,7 @@ impl Agent {
     ) -> Vec<Message> {
         let mut messages = system_preamble(destination);
         messages.extend(
-            self.internal_tools
-                .history
+            self.history
                 .load(conversation_id)
                 .into_iter()
                 .map(|entry| entry.message),
@@ -213,7 +259,7 @@ impl Agent {
     }
 
     async fn compact_history(&self, conversation_id: &str) -> Result<(), String> {
-        let history = self.internal_tools.history.load(conversation_id);
+        let history = self.history.load(conversation_id);
         if history.is_empty() {
             return Ok(());
         }
@@ -222,16 +268,13 @@ impl Agent {
             .map(|entry| entry.message.clone())
             .collect::<Vec<_>>();
         let summary = self.summarize_history(messages).await?;
-        self.internal_tools
-            .history
-            .compact(conversation_id, &summary);
+        self.history.compact(conversation_id, &summary);
         Ok(())
     }
 
     async fn summarize_history(&self, messages: Vec<Message>) -> Result<String, String> {
         let transcript = serde_json::to_string(&messages).map_err(|err| err.to_string())?;
         let response = self
-            .internal_tools
             .raw_inference
             .execute(RawInferenceRequest {
                 model: models::text_model(),
@@ -297,7 +340,7 @@ fn history_metadata(destination: Destination<'_>, conversation_id: &str) -> Mess
 }
 
 async fn execute_tool_call(
-    tools: &InternalTools,
+    tools: &ToolRegistry,
     tool_call: ToolCall,
     ctx: &ToolContext,
 ) -> Message {
@@ -312,7 +355,7 @@ async fn execute_tool_call(
             };
         }
     };
-    let result = tools::run_tool(tools, &tool_name, args, ctx).await;
+    let result = tools::run_registered_tool(tools, &tool_name, args, ctx).await;
     debug_log(format!("agent: tool {tool_name} finished"));
     Message::ToolResult {
         tool_call_id: tool_call.id,
@@ -360,16 +403,22 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
-    use crate::bus::Event;
+    use crate::{bus::Event, tools::InternalTools};
 
     fn test_tools(bus: &Bus) -> InternalTools {
-        let files_dir = std::env::temp_dir().join("warden-agent-test-files");
+        let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
+            "warden-agent-test-runtime-{}",
+            uuid::Uuid::new_v4()
+        )));
+        let files_dir = layout.files_dir();
         std::fs::create_dir_all(&files_dir).unwrap();
         let history = std::env::temp_dir().join(format!(
             "warden-agent-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
         InternalTools::new(
+            bus.clone(),
+            layout,
             crate::tools::raw_inference::RawInferenceTool::new().unwrap(),
             crate::tools::send_message::SendMessageTool::new(bus.clone(), |_| {
                 Err("unexpected attachment lookup".to_string())
@@ -395,7 +444,7 @@ mod tests {
             .to_string(),
         };
 
-        let result = execute_tool_call(&tools, tool_call, &ToolContext::default()).await;
+        let result = execute_tool_call(&tools.registry, tool_call, &ToolContext::default()).await;
         let Message::ToolResult {
             tool_call_id,
             tool_name,
@@ -440,7 +489,7 @@ mod tests {
             arguments: "{\"channel\":\"telegram\"".to_string(),
         };
 
-        let result = execute_tool_call(&tools, tool_call, &ToolContext::default()).await;
+        let result = execute_tool_call(&tools.registry, tool_call, &ToolContext::default()).await;
         let Message::ToolResult {
             tool_call_id,
             tool_name,

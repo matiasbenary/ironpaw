@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 
 use async_trait::async_trait;
@@ -12,7 +12,7 @@ use crate::{
     channels,
     config::RuntimeLayout,
     message::ToolDefinition,
-    tools::{self, InternalTool, InternalTools, ToolContext, ToolOutput},
+    tools::{self, InternalTool, InternalTools, ToolContext, ToolOutput, setup::SetupServices},
 };
 
 const HANDLE_CONVERSATION_AUTOMATION: &str = "handle-conversation";
@@ -93,37 +93,27 @@ enum ConfigValueType {
 }
 
 pub struct InstallChannelTool {
-    binding: OnceLock<(Arc<InternalTools>, Arc<Automations>, RuntimeLayout, PathBuf)>,
-    channel_runtime: OnceLock<Arc<channels::ChannelRuntime>>,
+    setup: Arc<SetupServices>,
     session: Mutex<Option<InstallSession>>,
 }
 
-#[derive(Default)]
 pub struct ListChannelsTool {
-    layout: OnceLock<RuntimeLayout>,
+    layout: RuntimeLayout,
 }
 
 impl ListChannelsTool {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn bind(&self, layout: RuntimeLayout) {
-        let _ = self.layout.set(layout);
+    pub fn new(layout: RuntimeLayout) -> Self {
+        Self { layout }
     }
 
     async fn execute(&self) -> Result<serde_json::Value, String> {
-        let layout = self
-            .layout
-            .get()
-            .ok_or_else(|| "list_channels is not bound".to_string())?;
-        let installed = installed_channel_names(layout)?
+        let installed = installed_channel_names(&self.layout)?
             .into_iter()
             .collect::<BTreeSet<_>>();
         let mut package_names = BTreeSet::new();
         let mut channel_rows = Vec::new();
 
-        for package in discover_channel_packages(layout) {
+        for package in discover_channel_packages(&self.layout) {
             let package = package?;
             let installed = installed.contains(&package.name);
             package_names.insert(package.name.clone());
@@ -164,26 +154,11 @@ impl ListChannelsTool {
 }
 
 impl InstallChannelTool {
-    pub fn new() -> Self {
+    pub fn new(setup: Arc<SetupServices>) -> Self {
         Self {
-            binding: OnceLock::new(),
-            channel_runtime: OnceLock::new(),
+            setup,
             session: Mutex::new(None),
         }
-    }
-
-    pub fn bind(
-        &self,
-        tools: Arc<InternalTools>,
-        automations: Arc<Automations>,
-        layout: RuntimeLayout,
-        env_path: PathBuf,
-    ) {
-        let _ = self.binding.set((tools, automations, layout, env_path));
-    }
-
-    pub fn bind_channel_runtime(&self, runtime: Arc<channels::ChannelRuntime>) {
-        let _ = self.channel_runtime.set(runtime);
     }
 
     fn automation(channel_name: &str) -> Automation {
@@ -215,7 +190,9 @@ impl InstallChannelTool {
     }
 
     async fn start(&self, name: &str, ctx: &ToolContext) -> Result<serde_json::Value, String> {
-        let (tools, automations, layout, _) = self.binding()?;
+        let tools = Arc::as_ref(&self.setup.tools);
+        let automations = &self.setup.automations;
+        let layout = &self.setup.layout;
         let package = locate_channel_package(layout, name)?;
         *self.session.lock().expect("install channel session lock") = Some(InstallSession {
             package,
@@ -242,7 +219,10 @@ impl InstallChannelTool {
         message: &str,
         ctx: &ToolContext,
     ) -> Result<serde_json::Value, String> {
-        let (tools, automations, layout, env_path) = self.binding()?;
+        let tools = Arc::as_ref(&self.setup.tools);
+        let automations = &self.setup.automations;
+        let layout = &self.setup.layout;
+        let env_path = &self.setup.env_path;
         let session = self
             .session
             .lock()
@@ -387,27 +367,10 @@ impl InstallChannelTool {
     }
 
     async fn activate_package(&self, package: &ChannelPackage) -> Result<(), String> {
-        let runtime = self
-            .channel_runtime
-            .get()
-            .ok_or_else(|| "channel runtime is not available".to_string())?;
+        let runtime = self.setup.channel_runtime()?;
         runtime
             .activate_installed_channel(&package.name, package.manifest.external)
             .await
-    }
-
-    fn binding(
-        &self,
-    ) -> Result<&(Arc<InternalTools>, Arc<Automations>, RuntimeLayout, PathBuf), String> {
-        self.binding
-            .get()
-            .ok_or_else(|| "install_channel is not bound".to_string())
-    }
-}
-
-impl Default for InstallChannelTool {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

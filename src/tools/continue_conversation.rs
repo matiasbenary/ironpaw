@@ -1,11 +1,9 @@
-use std::sync::{Arc, OnceLock};
-
 use async_trait::async_trait;
 
 use crate::{
-    agent::Agent,
+    bus::{AgentRequest, Bus},
     message::ToolDefinition,
-    tools::{self, InternalTool, ToolContext, ToolOutput},
+    tools::{self, InternalTool, ToolContext, ToolOutput, call_agent::request_agent},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -15,18 +13,13 @@ pub struct ContinueConversationParams {
     pub conversation_id: String,
 }
 
-#[derive(Default)]
 pub struct ContinueConversationTool {
-    agent: OnceLock<Arc<Agent>>,
+    bus: Bus,
 }
 
 impl ContinueConversationTool {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn bind(&self, agent: Arc<Agent>) {
-        let _ = self.agent.set(agent);
+    pub fn new(bus: Bus) -> Self {
+        Self { bus }
     }
 
     pub async fn execute(
@@ -34,17 +27,14 @@ impl ContinueConversationTool {
         params: ContinueConversationParams,
         ctx: &ToolContext,
     ) -> Result<serde_json::Value, String> {
-        let agent = self
-            .agent
-            .get()
-            .ok_or_else(|| "agent is not available".to_string())?;
-        let destination = ctx
-            .destination
-            .as_ref()
-            .map(|(channel, address)| (channel.as_str(), address));
-        let result = agent
-            .handle_conversation(destination, &params.conversation_id)
-            .await?;
+        let result = request_agent(
+            &self.bus,
+            ctx.destination.clone(),
+            AgentRequest::ContinueConversation {
+                conversation_id: params.conversation_id,
+            },
+        )
+        .await?;
         Ok(serde_json::json!({ "ok": true, "result": result }))
     }
 }

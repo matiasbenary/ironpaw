@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    bus::{Bus, Event, Sender},
+    bus::{AutomationAction, Bus, Event, Sender},
     tools::{self, InternalTools, ToolContext},
 };
 
@@ -305,7 +305,16 @@ impl Automations {
         })
     }
 
-    async fn handle(&self, event: &Event) {
+    async fn handle(self: &Arc<Self>, event: &Event) {
+        if let Event::Automation { id, action } = event {
+            let result = self.handle_action(action.clone());
+            self.bus.publish(Event::AutomationResult {
+                id: id.clone(),
+                result,
+            });
+            return;
+        }
+
         let matching: Vec<_> = self
             .automations
             .read()
@@ -317,6 +326,70 @@ impl Automations {
         for automation in matching {
             let (ctx, event_json) = event_context(event);
             self.execute(&automation, ctx, &event_json).await;
+        }
+    }
+
+    fn handle_action(
+        self: &Arc<Self>,
+        action: AutomationAction,
+    ) -> Result<serde_json::Value, String> {
+        match action {
+            AutomationAction::Create {
+                name,
+                at,
+                cron,
+                tool,
+                args,
+            } => {
+                let cron = cron
+                    .as_deref()
+                    .filter(|expression| !expression.trim().is_empty());
+                let at = at.as_deref().filter(|datetime| !datetime.trim().is_empty());
+                let trigger = match (at, cron) {
+                    (Some(datetime), None) => Trigger::at(datetime)?,
+                    (None, Some(expression)) => Trigger::cron(expression)?,
+                    _ => return Err("set exactly one of at or cron".to_string()),
+                };
+                if tool.trim().is_empty() {
+                    return Err("tool must not be empty".to_string());
+                }
+                let args = match args {
+                    None => serde_json::json!({}),
+                    Some(serde_json::Value::String(text)) => {
+                        serde_json::from_str(&text).map_err(|err| {
+                            format!("args must be a JSON object, got a string: {err}")
+                        })?
+                    }
+                    Some(value) => value,
+                };
+                self.validate_tool_call(&tool, &args)?;
+                self.add_persistent(Automation {
+                    name: name.clone(),
+                    enabled: true,
+                    trigger,
+                    tool,
+                    args,
+                })?;
+                Ok(serde_json::json!({ "ok": true, "name": name }))
+            }
+            AutomationAction::Delete { name } => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err("name must not be empty".to_string());
+                }
+                self.delete(name)?;
+                Ok(serde_json::json!({ "ok": true, "name": name }))
+            }
+            AutomationAction::Inspect { name } => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err("name must not be empty".to_string());
+                }
+                serde_json::to_value(self.inspect(name)?).map_err(|err| err.to_string())
+            }
+            AutomationAction::List => {
+                serde_json::to_value(self.list()).map_err(|err| err.to_string())
+            }
         }
     }
 
@@ -552,16 +625,19 @@ mod tests {
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
-        let files_dir = std::env::temp_dir().join(format!(
-            "warden-automation-test-files-{}",
+        let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
+            "warden-automation-test-runtime-{}",
             uuid::Uuid::new_v4()
-        ));
+        )));
+        let files_dir = layout.files_dir();
         std::fs::create_dir_all(&files_dir).unwrap();
         let history = std::env::temp_dir().join(format!(
             "warden-automation-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
         Arc::new(InternalTools::new(
+            bus.clone(),
+            layout,
             RawInferenceTool::new().unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             crate::tools::delete_message::DeleteMessageTool::new(bus.clone()),

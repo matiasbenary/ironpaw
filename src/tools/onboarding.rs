@@ -1,6 +1,6 @@
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 
 use async_trait::async_trait;
@@ -9,7 +9,7 @@ use crate::{
     automations::{Automation, Automations, Trigger},
     bus::Sender,
     message::ToolDefinition,
-    tools::{self, InternalTool, InternalTools, ToolContext, ToolOutput},
+    tools::{self, InternalTool, InternalTools, ToolContext, ToolOutput, setup::SetupServices},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -28,30 +28,15 @@ enum Stage {
 
 pub struct OnboardingTool {
     stage: Mutex<Stage>,
-    tools: OnceLock<Arc<InternalTools>>,
-    automations: OnceLock<Arc<Automations>>,
-    env_path: OnceLock<PathBuf>,
+    setup: Arc<SetupServices>,
 }
 
 impl OnboardingTool {
-    pub fn new() -> Self {
+    pub fn new(setup: Arc<SetupServices>) -> Self {
         Self {
             stage: Mutex::new(Stage::Greeting),
-            tools: OnceLock::new(),
-            automations: OnceLock::new(),
-            env_path: OnceLock::new(),
+            setup,
         }
-    }
-
-    pub fn bind(
-        &self,
-        tools: Arc<InternalTools>,
-        automations: Arc<Automations>,
-        env_path: PathBuf,
-    ) {
-        let _ = self.tools.set(tools);
-        let _ = self.automations.set(automations);
-        let _ = self.env_path.set(env_path);
     }
 
     pub fn automation() -> Automation {
@@ -217,28 +202,15 @@ impl OnboardingTool {
     }
 
     fn tools(&self) -> Result<&InternalTools, String> {
-        self.tools
-            .get()
-            .map(Arc::as_ref)
-            .ok_or_else(|| "onboarding tool is not bound to tools".to_string())
+        Ok(Arc::as_ref(&self.setup.tools))
     }
 
     fn automations(&self) -> Result<&Arc<Automations>, String> {
-        self.automations
-            .get()
-            .ok_or_else(|| "onboarding tool is not bound to automations".to_string())
+        Ok(&self.setup.automations)
     }
 
     fn env_path(&self) -> Result<&PathBuf, String> {
-        self.env_path
-            .get()
-            .ok_or_else(|| "onboarding tool is not bound to an env path".to_string())
-    }
-}
-
-impl Default for OnboardingTool {
-    fn default() -> Self {
-        Self::new()
+        Ok(&self.setup.env_path)
     }
 }
 

@@ -1,19 +1,17 @@
+pub mod automation;
 pub mod call_agent;
 pub mod continue_conversation;
-pub mod create_automation;
 pub mod create_tool;
-pub mod delete_automation;
 pub mod delete_message;
 pub mod dynamic;
 pub mod image_generation;
-pub mod inspect_automation;
 pub mod inspect_file;
 pub mod install_channel;
-pub mod list_automations;
 pub mod onboarding;
 pub mod raw_inference;
 pub mod search_history;
 pub mod send_message;
+pub mod setup;
 pub mod todo;
 pub mod web_fetch;
 pub mod web_search;
@@ -22,21 +20,25 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 
-use crate::{bus::ChannelAddress, history::History, message::ToolDefinition};
+use crate::{
+    bus::{Bus, ChannelAddress},
+    config::RuntimeLayout,
+    history::History,
+    message::ToolDefinition,
+    scripts::ScriptRuntime,
+};
 
 use self::{
+    automation::{
+        CreateAutomationTool, DeleteAutomationTool, InspectAutomationTool, ListAutomationsTool,
+    },
     call_agent::CallAgentTool,
     continue_conversation::ContinueConversationTool,
-    create_automation::CreateAutomationTool,
     create_tool::CreateToolTool,
-    delete_automation::DeleteAutomationTool,
     delete_message::DeleteMessageTool,
     image_generation::ImageGenerationTool,
-    inspect_automation::InspectAutomationTool,
     inspect_file::InspectFileTool,
-    install_channel::{InstallChannelTool, ListChannelsTool},
-    list_automations::ListAutomationsTool,
-    onboarding::OnboardingTool,
+    install_channel::ListChannelsTool,
     raw_inference::RawInferenceTool,
     search_history::SearchHistoryTool,
     send_message::SendMessageTool,
@@ -90,75 +92,20 @@ pub struct InternalTools {
     pub inspect_automation: Arc<InspectAutomationTool>,
     pub list_automations: Arc<ListAutomationsTool>,
     pub list_channels: Arc<ListChannelsTool>,
-    pub onboarding: Arc<OnboardingTool>,
-    pub install_channel: Arc<InstallChannelTool>,
     pub create_tool: Arc<CreateToolTool>,
+    pub scripts: Arc<ScriptRuntime>,
     pub history: Arc<dyn History>,
+    pub registry: Arc<ToolRegistry>,
+}
+
+pub struct ToolRegistry {
     tools: RwLock<Vec<Arc<dyn InternalTool>>>,
 }
 
-impl InternalTools {
-    pub fn new(
-        raw_inference: RawInferenceTool,
-        send_message: SendMessageTool,
-        delete_message: DeleteMessageTool,
-        files_dir: std::path::PathBuf,
-        history: Arc<dyn History>,
-    ) -> Self {
-        let send_message = Arc::new(send_message);
-        let delete_message = Arc::new(delete_message);
-        let image_generation = Arc::new(ImageGenerationTool::new(files_dir.clone()));
-        let inspect_file = Arc::new(InspectFileTool::new(files_dir, raw_inference.clone()));
-        let todo = Arc::new(TodoTool::new());
-        let call_agent = Arc::new(CallAgentTool::new());
-        let continue_conversation = Arc::new(ContinueConversationTool::new());
-        let create_automation = Arc::new(CreateAutomationTool::new());
-        let delete_automation = Arc::new(DeleteAutomationTool::new());
-        let inspect_automation = Arc::new(InspectAutomationTool::new());
-        let list_automations = Arc::new(ListAutomationsTool::new());
-        let list_channels = Arc::new(ListChannelsTool::new());
-        let onboarding = Arc::new(OnboardingTool::new());
-        let install_channel = Arc::new(InstallChannelTool::new());
-        let create_tool = Arc::new(CreateToolTool::new());
-        let web_fetch = Arc::new(WebFetchTool::new());
-        let web_search = Arc::new(WebSearchTool::new());
-        let search_history = Arc::new(SearchHistoryTool::new(Arc::clone(&history)));
+impl ToolRegistry {
+    pub fn new(tools: Vec<Arc<dyn InternalTool>>) -> Self {
         Self {
-            raw_inference: raw_inference.clone(),
-            send_message: Arc::clone(&send_message),
-            delete_message: Arc::clone(&delete_message),
-            call_agent: Arc::clone(&call_agent),
-            continue_conversation: Arc::clone(&continue_conversation),
-            create_automation: Arc::clone(&create_automation),
-            delete_automation: Arc::clone(&delete_automation),
-            inspect_automation: Arc::clone(&inspect_automation),
-            list_automations: Arc::clone(&list_automations),
-            list_channels: Arc::clone(&list_channels),
-            onboarding: Arc::clone(&onboarding),
-            install_channel: Arc::clone(&install_channel),
-            create_tool: Arc::clone(&create_tool),
-            history,
-            tools: RwLock::new(vec![
-                Arc::new(raw_inference),
-                send_message,
-                delete_message,
-                image_generation,
-                inspect_file,
-                todo,
-                call_agent,
-                continue_conversation,
-                create_automation,
-                delete_automation,
-                inspect_automation,
-                list_automations,
-                list_channels,
-                onboarding,
-                install_channel,
-                create_tool,
-                search_history,
-                web_fetch,
-                web_search,
-            ]),
+            tools: RwLock::new(tools),
         }
     }
 
@@ -200,6 +147,100 @@ impl InternalTools {
     }
 }
 
+impl InternalTools {
+    pub fn new(
+        bus: Bus,
+        layout: RuntimeLayout,
+        raw_inference: RawInferenceTool,
+        send_message: SendMessageTool,
+        delete_message: DeleteMessageTool,
+        files_dir: std::path::PathBuf,
+        history: Arc<dyn History>,
+    ) -> Self {
+        let send_message = Arc::new(send_message);
+        let delete_message = Arc::new(delete_message);
+        let registry = Arc::new(ToolRegistry::new(Vec::new()));
+        let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&registry)));
+        let image_generation = Arc::new(ImageGenerationTool::new(files_dir.clone()));
+        let inspect_file = Arc::new(InspectFileTool::new(files_dir, raw_inference.clone()));
+        let todo = Arc::new(TodoTool::new());
+        let call_agent = Arc::new(CallAgentTool::new(bus.clone()));
+        let continue_conversation = Arc::new(ContinueConversationTool::new(bus.clone()));
+        let create_automation = Arc::new(CreateAutomationTool::new(bus.clone()));
+        let delete_automation = Arc::new(DeleteAutomationTool::new(bus.clone()));
+        let inspect_automation = Arc::new(InspectAutomationTool::new(bus.clone()));
+        let list_automations = Arc::new(ListAutomationsTool::new(bus));
+        let list_channels = Arc::new(ListChannelsTool::new(layout.clone()));
+        let create_tool = Arc::new(CreateToolTool::new(
+            Arc::clone(&registry),
+            Arc::clone(&scripts),
+            layout.tools_dir(),
+        ));
+        let web_fetch = Arc::new(WebFetchTool::new());
+        let web_search = Arc::new(WebSearchTool::new());
+        let search_history = Arc::new(SearchHistoryTool::new(Arc::clone(&history)));
+        for tool in vec![
+            Arc::new(raw_inference.clone()),
+            Arc::clone(&send_message) as Arc<dyn InternalTool>,
+            Arc::clone(&delete_message) as Arc<dyn InternalTool>,
+            image_generation,
+            inspect_file,
+            todo,
+            Arc::clone(&call_agent) as Arc<dyn InternalTool>,
+            Arc::clone(&continue_conversation) as Arc<dyn InternalTool>,
+            Arc::clone(&create_automation) as Arc<dyn InternalTool>,
+            Arc::clone(&delete_automation) as Arc<dyn InternalTool>,
+            Arc::clone(&inspect_automation) as Arc<dyn InternalTool>,
+            Arc::clone(&list_automations) as Arc<dyn InternalTool>,
+            Arc::clone(&list_channels) as Arc<dyn InternalTool>,
+            Arc::clone(&create_tool) as Arc<dyn InternalTool>,
+            search_history,
+            web_fetch,
+            web_search,
+        ] {
+            registry.add(tool).expect("unique built-in tool name");
+        }
+        Self {
+            raw_inference: raw_inference.clone(),
+            send_message: Arc::clone(&send_message),
+            delete_message: Arc::clone(&delete_message),
+            call_agent: Arc::clone(&call_agent),
+            continue_conversation: Arc::clone(&continue_conversation),
+            create_automation: Arc::clone(&create_automation),
+            delete_automation: Arc::clone(&delete_automation),
+            inspect_automation: Arc::clone(&inspect_automation),
+            list_automations: Arc::clone(&list_automations),
+            list_channels: Arc::clone(&list_channels),
+            create_tool: Arc::clone(&create_tool),
+            scripts,
+            history,
+            registry,
+        }
+    }
+
+    /// Snapshot of every registered tool (internal and dynamic).
+    pub fn all(&self) -> Vec<Arc<dyn InternalTool>> {
+        self.registry.all()
+    }
+
+    /// Register a tool at runtime. Names must be unique.
+    pub fn add(&self, tool: Arc<dyn InternalTool>) -> Result<(), String> {
+        self.registry.add(tool)
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.registry.contains(name)
+    }
+
+    pub fn validate_args_for_tool(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Result<(), String> {
+        self.registry.validate_args_for_tool(name, args)
+    }
+}
+
 #[async_trait]
 pub trait InternalTool: Send + Sync {
     fn name(&self) -> &str;
@@ -221,7 +262,20 @@ pub async fn run_tool(
     args: serde_json::Value,
     ctx: &ToolContext,
 ) -> serde_json::Value {
-    let tool = tools.all().iter().find(|tool| tool.name() == name).cloned();
+    run_registered_tool(&tools.registry, name, args, ctx).await
+}
+
+pub async fn run_registered_tool(
+    registry: &ToolRegistry,
+    name: &str,
+    args: serde_json::Value,
+    ctx: &ToolContext,
+) -> serde_json::Value {
+    let tool = registry
+        .all()
+        .iter()
+        .find(|tool| tool.name() == name)
+        .cloned();
     let Some(tool) = tool else {
         return serde_json::json!({ "ok": false, "error": format!("unknown tool: {name}") });
     };
@@ -464,13 +518,19 @@ mod tests {
 
     fn test_tools() -> InternalTools {
         let bus = crate::bus::Bus::new(4);
-        let files_dir = std::env::temp_dir().join("warden-tools-test-files");
+        let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
+            "warden-tools-test-runtime-{}",
+            uuid::Uuid::new_v4()
+        )));
+        let files_dir = layout.files_dir();
         std::fs::create_dir_all(&files_dir).unwrap();
         let history = std::env::temp_dir().join(format!(
             "warden-tools-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
         InternalTools::new(
+            bus.clone(),
+            layout,
             RawInferenceTool::new().unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             DeleteMessageTool::new(bus),

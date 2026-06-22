@@ -8,11 +8,11 @@ use warden::{
     config::RuntimeLayout,
     history::{History, SqliteHistory},
     message::Attachment,
-    scripts::ScriptRuntime,
     secrets::Secrets,
     tools::{
         InternalTools, delete_message::DeleteMessageTool, dynamic::DynamicTool,
-        raw_inference::RawInferenceTool, send_message::SendMessageTool,
+        install_channel::InstallChannelTool, onboarding::OnboardingTool,
+        raw_inference::RawInferenceTool, send_message::SendMessageTool, setup::SetupServices,
     },
 };
 
@@ -38,6 +38,8 @@ async fn main() -> std::io::Result<()> {
         SqliteHistory::new(layout.data_dir().join("history.db")).map_err(std::io::Error::other)?,
     );
     let tools = Arc::new(InternalTools::new(
+        bus.clone(),
+        layout.clone(),
         RawInferenceTool::new().map_err(std::io::Error::other)?,
         SendMessageTool::new(bus.clone(), {
             let files_dir = layout.files_dir();
@@ -47,13 +49,14 @@ async fn main() -> std::io::Result<()> {
         layout.files_dir(),
         Arc::clone(&history),
     ));
-    let agent = Arc::new(Agent::new(bus.clone(), Arc::clone(&tools)));
-    tools.call_agent.bind(Arc::clone(&agent));
-    tools.continue_conversation.bind(agent);
-    let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&tools)));
-    tools
-        .create_tool
-        .bind(Arc::clone(&tools), Arc::clone(&scripts), layout.tools_dir());
+    let agent = Arc::new(Agent::new(
+        bus.clone(),
+        Arc::clone(&tools.registry),
+        Arc::clone(&history),
+        tools.raw_inference.clone(),
+    ));
+    let _agent_task = Arc::clone(&agent).start();
+    let scripts = Arc::clone(&tools.scripts);
     tools
         .add(Arc::new(DynamicTool::handle_conversation(Arc::clone(
             &scripts,
@@ -73,23 +76,20 @@ async fn main() -> std::io::Result<()> {
         Arc::clone(&tools),
         Some(automation_store),
     ));
-    tools.create_automation.bind(Arc::clone(&automations));
-    tools.delete_automation.bind(Arc::clone(&automations));
-    tools.inspect_automation.bind(Arc::clone(&automations));
-    tools.list_automations.bind(Arc::clone(&automations));
-    tools
-        .onboarding
-        .bind(Arc::clone(&tools), Arc::clone(&automations), env_path);
-    tools.install_channel.bind(
+    let setup_services = Arc::new(SetupServices::new(
         Arc::clone(&tools),
         Arc::clone(&automations),
         layout.clone(),
-        secrets
-            .loaded_env()
-            .cloned()
-            .unwrap_or_else(|| layout.root().join(".env")),
-    );
-    tools.list_channels.bind(layout.clone());
+        env_path,
+    ));
+    tools
+        .add(Arc::new(OnboardingTool::new(Arc::clone(&setup_services))))
+        .map_err(std::io::Error::other)?;
+    tools
+        .add(Arc::new(InstallChannelTool::new(Arc::clone(
+            &setup_services,
+        ))))
+        .map_err(std::io::Error::other)?;
     let stored_count = automations.load_stored().map_err(std::io::Error::other)?;
     automations
         .recover_stale_channel_auth()
@@ -101,7 +101,7 @@ async fn main() -> std::io::Result<()> {
                 .map_err(std::io::Error::other)?;
         } else {
             automations
-                .add(warden::tools::onboarding::OnboardingTool::automation())
+                .add(OnboardingTool::automation())
                 .map_err(std::io::Error::other)?;
         }
     }
@@ -121,9 +121,7 @@ async fn main() -> std::io::Result<()> {
         .await
         .map_err(std::io::Error::other)?,
     );
-    tools
-        .install_channel
-        .bind_channel_runtime(Arc::clone(&channel_runtime));
+    setup_services.set_channel_runtime(Arc::clone(&channel_runtime));
 
     println!("channel bridge token: {token}");
     println!("runtime root: {}", layout.root().display());

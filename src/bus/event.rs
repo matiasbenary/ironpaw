@@ -25,6 +25,33 @@ pub enum ChannelAction {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum AgentRequest {
+    RunTask { task: String },
+    ContinueConversation { conversation_id: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum AutomationAction {
+    Create {
+        name: String,
+        #[serde(default)]
+        at: Option<String>,
+        #[serde(default)]
+        cron: Option<String>,
+        tool: String,
+        #[serde(default)]
+        args: Option<serde_json::Value>,
+    },
+    Delete {
+        name: String,
+    },
+    Inspect {
+        name: String,
+    },
+    List,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Event {
     MessageIn {
         channel: String,
@@ -48,6 +75,24 @@ pub enum Event {
         recipient: Sender,
         address: ChannelAddress,
         action: ChannelAction,
+    },
+    AgentRequest {
+        request_id: String,
+        #[serde(default)]
+        destination: Option<(String, ChannelAddress)>,
+        request: AgentRequest,
+    },
+    AgentResponse {
+        request_id: String,
+        response: Result<Option<String>, String>,
+    },
+    Automation {
+        id: String,
+        action: AutomationAction,
+    },
+    AutomationResult {
+        id: String,
+        result: Result<serde_json::Value, String>,
     },
     CronTick {
         schedule: String,

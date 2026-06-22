@@ -1,9 +1,7 @@
-use std::sync::{Arc, OnceLock};
-
 use async_trait::async_trait;
 
 use crate::{
-    agent::Agent,
+    bus::{AgentRequest, Bus, ChannelAddress, Event},
     message::ToolDefinition,
     tools::{self, InternalTool, ToolOutput},
 };
@@ -16,20 +14,14 @@ pub struct CallAgentParams {
 }
 
 /// Runs a sub-agent: same tools, its own conversation, final answer returned
-/// as the tool result. Bound to the agent after construction because the
-/// agent and the tool list need each other.
-#[derive(Default)]
+/// as the tool result.
 pub struct CallAgentTool {
-    agent: OnceLock<Arc<Agent>>,
+    bus: Bus,
 }
 
 impl CallAgentTool {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn bind(&self, agent: Arc<Agent>) {
-        let _ = self.agent.set(agent);
+    pub fn new(bus: Bus) -> Self {
+        Self { bus }
     }
 
     pub async fn execute(
@@ -37,18 +29,43 @@ impl CallAgentTool {
         params: CallAgentParams,
         ctx: &crate::tools::ToolContext,
     ) -> Result<serde_json::Value, String> {
-        let agent = self
-            .agent
-            .get()
-            .ok_or_else(|| "agent is not available".to_string())?;
         // The sub-agent inherits the caller's destination so its progress
         // and channel defaults behave like the run that spawned it.
-        let destination = ctx
-            .destination
-            .as_ref()
-            .map(|(channel, address)| (channel.as_str(), address));
-        let result = agent.run_task(destination, params.task).await?;
+        let destination = ctx.destination.clone();
+        let result = request_agent(
+            &self.bus,
+            destination,
+            AgentRequest::RunTask { task: params.task },
+        )
+        .await?;
         Ok(serde_json::json!({ "ok": true, "result": result }))
+    }
+}
+
+pub(crate) async fn request_agent(
+    bus: &Bus,
+    destination: Option<(String, ChannelAddress)>,
+    request: AgentRequest,
+) -> Result<Option<String>, String> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let mut events = bus.subscribe();
+    bus.publish(Event::AgentRequest {
+        request_id: request_id.clone(),
+        destination,
+        request,
+    });
+    loop {
+        match events.recv().await {
+            Ok(Event::AgentResponse {
+                request_id: response_id,
+                response,
+            }) if response_id == request_id => return response,
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                return Err("agent bus closed before response".to_string());
+            }
+        }
     }
 }
 

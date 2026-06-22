@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use rquickjs::{CatchResultExt, Context, Ctx, Runtime, Value, function::Func};
 
-use crate::tools::{self, InternalTools, ToolContext};
+use crate::tools::{self, ToolContext, ToolRegistry};
 
 /// Wall-clock budget for one script execution: a runaway loop gets
 /// interrupted instead of wedging the executor.
@@ -15,12 +15,12 @@ const SCRIPT_MEMORY_LIMIT: usize = 32 * 1024 * 1024;
 /// context. The tool's arguments are exposed as the global `args`, and the
 /// script returns the tool result with an explicit `return`.
 pub struct ScriptRuntime {
-    tools: Arc<InternalTools>,
+    registry: Arc<ToolRegistry>,
 }
 
 impl ScriptRuntime {
-    pub fn new(tools: Arc<InternalTools>) -> Self {
-        Self { tools }
+    pub fn new(registry: Arc<ToolRegistry>) -> Self {
+        Self { registry }
     }
 
     pub async fn run(
@@ -29,9 +29,9 @@ impl ScriptRuntime {
         ctx: ToolContext,
         args: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        let tools = Arc::clone(&self.tools);
+        let registry = Arc::clone(&self.registry);
         let handle = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || execute_script(tools, handle, source, ctx, args))
+        tokio::task::spawn_blocking(move || execute_script(registry, handle, source, ctx, args))
             .await
             .map_err(|err| format!("script task failed: {err}"))?
     }
@@ -53,7 +53,7 @@ pub fn validate_source(source: &str) -> Result<(), String> {
 }
 
 fn execute_script(
-    tools: Arc<InternalTools>,
+    registry: Arc<ToolRegistry>,
     handle: tokio::runtime::Handle,
     source: String,
     ctx: ToolContext,
@@ -78,7 +78,7 @@ fn execute_script(
         let tool_json = Func::from(move |name: String, args: String| -> String {
             let args: serde_json::Value =
                 serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
-            let result = handle.block_on(tools::run_tool(&tools, &name, args, &ctx));
+            let result = handle.block_on(tools::run_registered_tool(&registry, &name, args, &ctx));
             serde_json::to_string(&result)
                 .unwrap_or_else(|err| format!(r#"{{"ok":false,"error":"{err}"}}"#))
         });
@@ -143,13 +143,20 @@ mod tests {
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
-        let files_dir = std::env::temp_dir().join("warden-script-test-files");
+        let root = std::env::temp_dir().join(format!(
+            "warden-script-test-runtime-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let layout = crate::config::RuntimeLayout::from_root(root);
+        let files_dir = layout.files_dir();
         std::fs::create_dir_all(&files_dir).unwrap();
         let history = std::env::temp_dir().join(format!(
             "warden-script-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
         Arc::new(InternalTools::new(
+            bus.clone(),
+            layout,
             RawInferenceTool::new().unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             crate::tools::delete_message::DeleteMessageTool::new(bus.clone()),
@@ -158,8 +165,8 @@ mod tests {
         ))
     }
 
-    fn test_runtime(bus: &Bus) -> ScriptRuntime {
-        ScriptRuntime::new(test_tools(bus))
+    fn test_runtime(bus: &Bus) -> Arc<ScriptRuntime> {
+        Arc::clone(&test_tools(bus).scripts)
     }
 
     #[tokio::test]
