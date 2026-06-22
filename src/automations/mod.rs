@@ -227,7 +227,7 @@ impl Automations {
                 if prompt.trim().is_empty() {
                     return Err("prompt must not be empty".to_string());
                 }
-                self.tools.registry.named_tools(&tools)?;
+                self.tools.registry.named_tools(tools)?;
             }
             AutomationEffect::ContinueConversation { conversation_id } => {
                 if conversation_id.trim().is_empty() {

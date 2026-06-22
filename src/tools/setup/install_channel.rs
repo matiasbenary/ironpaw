@@ -12,7 +12,10 @@ use crate::{
     channels,
     config::RuntimeLayout,
     message::ToolDefinition,
-    tools::{self, InternalTool, InternalTools, ToolContext, ToolOutput, setup::SetupServices},
+    tools::{
+        self, InternalTool, InternalTools, ToolContext, ToolOutput,
+        setup::{SetupServices, delete_current_message, send},
+    },
 };
 
 const HANDLE_CONVERSATION_AUTOMATION: &str = "handle-conversation";
@@ -276,7 +279,7 @@ impl InstallChannelTool {
                 let secrets = required_secrets(&session.package);
                 let secret = &secrets[index];
                 let value = secret_value(secret, message)?;
-                delete_current_message(tools, ctx).await;
+                delete_current_message(tools, ctx, "install_channel").await;
                 write_env_secret(env_path, &env_secret_name(&secret.name), &value)?;
                 reload_env(env_path)?;
 
@@ -811,33 +814,6 @@ fn set_json_pointer(
 
 fn pointer_part(part: &str) -> String {
     part.replace("~1", "/").replace("~0", "~")
-}
-
-async fn send(tools: &InternalTools, content: &str, ctx: &ToolContext) -> Result<(), String> {
-    let result = tools::run_tool(
-        tools,
-        "send_message",
-        serde_json::json!({ "content": content }),
-        ctx,
-    )
-    .await;
-    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-        return Err(result["error"]
-            .as_str()
-            .unwrap_or("send failed")
-            .to_string());
-    }
-    Ok(())
-}
-
-async fn delete_current_message(tools: &InternalTools, ctx: &ToolContext) {
-    let result = tools::run_tool(tools, "delete_message", serde_json::json!({}), ctx).await;
-    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-        eprintln!(
-            "install_channel could not delete inbound secret message: {}",
-            result["error"].as_str().unwrap_or("unknown error")
-        );
-    }
 }
 
 fn is_yes(message: &str) -> bool {

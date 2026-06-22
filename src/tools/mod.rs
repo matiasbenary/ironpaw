@@ -64,13 +64,6 @@ pub type ToolOutput = serde_json::Value;
 
 pub struct InternalTools {
     pub raw_inference: RawInferenceTool,
-    pub send_message: Arc<SendMessageTool>,
-    pub delete_message: Arc<DeleteMessageTool>,
-    pub create_automation: Arc<CreateAutomationTool>,
-    pub delete_automation: Arc<DeleteAutomationTool>,
-    pub inspect_automation: Arc<InspectAutomationTool>,
-    pub list_automations: Arc<ListAutomationsTool>,
-    pub list_channels: Arc<ListChannelsTool>,
     pub create_tool: Arc<CreateToolTool>,
     pub scripts: Arc<ScriptRuntime>,
     pub history: Arc<dyn History>,
@@ -82,9 +75,9 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
-    pub fn new(tools: Vec<Arc<dyn InternalTool>>) -> Self {
+    pub fn new() -> Self {
         Self {
-            tools: RwLock::new(tools),
+            tools: RwLock::new(Vec::new()),
         }
     }
 
@@ -152,7 +145,7 @@ impl InternalTools {
     ) -> Self {
         let send_message = Arc::new(send_message);
         let delete_message = Arc::new(delete_message);
-        let registry = Arc::new(ToolRegistry::new(Vec::new()));
+        let registry = Arc::new(ToolRegistry::new());
         let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&registry)));
         let image_generation = Arc::new(ImageGenerationTool::new(files_dir.clone()));
         let inspect_file = Arc::new(InspectFileTool::new(files_dir, raw_inference.clone()));
@@ -191,13 +184,6 @@ impl InternalTools {
         }
         Self {
             raw_inference: raw_inference.clone(),
-            send_message: Arc::clone(&send_message),
-            delete_message: Arc::clone(&delete_message),
-            create_automation: Arc::clone(&create_automation),
-            delete_automation: Arc::clone(&delete_automation),
-            inspect_automation: Arc::clone(&inspect_automation),
-            list_automations: Arc::clone(&list_automations),
-            list_channels: Arc::clone(&list_channels),
             create_tool: Arc::clone(&create_tool),
             scripts,
             history,

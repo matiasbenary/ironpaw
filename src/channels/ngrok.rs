@@ -87,9 +87,8 @@ async fn start(
 
     let public_url = read_public_url(&mut stdout_lines, Duration::from_secs(15))
         .await
-        .map_err(|err| {
+        .inspect_err(|_| {
             child.start_kill().ok();
-            err
         })?;
 
     let stdout_drain =
