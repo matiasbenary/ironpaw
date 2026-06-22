@@ -4,18 +4,15 @@ use async_trait::async_trait;
 
 use crate::{
     agent::Agent,
-    message::{Message, ToolDefinition},
+    message::ToolDefinition,
     tools::{self, InternalTool, ToolOutput},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CallAgentParams {
     /// The task or message for the agent to handle.
-    pub message: String,
-    /// Conversation to run in. Omit to run the agent on a fresh scratch
-    /// conversation; its final answer is returned as the tool result.
-    #[serde(default)]
-    pub conversation_id: Option<String>,
+    pub task: String,
 }
 
 /// Runs a sub-agent: same tools, its own conversation, final answer returned
@@ -44,20 +41,13 @@ impl CallAgentTool {
             .agent
             .get()
             .ok_or_else(|| "agent is not available".to_string())?;
-        let conversation_id = params
-            .conversation_id
-            .unwrap_or_else(|| format!("agent-task-{}", uuid::Uuid::new_v4()));
-        let messages = vec![Message::User {
-            text: params.message,
-            attachments: Vec::new(),
-        }];
         // The sub-agent inherits the caller's destination so its progress
         // and channel defaults behave like the run that spawned it.
         let destination = ctx
             .destination
             .as_ref()
             .map(|(channel, address)| (channel.as_str(), address));
-        let result = agent.run(destination, &conversation_id, messages).await?;
+        let result = agent.run_task(destination, params.task).await?;
         Ok(serde_json::json!({ "ok": true, "result": result }))
     }
 }
@@ -72,7 +62,7 @@ impl InternalTool for CallAgentTool {
         tools::tool_definition::<CallAgentParams>(
             self.name(),
             "Run a sub-agent with access to the same tools. It performs the \
-             task described in `message` and its final answer is returned as \
+             task described in `task` and its final answer is returned as \
              the tool result.",
         )
     }

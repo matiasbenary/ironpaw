@@ -123,18 +123,17 @@ impl Automations {
     }
 
     /// The default automation: every user message goes to the stock
-    /// `answer_the_user` tool.
-    pub fn answer_the_user() -> Automation {
+    /// `handle_conversation` tool.
+    pub fn handle_conversation() -> Automation {
         Automation {
-            name: "answer-the-user".to_string(),
+            name: "handle-conversation".to_string(),
             enabled: true,
             trigger: Trigger::Event {
                 sender: Some(Sender::User),
                 channel: None,
             },
-            tool: "answer_the_user".to_string(),
+            tool: "handle_conversation".to_string(),
             args: serde_json::json!({
-                "message": "{{event.text}}",
                 "conversation_id": "{{event.conversation_id}}",
             }),
         }
@@ -185,8 +184,8 @@ impl Automations {
     }
 
     pub fn delete(&self, name: &str) -> Result<(), String> {
-        if name == "answer-the-user" {
-            return Err("cannot delete the built-in answer-the-user automation".to_string());
+        if name == "handle-conversation" {
+            return Err("cannot delete the built-in handle-conversation automation".to_string());
         }
         let removed = self.remove_runtime(name);
         if !removed {
@@ -216,8 +215,8 @@ impl Automations {
                 store.delete(&name)?;
             }
         }
-        if !self.is_registered("answer-the-user") {
-            let automation = Automations::answer_the_user();
+        if !self.is_registered("handle-conversation") {
+            let automation = Automations::handle_conversation();
             if let Some(store) = &self.store {
                 store.insert(&automation)?;
             }
@@ -651,7 +650,7 @@ mod tests {
 
     #[test]
     fn default_automation_matches_user_messages_from_any_channel() {
-        let trigger = &Automations::answer_the_user().trigger;
+        let trigger = &Automations::handle_conversation().trigger;
         assert!(trigger.matches(&message_in("tui", Sender::User)));
         assert!(trigger.matches(&message_in("telegram", Sender::User)));
         assert!(!trigger.matches(&message_in("telegram", Sender::Guest)));
@@ -772,12 +771,12 @@ mod tests {
     fn delete_rejects_builtin_automation() {
         let bus = Bus::new(4);
         let automations = Arc::new(Automations::new(bus.clone(), test_tools(&bus), None));
-        automations.add(Automations::answer_the_user()).unwrap();
+        automations.add(Automations::handle_conversation()).unwrap();
 
-        let result = automations.delete("answer-the-user");
+        let result = automations.delete("handle-conversation");
 
         assert!(result.is_err());
-        assert!(automations.is_registered("answer-the-user"));
+        assert!(automations.is_registered("handle-conversation"));
     }
 
     #[tokio::test]

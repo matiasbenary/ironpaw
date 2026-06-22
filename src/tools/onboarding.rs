@@ -208,7 +208,7 @@ impl OnboardingTool {
         *self.stage.lock().expect("onboarding stage lock") = Stage::Complete;
         let automations = self.automations()?;
         automations.delete("onboarding")?;
-        automations.add(Automations::answer_the_user())?;
+        automations.add(Automations::handle_conversation())?;
         self.send(
             "Warden is set up. From now on, I will answer your messages normally.",
             ctx,
@@ -316,7 +316,7 @@ impl InternalTool for OnboardingTool {
             self.name(),
             "First-run Warden setup. Greets the user, collects NEAR_API_KEY \
              and BRAVE_SEARCH_API, writes them to .env, tests raw_inference \
-             and web_search, then enables the normal answer-the-user automation.",
+             and web_search, then enables the normal handle-conversation automation.",
         )
     }
 

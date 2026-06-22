@@ -11,8 +11,9 @@ use warden::{
     scripts::ScriptRuntime,
     secrets::Secrets,
     tools::{
-        InternalTools, delete_message::DeleteMessageTool, dynamic::DynamicTool,
-        raw_inference::RawInferenceTool, send_message::SendMessageTool,
+        InternalTools, continue_conversation::ContinueConversationTool,
+        delete_message::DeleteMessageTool, dynamic::DynamicTool, raw_inference::RawInferenceTool,
+        send_message::SendMessageTool,
     },
 };
 
@@ -48,13 +49,20 @@ async fn main() -> std::io::Result<()> {
         history,
     ));
     let agent = Arc::new(Agent::new(bus.clone(), Arc::clone(&tools)));
-    tools.call_agent.bind(agent);
-    let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&tools)));
+    tools.call_agent.bind(Arc::clone(&agent));
+    let continue_conversation = Arc::new(ContinueConversationTool::new());
+    continue_conversation.bind(agent);
+    let scripts = Arc::new(ScriptRuntime::new(
+        Arc::clone(&tools),
+        continue_conversation,
+    ));
     tools
         .create_tool
         .bind(Arc::clone(&tools), Arc::clone(&scripts), layout.tools_dir());
     tools
-        .add(Arc::new(DynamicTool::answer_the_user(Arc::clone(&scripts))))
+        .add(Arc::new(DynamicTool::handle_conversation(Arc::clone(
+            &scripts,
+        ))))
         .map_err(std::io::Error::other)?;
     for tool in DynamicTool::discover(&layout.tools_dir(), Arc::clone(&scripts))
         .map_err(std::io::Error::other)?
@@ -94,7 +102,7 @@ async fn main() -> std::io::Result<()> {
     if stored_count == 0 {
         if setup_complete {
             automations
-                .add(Automations::answer_the_user())
+                .add(Automations::handle_conversation())
                 .map_err(std::io::Error::other)?;
         } else {
             automations

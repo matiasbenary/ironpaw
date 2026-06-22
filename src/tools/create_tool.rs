@@ -27,11 +27,11 @@ pub struct CreateToolParams {
     /// or filesystem; the only way to act is the synchronous function
     /// `tool(name, args)`, which calls any existing tool and returns its
     /// JSON result. The tool's arguments are available as the global `args`,
-    /// and the value of the script's last expression becomes the tool's
-    /// result. If the tool is meant to notify the user, the script must call
-    /// send_message itself, with explicit channel and conversation_id.
+    /// and the script must use `return` to produce the tool result. If the
+    /// tool is meant to notify the user, the script must call send_message
+    /// itself, with explicit channel and conversation_id.
     /// Example: `const r = tool("web_fetch", { url: "https://example.com" });
-    /// r.body.length`
+    /// return { length: r.body.length };`
     pub script: String,
 }
 
@@ -120,7 +120,10 @@ mod tests {
     use crate::{
         bus::Bus,
         history::SqliteHistory,
-        tools::{InternalTools, raw_inference::RawInferenceTool, send_message::SendMessageTool},
+        tools::{
+            InternalTools, continue_conversation::ContinueConversationTool,
+            raw_inference::RawInferenceTool, send_message::SendMessageTool,
+        },
     };
 
     fn bound_create_tool() -> (Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf) {
@@ -141,7 +144,10 @@ mod tests {
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
         ));
-        let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&tools)));
+        let scripts = Arc::new(ScriptRuntime::new(
+            Arc::clone(&tools),
+            Arc::new(ContinueConversationTool::new()),
+        ));
         let tools_dir = std::env::temp_dir().join(format!(
             "warden-create-tool-test-tools-{}",
             uuid::Uuid::new_v4()
@@ -162,7 +168,7 @@ mod tests {
                 name: "hello_dynamic".to_string(),
                 description: "Say hello.".to_string(),
                 version: Some("1.2.3".to_string()),
-                script: "({ greeting: 'hello' })".to_string(),
+                script: "return { greeting: 'hello' };".to_string(),
             })
             .await
             .expect("tool should be created");
@@ -171,7 +177,7 @@ mod tests {
         assert!(tools.contains("hello_dynamic"));
         assert_eq!(
             std::fs::read_to_string(tools_dir.join("hello_dynamic.js")).unwrap(),
-            "({ greeting: 'hello' })"
+            "return { greeting: 'hello' };"
         );
         let manifest: DynamicToolManifest = serde_json::from_str(
             &std::fs::read_to_string(tools_dir.join("hello_dynamic.config.json")).unwrap(),

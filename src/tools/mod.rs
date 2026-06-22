@@ -1,4 +1,5 @@
 pub mod call_agent;
+pub mod continue_conversation;
 pub mod create_automation;
 pub mod create_tool;
 pub mod delete_automation;
@@ -217,16 +218,24 @@ pub async fn run_tool(
     args: serde_json::Value,
     ctx: &ToolContext,
 ) -> serde_json::Value {
+    let tool = tools.all().iter().find(|tool| tool.name() == name).cloned();
+    let Some(tool) = tool else {
+        return serde_json::json!({ "ok": false, "error": format!("unknown tool: {name}") });
+    };
+    run_internal_tool(tool, args, ctx).await
+}
+
+pub async fn run_internal_tool(
+    tool: Arc<dyn InternalTool>,
+    args: serde_json::Value,
+    ctx: &ToolContext,
+) -> serde_json::Value {
     if ctx.depth >= MAX_TOOL_DEPTH {
         return serde_json::json!({
             "ok": false,
             "error": format!("tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"),
         });
     }
-    let tool = tools.all().iter().find(|tool| tool.name() == name).cloned();
-    let Some(tool) = tool else {
-        return serde_json::json!({ "ok": false, "error": format!("unknown tool: {name}") });
-    };
     match tool.execute(args, &ctx.deeper()).await {
         Ok(ToolOutput { result }) => result,
         Err(err) => serde_json::json!({ "ok": false, "error": err }),

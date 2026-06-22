@@ -10,7 +10,7 @@ use crate::{
 
 use super::{
     preamble::system_preamble,
-    utils::{publish_channel_action, publish_progress, summarize_tool_args},
+    utils::{publish_channel_action, publish_progress},
 };
 use crate::tools::raw_inference::RawInferenceRequest;
 
@@ -37,24 +37,45 @@ impl Agent {
         }
     }
 
-    /// Run the tool loop on a conversation and return the final assistant
-    /// text (None when the model finished without text).
-    pub async fn run(
+    pub async fn handle_conversation(
         &self,
         destination: Destination<'_>,
         conversation_id: &str,
-        messages: Vec<Message>,
+    ) -> Result<Option<String>, String> {
+        self.run(destination, conversation_id, Vec::new()).await
+    }
+
+    pub async fn run_task(
+        &self,
+        destination: Destination<'_>,
+        task: String,
+    ) -> Result<Option<String>, String> {
+        let conversation_id = format!("agent-task-{}", uuid::Uuid::new_v4());
+        self.run(
+            destination,
+            &conversation_id,
+            vec![Message::User {
+                text: task,
+                attachments: Vec::new(),
+            }],
+        )
+        .await
+    }
+
+    /// Shared bounded tool loop. `transient_messages` are included in the
+    /// model input for this run but are not persisted by the agent as user
+    /// history.
+    async fn run(
+        &self,
+        destination: Destination<'_>,
+        conversation_id: &str,
+        mut transient_messages: Vec<Message>,
     ) -> Result<Option<String>, String> {
         let ctx = ToolContext {
             destination: destination
                 .map(|(channel, address)| (channel.to_string(), address.clone())),
             conversation_id: Some(conversation_id.to_string()),
             ..ToolContext::default()
-        };
-        let mut transient_messages = if self.messages_are_in_history(conversation_id, &messages) {
-            Vec::new()
-        } else {
-            messages
         };
         let mut prompt_tokens = 0;
 
@@ -110,12 +131,7 @@ impl Agent {
                 if text.as_deref().is_some_and(|text| !text.is_empty()) {
                     self.internal_tools.history.append(
                         conversation_id,
-                        &[history_entry(
-                            output.clone(),
-                            destination,
-                            conversation_id,
-                            false,
-                        )],
+                        &[history_entry(output.clone(), destination, conversation_id)],
                     );
                 }
                 return Ok(text.filter(|text| !text.is_empty()));
@@ -134,7 +150,7 @@ impl Agent {
                 }
             }
             for tool_call in tool_calls {
-                self.publish_tool_progress(destination, &tool_call.name, &tool_call.arguments);
+                self.publish_tool_progress(destination, &tool_call.name);
                 let tool_result = execute_tool_call(&self.internal_tools, tool_call, &ctx).await;
                 tool_results.push(tool_result);
             }
@@ -144,11 +160,11 @@ impl Agent {
             } else {
                 self.internal_tools.history.append(
                     conversation_id,
-                    &[history_entry(output, destination, conversation_id, false)],
+                    &[history_entry(output, destination, conversation_id)],
                 );
                 self.internal_tools.history.append(
                     conversation_id,
-                    &history_entries(tool_results, destination, conversation_id, false),
+                    &history_entries(tool_results, destination, conversation_id),
                 );
             }
         }
@@ -164,7 +180,6 @@ impl Agent {
                 },
                 destination,
                 conversation_id,
-                false,
             )],
         );
         Ok(Some(stopped))
@@ -188,28 +203,8 @@ impl Agent {
         messages
     }
 
-    fn messages_are_in_history(&self, conversation_id: &str, messages: &[Message]) -> bool {
-        if messages.is_empty() {
-            return true;
-        }
-        let history = self.internal_tools.history.load(conversation_id);
-        if history.len() < messages.len() {
-            return false;
-        }
-        history[history.len() - messages.len()..]
-            .iter()
-            .map(|entry| &entry.message)
-            .eq(messages.iter())
-    }
-
-    fn publish_tool_progress(
-        &self,
-        destination: Destination<'_>,
-        tool_name: &str,
-        arguments: &str,
-    ) {
-        let args_summary = summarize_tool_args(arguments);
-        let progress_message = format!("calling {tool_name}({args_summary})");
+    fn publish_tool_progress(&self, destination: Destination<'_>, tool_name: &str) {
+        let progress_message = format!("calling {tool_name}");
         debug_log(format!("agent: {progress_message}"));
         if let Some((channel, address)) = destination {
             publish_progress(&self.bus, channel, address, progress_message);
@@ -270,11 +265,10 @@ fn history_entries(
     messages: Vec<Message>,
     destination: Destination<'_>,
     conversation_id: &str,
-    include_external_id: bool,
 ) -> Vec<HistoryEntry> {
     messages
         .into_iter()
-        .map(|message| history_entry(message, destination, conversation_id, include_external_id))
+        .map(|message| history_entry(message, destination, conversation_id))
         .collect()
 }
 
@@ -282,27 +276,20 @@ fn history_entry(
     message: Message,
     destination: Destination<'_>,
     conversation_id: &str,
-    include_external_id: bool,
 ) -> HistoryEntry {
     HistoryEntry {
         message,
-        metadata: history_metadata(destination, conversation_id, include_external_id),
+        metadata: history_metadata(destination, conversation_id),
     }
 }
 
-fn history_metadata(
-    destination: Destination<'_>,
-    conversation_id: &str,
-    include_external_id: bool,
-) -> MessageMetadata {
+fn history_metadata(destination: Destination<'_>, conversation_id: &str) -> MessageMetadata {
     if let Some((channel, address)) = destination {
         return MessageMetadata::new(
             channel,
             address.conversation_id.clone(),
             address.thread_id.clone(),
-            include_external_id
-                .then(|| address.message_id.clone())
-                .flatten(),
+            None,
         );
     }
     MessageMetadata::new("warden", conversation_id.to_string(), None, None)

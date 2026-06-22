@@ -15,7 +15,7 @@ use crate::{
     tools::{self, InternalTool, InternalTools, ToolContext, ToolOutput},
 };
 
-const ANSWER_AUTOMATION: &str = "answer-the-user";
+const HANDLE_CONVERSATION_AUTOMATION: &str = "handle-conversation";
 const NGROK_SECRET: &str = "WARDEN_NGROK_TOKEN";
 const BUILTIN_CHANNELS: &[&str] = &["tui"];
 
@@ -222,7 +222,7 @@ impl InstallChannelTool {
             stage: InstallStage::Confirm,
             config_values: BTreeMap::new(),
         });
-        automations.replace_persistent(ANSWER_AUTOMATION, Self::automation(name))?;
+        automations.replace_persistent(HANDLE_CONVERSATION_AUTOMATION, Self::automation(name))?;
         send(
             tools,
             &format!("Install the {name} channel? Reply yes to continue, or no to cancel."),
@@ -356,7 +356,7 @@ impl InstallChannelTool {
         *self.session.lock().expect("install channel session lock") = None;
         automations.replace_persistent(
             &format!("channel_auth:{name}"),
-            Automations::answer_the_user(),
+            Automations::handle_conversation(),
         )?;
         send(
             tools,
@@ -376,7 +376,7 @@ impl InstallChannelTool {
         *self.session.lock().expect("install channel session lock") = None;
         automations.replace_persistent(
             &format!("channel_auth:{name}"),
-            Automations::answer_the_user(),
+            Automations::handle_conversation(),
         )?;
         send(
             tools,

@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use rquickjs::{CatchResultExt, Context, Ctx, Runtime, Value, function::Func};
 
-use crate::tools::{self, InternalTools, ToolContext};
+use crate::tools::{self, InternalTool, InternalTools, ToolContext};
 
 /// Wall-clock budget for one script execution: a runaway loop gets
 /// interrupted instead of wedging the executor.
@@ -13,14 +13,18 @@ const SCRIPT_MEMORY_LIMIT: usize = 32 * 1024 * 1024;
 /// capabilities: the only way to act is the host-provided `tool(name, args)`
 /// function, which is defined fresh per execution with the caller's tool
 /// context. The tool's arguments are exposed as the global `args`, and the
-/// value of the script's last expression becomes the tool's result.
+/// script returns the tool result with an explicit `return`.
 pub struct ScriptRuntime {
     tools: Arc<InternalTools>,
+    continue_conversation: Arc<dyn InternalTool>,
 }
 
 impl ScriptRuntime {
-    pub fn new(tools: Arc<InternalTools>) -> Self {
-        Self { tools }
+    pub fn new(tools: Arc<InternalTools>, continue_conversation: Arc<dyn InternalTool>) -> Self {
+        Self {
+            tools,
+            continue_conversation,
+        }
     }
 
     pub async fn run(
@@ -30,10 +34,13 @@ impl ScriptRuntime {
         args: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let tools = Arc::clone(&self.tools);
+        let continue_conversation = self.continue_conversation.clone();
         let handle = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || execute_script(tools, handle, source, ctx, args))
-            .await
-            .map_err(|err| format!("script task failed: {err}"))?
+        tokio::task::spawn_blocking(move || {
+            execute_script(tools, continue_conversation, handle, source, ctx, args)
+        })
+        .await
+        .map_err(|err| format!("script task failed: {err}"))?
     }
 }
 
@@ -54,6 +61,7 @@ pub fn validate_source(source: &str) -> Result<(), String> {
 
 fn execute_script(
     tools: Arc<InternalTools>,
+    continue_conversation: Arc<dyn InternalTool>,
     handle: tokio::runtime::Handle,
     source: String,
     ctx: ToolContext,
@@ -78,7 +86,18 @@ fn execute_script(
         let tool_json = Func::from(move |name: String, args: String| -> String {
             let args: serde_json::Value =
                 serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
-            let result = handle.block_on(tools::run_tool(&tools, &name, args, &ctx));
+            let mut available_tools = tools.all();
+            available_tools.push(Arc::clone(&continue_conversation));
+            let result = match available_tools
+                .iter()
+                .find(|tool| tool.name() == name)
+                .cloned()
+            {
+                Some(tool) => handle.block_on(tools::run_internal_tool(tool, args, &ctx)),
+                None => {
+                    serde_json::json!({ "ok": false, "error": format!("unknown tool: {name}") })
+                }
+            };
             serde_json::to_string(&result)
                 .unwrap_or_else(|err| format!(r#"{{"ok":false,"error":"{err}"}}"#))
         });
@@ -105,8 +124,11 @@ fn execute_script(
             .catch(&js)
             .map_err(|err| format!("script prelude error: {err}"))?;
 
+        globals
+            .set("__source", source)
+            .map_err(|err| err.to_string())?;
         let result: Value = js
-            .eval(source.into_bytes())
+            .eval("new Function(__source)();")
             .catch(&js)
             .map_err(|err| format!("script error: {err}"))?;
         js_result_to_json(&js, result)
@@ -118,8 +140,7 @@ fn json_to_js<'js>(js: &Ctx<'js>, value: &serde_json::Value) -> Result<Value<'js
     js.json_parse(text).map_err(|err| err.to_string())
 }
 
-/// The script's last expression, as JSON. Undefined (e.g. a script that ends
-/// with a statement) becomes null.
+/// The script's returned value, as JSON. Undefined becomes null.
 fn js_result_to_json<'js>(js: &Ctx<'js>, value: Value<'js>) -> Result<serde_json::Value, String> {
     if value.is_undefined() {
         return Ok(serde_json::Value::Null);
@@ -143,7 +164,10 @@ mod tests {
         bus::{Bus, Event},
         history::SqliteHistory,
         message::Message,
-        tools::{InternalTools, raw_inference::RawInferenceTool, send_message::SendMessageTool},
+        tools::{
+            InternalTools, continue_conversation::ContinueConversationTool,
+            raw_inference::RawInferenceTool, send_message::SendMessageTool,
+        },
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
@@ -163,7 +187,7 @@ mod tests {
     }
 
     fn test_runtime(bus: &Bus) -> ScriptRuntime {
-        ScriptRuntime::new(test_tools(bus))
+        ScriptRuntime::new(test_tools(bus), Arc::new(ContinueConversationTool::new()))
     }
 
     #[tokio::test]
@@ -200,7 +224,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn script_reads_args_and_returns_its_last_expression() {
+    async fn script_reads_args_and_returns_explicit_value() {
         let bus = Bus::new(16);
         let runtime = test_runtime(&bus);
 
@@ -208,7 +232,7 @@ mod tests {
             .run(
                 r#"
                 const doubled = args.value * 2;
-                ({ doubled })
+                return { doubled };
                 "#
                 .to_string(),
                 ToolContext::default(),
@@ -218,6 +242,26 @@ mod tests {
             .expect("script should run");
 
         assert_eq!(result, serde_json::json!({ "doubled": 42 }));
+    }
+
+    #[tokio::test]
+    async fn script_returns_from_function_body() {
+        let bus = Bus::new(16);
+        let runtime = test_runtime(&bus);
+
+        let result = runtime
+            .run(
+                r#"
+                return { ok: true, value: args.value };
+                "#
+                .to_string(),
+                ToolContext::default(),
+                serde_json::json!({ "value": "kiwi" }),
+            )
+            .await
+            .expect("script should run");
+
+        assert_eq!(result, serde_json::json!({ "ok": true, "value": "kiwi" }));
     }
 
     #[tokio::test]
@@ -244,7 +288,7 @@ mod tests {
                 format!(
                     r#"
 	                const r = tool("web_fetch", {{ url: "{url}" }});
-	                ({{ direct: JSON.parse(r)[0], body: JSON.parse(r.body)[2] }})
+	                return {{ direct: JSON.parse(r)[0], body: JSON.parse(r.body)[2] }};
 	                "#
                 ),
                 ToolContext::default(),

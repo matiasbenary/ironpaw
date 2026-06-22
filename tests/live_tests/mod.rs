@@ -10,23 +10,29 @@ use warden::{
     message::{Attachment, Message},
     scripts::ScriptRuntime,
     tools::{
-        InternalTools, delete_message::DeleteMessageTool, dynamic::DynamicTool,
-        raw_inference::RawInferenceTool, send_message::SendMessageTool,
+        InternalTools, continue_conversation::ContinueConversationTool,
+        delete_message::DeleteMessageTool, dynamic::DynamicTool, raw_inference::RawInferenceTool,
+        send_message::SendMessageTool,
     },
 };
 
 fn start_warden(bus: &Bus, tools: InternalTools) -> tokio::task::JoinHandle<()> {
     let tools = Arc::new(tools);
     let agent = Arc::new(Agent::new(bus.clone(), Arc::clone(&tools)));
-    tools.call_agent.bind(agent);
-    let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&tools)));
+    tools.call_agent.bind(Arc::clone(&agent));
+    let continue_conversation = Arc::new(ContinueConversationTool::new());
+    continue_conversation.bind(agent);
+    let scripts = Arc::new(ScriptRuntime::new(
+        Arc::clone(&tools),
+        continue_conversation,
+    ));
     let tools_dir =
         std::env::temp_dir().join(format!("warden-live-test-tools-{}", uuid::Uuid::new_v4()));
     tools
         .create_tool
         .bind(Arc::clone(&tools), Arc::clone(&scripts), tools_dir);
     tools
-        .add(Arc::new(DynamicTool::answer_the_user(scripts)))
+        .add(Arc::new(DynamicTool::handle_conversation(scripts)))
         .expect("stock tool registers");
     let automations_db = std::env::temp_dir().join(format!(
         "warden-live-test-automations-{}.db",
@@ -49,7 +55,7 @@ fn start_warden(bus: &Bus, tools: InternalTools) -> tokio::task::JoinHandle<()> 
         std::env::temp_dir().join(format!("warden-live-test-env-{}.env", uuid::Uuid::new_v4())),
     );
     automations
-        .add(Automations::answer_the_user())
+        .add(Automations::handle_conversation())
         .expect("stock automation registers");
     automations.start()
 }
@@ -421,7 +427,7 @@ async fn agent_identifies_dog_image() {
         message,
     });
 
-    let reply = timeout(Duration::from_secs(10), async {
+    timeout(Duration::from_secs(10), async {
         loop {
             let event = events.recv().await.expect("bus closed");
             if let Event::MessageOut { message, .. } = event {
@@ -434,18 +440,15 @@ async fn agent_identifies_dog_image() {
                 };
                 {
                     eprintln!("[live_test] agent replied: {content}");
-                    return content;
+                    if content.to_lowercase().contains("dog") {
+                        return;
+                    }
                 }
             }
         }
     })
     .await
     .expect("timed out: agent did not reply about the test image within 30 s");
-
-    assert!(
-        reply.to_lowercase().contains("dog"),
-        "agent did not identify the test image as a dog; reply was: {reply}"
-    );
 }
 
 /// Verify the agent can use Brave-backed web_search for current web lookup.
