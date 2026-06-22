@@ -419,7 +419,7 @@ mod tests {
         InternalTools::new(
             bus.clone(),
             layout,
-            crate::tools::raw_inference::RawInferenceTool::nexw().unwrap(),
+            crate::tools::raw_inference::RawInferenceTool::new().unwrap(),
             crate::tools::messages::SendMessageTool::new(bus.clone(), |_| {
                 Err("unexpected attachment lookup".to_string())
             }),
