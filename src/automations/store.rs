@@ -35,8 +35,8 @@ impl SqliteAutomations {
     pub fn insert(&self, automation: &Automation) -> Result<(), String> {
         let trigger_json = serde_json::to_string(&StoredTrigger::from_trigger(&automation.trigger))
             .map_err(|err| err.to_string())?;
-        let effect_json = serde_json::to_string(&StoredEffect::from_effect(&automation.effect))
-            .map_err(|err| err.to_string())?;
+        let effect_json =
+            serde_json::to_string(&automation.effect).map_err(|err| err.to_string())?;
         let created_at = chrono::Utc::now().to_rfc3339();
         let conn = self.conn.lock().expect("automations mutex poisoned");
         conn.execute(
@@ -127,59 +127,13 @@ impl StoredAutomationRow {
     fn into_automation(self) -> Result<Automation, String> {
         let trigger: StoredTrigger =
             serde_json::from_str(&self.trigger_json).map_err(|err| err.to_string())?;
-        let effect: StoredEffect =
+        let effect: AutomationEffect =
             serde_json::from_str(&self.effect_json).map_err(|err| err.to_string())?;
         Ok(Automation {
             name: self.name,
             trigger: trigger.into_trigger()?,
-            effect: effect.into_effect(),
+            effect,
         })
-    }
-}
-
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum StoredEffect {
-    Tool {
-        tool: String,
-        args: serde_json::Value,
-    },
-    AgentTask {
-        prompt: String,
-        tools: Vec<String>,
-    },
-    ContinueConversation {
-        conversation_id: String,
-    },
-}
-
-impl StoredEffect {
-    fn from_effect(effect: &AutomationEffect) -> Self {
-        match effect {
-            AutomationEffect::Tool { tool, args } => Self::Tool {
-                tool: tool.clone(),
-                args: args.clone(),
-            },
-            AutomationEffect::AgentTask { prompt, tools } => Self::AgentTask {
-                prompt: prompt.clone(),
-                tools: tools.clone(),
-            },
-            AutomationEffect::ContinueConversation { conversation_id } => {
-                Self::ContinueConversation {
-                    conversation_id: conversation_id.clone(),
-                }
-            }
-        }
-    }
-
-    fn into_effect(self) -> AutomationEffect {
-        match self {
-            Self::Tool { tool, args } => AutomationEffect::Tool { tool, args },
-            Self::AgentTask { prompt, tools } => AutomationEffect::AgentTask { prompt, tools },
-            Self::ContinueConversation { conversation_id } => {
-                AutomationEffect::ContinueConversation { conversation_id }
-            }
-        }
     }
 }
 

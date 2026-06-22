@@ -68,11 +68,8 @@ fn load_env(layout: &RuntimeLayout) -> Option<PathBuf> {
         env::current_dir().ok().map(|path| path.join(".env")),
     ];
 
-    for candidate in candidates.into_iter().flatten() {
-        if dotenvy::from_path(&candidate).is_ok() {
-            return Some(candidate);
-        }
-    }
-
-    None
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|candidate| dotenvy::from_path(candidate).is_ok())
 }

@@ -212,13 +212,13 @@ impl RawInferenceTool {
             "text": user_text_with_attachment_hints(text, attachments),
         })];
         for attachment in attachments {
-            if attachment.mime_type.starts_with("image/") {
-                if let Some(data_url) = self.attachment_data_url(attachment)? {
-                    parts.push(serde_json::json!({
-                        "type": "image_url",
-                        "image_url": { "url": data_url },
-                    }));
-                }
+            if attachment.mime_type.starts_with("image/")
+                && let Some(data_url) = self.attachment_data_url(attachment)?
+            {
+                parts.push(serde_json::json!({
+                    "type": "image_url",
+                    "image_url": { "url": data_url },
+                }));
             }
         }
         Ok(serde_json::Value::Array(parts))

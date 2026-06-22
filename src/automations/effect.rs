@@ -8,7 +8,8 @@ use crate::{
 
 use super::render_args::render_args;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AutomationEffect {
     Tool {
         tool: String,
@@ -64,25 +65,6 @@ impl AutomationEffect {
                     Err(err) => serde_json::json!({ "ok": false, "error": err }),
                 }
             }
-        }
-    }
-
-    pub fn to_json(&self) -> serde_json::Value {
-        match self {
-            Self::Tool { tool, args } => serde_json::json!({
-                "type": "tool",
-                "tool": tool,
-                "args": args,
-            }),
-            Self::AgentTask { prompt, tools } => serde_json::json!({
-                "type": "agent_task",
-                "prompt": prompt,
-                "tools": tools,
-            }),
-            Self::ContinueConversation { conversation_id } => serde_json::json!({
-                "type": "continue_conversation",
-                "conversation_id": conversation_id,
-            }),
         }
     }
 }

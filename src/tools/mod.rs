@@ -343,15 +343,15 @@ fn sanitize_schema(value: &mut serde_json::Value) {
             object.remove("format");
             object.remove("title");
 
-            if let Some(serde_json::Value::Array(types)) = object.get_mut("type") {
-                if types.iter().any(|value| value.as_str() == Some("null")) {
-                    let non_null = types
-                        .iter()
-                        .find(|value| value.as_str() != Some("null"))
-                        .cloned();
-                    if let Some(non_null) = non_null {
-                        object.insert("type".to_string(), non_null);
-                    }
+            if let Some(serde_json::Value::Array(types)) = object.get_mut("type")
+                && types.iter().any(|value| value.as_str() == Some("null"))
+            {
+                let non_null = types
+                    .iter()
+                    .find(|value| value.as_str() != Some("null"))
+                    .cloned();
+                if let Some(non_null) = non_null {
+                    object.insert("type".to_string(), non_null);
                 }
             }
 

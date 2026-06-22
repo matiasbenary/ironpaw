@@ -55,40 +55,53 @@ struct ChannelPackage {
     manifest: ChannelInstallManifest,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize)]
 struct SetupSecret {
     name: String,
-    prompt: String,
+    prompt: Option<String>,
+    #[serde(default)]
     optional: bool,
+    #[serde(default)]
     auto_generate: Option<AutoGenerate>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize)]
 struct AutoGenerate {
+    #[serde(default = "default_secret_length")]
     length: usize,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize)]
 struct ChannelInstallManifest {
     name: String,
+    #[serde(default)]
     display_name: Option<String>,
+    #[serde(default)]
     external: bool,
+    #[serde(default)]
     secrets: Vec<SetupSecret>,
+    #[serde(default)]
     config: Vec<SetupConfig>,
+    #[serde(default)]
     setup_url: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize)]
 struct SetupConfig {
     path: String,
-    prompt: String,
+    prompt: Option<String>,
+    #[serde(default, rename = "type")]
     value_type: ConfigValueType,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default, serde::Deserialize)]
 enum ConfigValueType {
+    #[serde(rename = "string")]
+    #[default]
     String,
+    #[serde(rename = "number")]
     Number,
+    #[serde(rename = "bool", alias = "boolean")]
     Bool,
 }
 
@@ -250,22 +263,12 @@ impl InstallChannelTool {
                 let mut session = session;
                 let secrets = required_secrets(&session.package);
                 if secrets.is_empty() {
-                    let configs = required_config(&session.package);
-                    if let Some(config) = configs.first() {
-                        session.stage = InstallStage::Config { index: 0 };
-                        *self.session.lock().expect("install channel session lock") =
-                            Some(session.clone());
-                        send(tools, &config.prompt, ctx).await?;
-                        return Ok(serde_json::json!({ "ok": true }));
-                    }
-                    install_package(layout, &session.package, &session.config_values)?;
-                    self.activate_package(&session.package).await?;
-                    self.finish(&session.package.name, tools, automations, ctx)
+                    self.prompt_config_or_finish(session, layout, tools, automations, ctx)
                         .await?;
                     return Ok(serde_json::json!({ "ok": true }));
                 }
                 session.stage = InstallStage::Secret { index: 0 };
-                *self.session.lock().expect("install channel session lock") = Some(session.clone());
+                self.save_session(session.clone());
                 send(tools, &secret_prompt(&session.package, &secrets[0]), ctx).await?;
             }
             InstallStage::Secret { index } => {
@@ -282,21 +285,10 @@ impl InstallChannelTool {
                 let next = index + 1;
                 if let Some(secret) = secrets.get(next) {
                     session.stage = InstallStage::Secret { index: next };
-                    *self.session.lock().expect("install channel session lock") =
-                        Some(session.clone());
+                    self.save_session(session.clone());
                     send(tools, &secret_prompt(&session.package, secret), ctx).await?;
                 } else {
-                    let configs = required_config(&session.package);
-                    if let Some(config) = configs.first() {
-                        session.stage = InstallStage::Config { index: 0 };
-                        *self.session.lock().expect("install channel session lock") =
-                            Some(session.clone());
-                        send(tools, &config.prompt, ctx).await?;
-                        return Ok(serde_json::json!({ "ok": true }));
-                    }
-                    install_package(layout, &session.package, &session.config_values)?;
-                    self.activate_package(&session.package).await?;
-                    self.finish(&session.package.name, tools, automations, ctx)
+                    self.prompt_config_or_finish(session, layout, tools, automations, ctx)
                         .await?;
                 }
             }
@@ -313,19 +305,53 @@ impl InstallChannelTool {
                 let next = index + 1;
                 if let Some(config) = configs.get(next) {
                     session.stage = InstallStage::Config { index: next };
-                    *self.session.lock().expect("install channel session lock") =
-                        Some(session.clone());
-                    send(tools, &config.prompt, ctx).await?;
+                    self.save_session(session.clone());
+                    send(tools, config_prompt(config), ctx).await?;
                 } else {
-                    install_package(layout, &session.package, &session.config_values)?;
-                    self.activate_package(&session.package).await?;
-                    self.finish(&session.package.name, tools, automations, ctx)
+                    self.complete(session, layout, tools, automations, ctx)
                         .await?;
                 }
             }
         }
 
         Ok(serde_json::json!({ "ok": true }))
+    }
+
+    fn save_session(&self, session: InstallSession) {
+        *self.session.lock().expect("install channel session lock") = Some(session);
+    }
+
+    async fn prompt_config_or_finish(
+        &self,
+        mut session: InstallSession,
+        layout: &RuntimeLayout,
+        tools: &InternalTools,
+        automations: &Arc<Automations>,
+        ctx: &ToolContext,
+    ) -> Result<(), String> {
+        let configs = required_config(&session.package);
+        let Some(config) = configs.first() else {
+            return self
+                .complete(session, layout, tools, automations, ctx)
+                .await;
+        };
+        session.stage = InstallStage::Config { index: 0 };
+        self.save_session(session);
+        send(tools, config_prompt(config), ctx).await
+    }
+
+    async fn complete(
+        &self,
+        session: InstallSession,
+        layout: &RuntimeLayout,
+        tools: &InternalTools,
+        automations: &Arc<Automations>,
+        ctx: &ToolContext,
+    ) -> Result<(), String> {
+        install_package(layout, &session.package, &session.config_values)?;
+        self.activate_package(&session.package).await?;
+        self.finish(&session.package.name, tools, automations, ctx)
+            .await
     }
 
     async fn cancel(
@@ -567,91 +593,11 @@ fn locate_config_template(source_dir: &Path, name: &str) -> Result<PathBuf, Stri
 }
 
 fn parse_install_manifest(json: &str) -> Result<ChannelInstallManifest, String> {
-    let value: serde_json::Value = serde_json::from_str(json).map_err(|err| err.to_string())?;
-    let name = value
-        .get("name")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "install manifest is missing name".to_string())?
-        .to_string();
-    let display_name = value
-        .get("display_name")
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-    let external = value
-        .get("external")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false);
-    let secrets = value
-        .get("secrets")
-        .and_then(|value| value.as_array())
-        .map(|items| items.iter().filter_map(parse_setup_secret).collect())
-        .unwrap_or_default();
-    let config = value
-        .get("config")
-        .and_then(|value| value.as_array())
-        .map(|items| items.iter().filter_map(parse_setup_config).collect())
-        .unwrap_or_default();
-    let setup_url = value
-        .get("setup_url")
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-    Ok(ChannelInstallManifest {
-        name,
-        display_name,
-        external,
-        secrets,
-        config,
-        setup_url,
-    })
+    serde_json::from_str(json).map_err(|err| err.to_string())
 }
 
-fn parse_setup_secret(value: &serde_json::Value) -> Option<SetupSecret> {
-    let name = value.get("name")?.as_str()?.to_string();
-    let prompt = value
-        .get("prompt")
-        .and_then(|value| value.as_str())
-        .unwrap_or(&name)
-        .to_string();
-    let optional = value
-        .get("optional")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false);
-    let auto_generate = value.get("auto_generate").map(|auto| AutoGenerate {
-        length: auto
-            .get("length")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(32) as usize,
-    });
-    Some(SetupSecret {
-        name,
-        prompt,
-        optional,
-        auto_generate,
-    })
-}
-
-fn parse_setup_config(value: &serde_json::Value) -> Option<SetupConfig> {
-    let path = value.get("path")?.as_str()?.to_string();
-    let prompt = value
-        .get("prompt")
-        .and_then(|value| value.as_str())
-        .unwrap_or(&path)
-        .to_string();
-    let value_type = match value
-        .get("type")
-        .and_then(|value| value.as_str())
-        .unwrap_or("string")
-    {
-        "string" => ConfigValueType::String,
-        "number" => ConfigValueType::Number,
-        "bool" | "boolean" => ConfigValueType::Bool,
-        _ => return None,
-    };
-    Some(SetupConfig {
-        path,
-        prompt,
-        value_type,
-    })
+fn default_secret_length() -> usize {
+    32
 }
 
 fn required_secrets(package: &ChannelPackage) -> Vec<SetupSecret> {
@@ -663,8 +609,9 @@ fn required_secrets(package: &ChannelPackage) -> Vec<SetupSecret> {
     {
         secrets.push(SetupSecret {
             name: NGROK_SECRET.to_string(),
-            prompt: "Paste your ngrok auth token so Warden can expose webhook channels."
-                .to_string(),
+            prompt: Some(
+                "Paste your ngrok auth token so Warden can expose webhook channels.".to_string(),
+            ),
             optional: false,
             auto_generate: None,
         });
@@ -702,7 +649,7 @@ fn config_statuses(package: &ChannelPackage) -> Vec<serde_json::Value> {
             serde_json::json!({
                 "path": config.path,
                 "type": config.value_type.as_str(),
-                "prompt": config.prompt,
+                "prompt": config.prompt.as_deref().unwrap_or(&config.path),
             })
         })
         .collect()
@@ -719,13 +666,21 @@ impl ConfigValueType {
 }
 
 fn secret_prompt(package: &ChannelPackage, secret: &SetupSecret) -> String {
-    let mut prompt = format!("{}: {}", package.display_name, secret.prompt);
+    let mut prompt = format!(
+        "{}: {}",
+        package.display_name,
+        secret.prompt.as_deref().unwrap_or(&secret.name)
+    );
     if secret.name == NGROK_SECRET {
         prompt.push_str(" You can find it in your ngrok dashboard.");
     } else if let Some(setup_url) = &package.manifest.setup_url {
         prompt.push_str(&format!(" Setup: {setup_url}"));
     }
     prompt
+}
+
+fn config_prompt(config: &SetupConfig) -> &str {
+    config.prompt.as_deref().unwrap_or(&config.path)
 }
 
 fn secret_value(secret: &SetupSecret, message: &str) -> Result<String, String> {
@@ -966,7 +921,7 @@ mod tests {
     fn auto_generated_secret_is_hex_sized() {
         let secret = SetupSecret {
             name: "x".to_string(),
-            prompt: "x".to_string(),
+            prompt: Some("x".to_string()),
             optional: true,
             auto_generate: Some(AutoGenerate { length: 8 }),
         };

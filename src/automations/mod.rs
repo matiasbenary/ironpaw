@@ -443,7 +443,7 @@ fn automation_info(automation: &Automation) -> AutomationInfo {
     AutomationInfo {
         name: automation.name.clone(),
         trigger: trigger_json(&automation.trigger),
-        effect: automation.effect.to_json(),
+        effect: serde_json::to_value(&automation.effect).expect("serialize automation effect"),
     }
 }
 
