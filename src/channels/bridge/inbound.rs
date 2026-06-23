@@ -149,9 +149,16 @@ fn content_to_message(content: Vec<InboundContent>, files_dir: &PathBuf) -> Mess
     let mut text_parts = Vec::new();
     let mut attachments = Vec::new();
     for part in content {
-        match content_part_to_message(part, files_dir) {
-            InboundMessagePart::Text(text) => text_parts.push(text),
-            InboundMessagePart::Attachment(attachment) => attachments.push(attachment),
+        match part {
+            InboundContent::Text { text } => text_parts.push(text),
+            InboundContent::Attachment {
+                filename,
+                mime_type,
+                data_base64,
+            } => match attachment_from_content(filename, mime_type, data_base64, files_dir) {
+                Ok(attachment) => attachments.push(attachment),
+                Err(text) => text_parts.push(text),
+            },
         }
     }
     Message::User {
@@ -160,42 +167,28 @@ fn content_to_message(content: Vec<InboundContent>, files_dir: &PathBuf) -> Mess
     }
 }
 
-enum InboundMessagePart {
-    Text(String),
-    Attachment(Attachment),
-}
-
-fn content_part_to_message(part: InboundContent, files_dir: &PathBuf) -> InboundMessagePart {
+fn attachment_from_content(
+    filename: Option<String>,
+    mime_type: String,
+    data_base64: String,
+    files_dir: &PathBuf,
+) -> Result<Attachment, String> {
     const MAX_FILE_BYTES: usize = 10 * 1024 * 1024; // 10 MB
-    match part {
-        InboundContent::Text { text } => InboundMessagePart::Text(text),
-        InboundContent::Attachment {
-            filename,
-            mime_type,
-            data_base64,
-        } => {
-            let Some(data) = decode_base64(&data_base64) else {
-                return InboundMessagePart::Text(
-                    "[Attached file was not valid base64]".to_string(),
-                );
-            };
-            if data.len() > MAX_FILE_BYTES {
-                return InboundMessagePart::Text(
-                    "[Attached file was too large to process (> 10 MB)]".to_string(),
-                );
-            }
-
-            let ext = attachment_ext(filename.as_deref(), &mime_type);
-            let file_id = received_file_id();
-            let source = store_file(files_dir, file_id, &ext, &data);
-            InboundMessagePart::Attachment(Attachment {
-                file_id,
-                mime_type,
-                filename,
-                source,
-            })
-        }
+    let data = decode_base64(&data_base64)
+        .ok_or_else(|| "[Attached file was not valid base64]".to_string())?;
+    if data.len() > MAX_FILE_BYTES {
+        return Err("[Attached file was too large to process (> 10 MB)]".to_string());
     }
+
+    let ext = attachment_ext(filename.as_deref(), &mime_type);
+    let file_id = received_file_id();
+    let source = store_file(files_dir, file_id, &ext, &data);
+    Ok(Attachment {
+        file_id,
+        mime_type,
+        filename,
+        source,
+    })
 }
 
 fn store_file(files_dir: &PathBuf, file_id: u32, ext: &str, data: &[u8]) -> PathBuf {
@@ -249,15 +242,15 @@ mod tests {
     #[test]
     fn image_attachment_is_stored_with_numeric_id() {
         let files_dir = unique_test_files_dir();
-        let part = InboundContent::Attachment {
-            filename: Some("photo.png".to_string()),
-            mime_type: "image/png".to_string(),
-            data_base64: "aW1hZ2U=".to_string(),
-        };
+        let attachment = attachment_from_content(
+            Some("photo.png".to_string()),
+            "image/png".to_string(),
+            "aW1hZ2U=".to_string(),
+            &files_dir,
+        )
+        .unwrap();
 
-        let input = content_part_to_message(part, &files_dir);
-
-        let file_id = attachment_file_id(&input);
+        let file_id = attachment.file_id;
         let stored = files_dir.join(format!("{file_id}.png"));
         assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("png"));
         assert_eq!(fs::read(stored).unwrap(), b"image");
@@ -266,15 +259,15 @@ mod tests {
     #[test]
     fn file_attachment_is_stored_with_numeric_id() {
         let files_dir = unique_test_files_dir();
-        let part = InboundContent::Attachment {
-            filename: Some("report.pdf".to_string()),
-            mime_type: "application/pdf".to_string(),
-            data_base64: "cGRm".to_string(),
-        };
+        let attachment = attachment_from_content(
+            Some("report.pdf".to_string()),
+            "application/pdf".to_string(),
+            "cGRm".to_string(),
+            &files_dir,
+        )
+        .unwrap();
 
-        let input = content_part_to_message(part, &files_dir);
-
-        let file_id = attachment_file_id(&input);
+        let file_id = attachment.file_id;
         let stored = files_dir.join(format!("{file_id}.pdf"));
         assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("pdf"));
         assert_eq!(fs::read(stored).unwrap(), b"pdf");
@@ -282,12 +275,5 @@ mod tests {
 
     fn unique_test_files_dir() -> PathBuf {
         std::env::temp_dir().join(format!("warden-bridge-test-{}", uuid::Uuid::new_v4()))
-    }
-
-    fn attachment_file_id(input: &InboundMessagePart) -> u32 {
-        let InboundMessagePart::Attachment(attachment) = input else {
-            panic!("expected attachment");
-        };
-        attachment.file_id
     }
 }

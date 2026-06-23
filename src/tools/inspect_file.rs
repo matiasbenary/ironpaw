@@ -1,8 +1,6 @@
-use std::borrow::Cow;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 use crate::{
     message::{Attachment, Message},
@@ -27,36 +25,15 @@ impl InspectFileTool {
     }
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(schemars::JsonSchema, serde::Deserialize, serde::Serialize)]
 struct InspectFileParams {
+    #[schemars(description = "The file_id of the attached file to inspect.")]
     file_id: u32,
     #[serde(default)]
+    #[schemars(
+        description = "Optional focused question or extraction request for the file. Defaults to 'describe this file'."
+    )]
     query: Option<String>,
-}
-
-impl JsonSchema for InspectFileParams {
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("InspectFileParams")
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        Schema::try_from(serde_json::json!({
-            "type": "object",
-            "properties": {
-                "file_id": {
-                    "type": "integer",
-                    "format": "uint32",
-                    "description": "The file_id of the attached file to inspect."
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Optional focused question or extraction request for the file. Defaults to 'describe this file'."
-                }
-            },
-            "required": ["file_id"]
-        }))
-        .expect("inspect_file schema should be valid")
-    }
 }
 
 #[async_trait]

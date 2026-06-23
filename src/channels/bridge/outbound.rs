@@ -125,42 +125,6 @@ enum ChannelOutboundEvent {
     },
 }
 
-impl TryFrom<&Event> for ChannelOutboundEvent {
-    type Error = String;
-
-    fn try_from(event: &Event) -> Result<Self, Self::Error> {
-        match event {
-            Event::MessageOut {
-                channel,
-                recipient,
-                address,
-                message,
-            } => Ok(Self::MessageOut {
-                channel: channel.clone(),
-                recipient: recipient.clone(),
-                address: address.clone(),
-                message: ChannelOutboundMessage::try_from(message)?,
-            }),
-            Event::DeleteMessage { channel, address } => Ok(Self::DeleteMessage {
-                channel: channel.clone(),
-                address: address.clone(),
-            }),
-            Event::ChannelAction {
-                channel,
-                recipient,
-                address,
-                action,
-            } => Ok(Self::ChannelAction {
-                channel: channel.clone(),
-                recipient: recipient.clone(),
-                address: address.clone(),
-                action: action.clone(),
-            }),
-            _ => Err("event is not deliverable to a channel".to_string()),
-        }
-    }
-}
-
 #[derive(Serialize)]
 enum ChannelOutboundMessage {
     Assistant {
@@ -171,29 +135,6 @@ enum ChannelOutboundMessage {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<ToolCall>,
     },
-}
-
-impl TryFrom<&Message> for ChannelOutboundMessage {
-    type Error = String;
-
-    fn try_from(message: &Message) -> Result<Self, Self::Error> {
-        let Message::Assistant {
-            text,
-            attachments,
-            tool_calls,
-        } = message
-        else {
-            return Err("message is not deliverable to a channel".to_string());
-        };
-        Ok(Self::Assistant {
-            text: text.clone(),
-            attachments: attachments
-                .iter()
-                .map(ChannelOutboundAttachment::from)
-                .collect(),
-            tool_calls: tool_calls.clone(),
-        })
-    }
 }
 
 #[derive(Serialize)]
@@ -258,7 +199,50 @@ async fn dispatch_channel_event(
 }
 
 fn channel_outbound_event_json(event: &Event) -> Result<String, String> {
-    let event = ChannelOutboundEvent::try_from(event)?;
+    let event = match event {
+        Event::MessageOut {
+            channel,
+            recipient,
+            address,
+            message:
+                Message::Assistant {
+                    text,
+                    attachments,
+                    tool_calls,
+                },
+        } => ChannelOutboundEvent::MessageOut {
+            channel: channel.clone(),
+            recipient: recipient.clone(),
+            address: address.clone(),
+            message: ChannelOutboundMessage::Assistant {
+                text: text.clone(),
+                attachments: attachments
+                    .iter()
+                    .map(ChannelOutboundAttachment::from)
+                    .collect(),
+                tool_calls: tool_calls.clone(),
+            },
+        },
+        Event::MessageOut { .. } => {
+            return Err("message is not deliverable to a channel".to_string());
+        }
+        Event::DeleteMessage { channel, address } => ChannelOutboundEvent::DeleteMessage {
+            channel: channel.clone(),
+            address: address.clone(),
+        },
+        Event::ChannelAction {
+            channel,
+            recipient,
+            address,
+            action,
+        } => ChannelOutboundEvent::ChannelAction {
+            channel: channel.clone(),
+            recipient: recipient.clone(),
+            address: address.clone(),
+            action: action.clone(),
+        },
+        _ => return Err("event is not deliverable to a channel".to_string()),
+    };
     serde_json::to_string(&event).map_err(|err| err.to_string())
 }
 

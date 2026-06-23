@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::tools::{self, InternalTool, ToolContext, ToolOutput};
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
     /// Task not yet started.
@@ -20,7 +20,7 @@ pub enum TodoStatus {
     Completed,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 pub struct TodoItem {
     #[schemars(description = "Short imperative description of the task, e.g. 'Generate image'.")]
     pub description: String,
@@ -72,12 +72,21 @@ impl InternalTool for TodoTool {
         let input: TodoInput = serde_json::from_value(args).map_err(|e| e.to_string())?;
         let key = ctx
             .conversation_id
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-
-        let mut state = self.state.lock().unwrap();
-        state.insert(key, input.todos.clone());
-
+            .as_deref()
+            .unwrap_or("default")
+            .to_string();
+        let all_done = input
+            .todos
+            .iter()
+            .all(|todo| matches!(todo.status, TodoStatus::Completed));
+        let old_todos = {
+            let mut state = self.state.lock().expect("todo state lock");
+            let old_todos = state.remove(&key).unwrap_or_default();
+            if !all_done {
+                state.insert(key, input.todos.clone());
+            }
+            old_todos
+        };
         let mut lines = vec!["Todo list:".to_string()];
         for todo in &input.todos {
             let icon = match todo.status {
@@ -105,7 +114,80 @@ impl InternalTool for TodoTool {
         }
 
         Ok(serde_json::json!({
+            "ok": true,
+            "old_todos": old_todos,
+            "new_todos": input.todos,
             "result": lines.join("\n")
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(description: &str, status: TodoStatus) -> serde_json::Value {
+        serde_json::json!({ "description": description, "status": status })
+    }
+
+    #[tokio::test]
+    async fn returns_previous_todos_for_conversation() {
+        let tool = TodoTool::new();
+        let ctx = ToolContext {
+            conversation_id: Some("chat-1".to_string()),
+            ..ToolContext::default()
+        };
+
+        let first = tool
+            .execute(
+                serde_json::json!({ "todos": [item("Plan", TodoStatus::InProgress)] }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first["old_todos"], serde_json::json!([]));
+
+        let second = tool
+            .execute(
+                serde_json::json!({ "todos": [item("Plan", TodoStatus::Completed)] }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            second["old_todos"],
+            serde_json::json!([{ "description": "Plan", "status": "in_progress" }])
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_lists_clear_stored_todos() {
+        let tool = TodoTool::new();
+        let ctx = ToolContext {
+            conversation_id: Some("chat-1".to_string()),
+            ..ToolContext::default()
+        };
+
+        tool.execute(
+            serde_json::json!({ "todos": [item("Plan", TodoStatus::InProgress)] }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        tool.execute(
+            serde_json::json!({ "todos": [item("Plan", TodoStatus::Completed)] }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let next = tool
+            .execute(
+                serde_json::json!({ "todos": [item("Next", TodoStatus::Pending)] }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(next["old_todos"], serde_json::json!([]));
     }
 }

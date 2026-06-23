@@ -27,7 +27,7 @@ impl SendMessageTool {
         }
     }
 
-    pub async fn execute(&self, input: SendMessageToolInput) -> Result<SendMessageOutput, String> {
+    pub async fn execute(&self, input: SendMessageToolInput) -> Result<serde_json::Value, String> {
         let attachments = input
             .file_id
             .map(|file_id| (self.attachment_resolver)(file_id))
@@ -50,7 +50,7 @@ impl SendMessageTool {
             address,
             message,
         });
-        Ok(SendMessageOutput { ok: true, channel })
+        Ok(serde_json::json!({ "ok": true, "channel": channel }))
     }
 }
 
@@ -78,8 +78,7 @@ impl InternalTool for SendMessageTool {
         let mut input: SendMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_destination(ctx);
-        let output = SendMessageTool::execute(self, input).await?;
-        serde_json::to_value(output).map_err(|err| err.to_string())
+        SendMessageTool::execute(self, input).await
     }
 }
 
@@ -144,12 +143,6 @@ fn message_address(
     })
 }
 
-#[derive(serde::Serialize)]
-pub struct SendMessageOutput {
-    ok: bool,
-    channel: String,
-}
-
 #[derive(Clone)]
 pub struct DeleteMessageTool {
     bus: Bus,
@@ -163,7 +156,7 @@ impl DeleteMessageTool {
     pub async fn execute(
         &self,
         input: DeleteMessageToolInput,
-    ) -> Result<DeleteMessageOutput, String> {
+    ) -> Result<serde_json::Value, String> {
         let channel = input
             .channel
             .filter(|channel| !channel.trim().is_empty())
@@ -186,7 +179,7 @@ impl DeleteMessageTool {
                 message_id: Some(message_id),
             },
         });
-        Ok(DeleteMessageOutput { ok: true })
+        Ok(serde_json::json!({ "ok": true }))
     }
 }
 
@@ -213,8 +206,7 @@ impl InternalTool for DeleteMessageTool {
         let mut input: DeleteMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_message(ctx);
-        let output = DeleteMessageTool::execute(self, input).await?;
-        serde_json::to_value(output).map_err(|err| err.to_string())
+        DeleteMessageTool::execute(self, input).await
     }
 }
 
@@ -259,11 +251,6 @@ impl DeleteMessageToolInput {
             self.thread_id = address.thread_id.clone();
         }
     }
-}
-
-#[derive(serde::Serialize)]
-pub struct DeleteMessageOutput {
-    ok: bool,
 }
 
 #[cfg(test)]

@@ -1,7 +1,10 @@
 use std::{fmt, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use reqwest::{Method, blocking::multipart};
+use reqwest::{
+    Method,
+    blocking::{Client, RequestBuilder, multipart},
+};
 
 pub trait SecretLookup: Clone + Send + Sync + 'static {
     fn get_secret(&self, name: &str) -> Option<String>;
@@ -72,48 +75,8 @@ where
     where
         T: serde::Serialize + ?Sized,
     {
-        let url = self.inject_url_credentials(url)?;
-        let parsed = reqwest::Url::parse(&url)
-            .map_err(|err| HttpError::InvalidRequest(format!("invalid URL: {err}")))?;
-
-        if parsed.scheme() != "https" && !is_loopback_http(&parsed) {
-            return Err(HttpError::InvalidRequest(
-                "only https URLs are allowed, except loopback http".to_string(),
-            ));
-        }
-        self.ensure_allowed_host(&parsed)?;
-
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .build()
-            .map_err(sanitize_blocking_reqwest_error)?;
-        let mut request = client.post(parsed.clone()).json(body);
-
-        for credential in self.credentials_for(&parsed) {
-            if credential.placeholder.is_some() {
-                continue;
-            }
-            let value = self
-                .secrets
-                .get_secret(&credential.secret)
-                .ok_or_else(|| HttpError::MissingCredential(credential.secret.clone()))?;
-            request = request.header(
-                credential.header.as_str(),
-                format!("{}{}", credential.prefix, value),
-            );
-        }
-
-        let response = request.send().map_err(sanitize_blocking_reqwest_error)?;
-        let status = response.status();
-        let body = response.text().map_err(sanitize_blocking_reqwest_error)?;
-
-        if !status.is_success() {
-            return Err(HttpError::Http(format!(
-                "request failed with {status}: {body}"
-            )));
-        }
-
-        Ok(body)
+        let url = self.prepare_url(url)?;
+        self.send_text(self.client()?.post(url.clone()).json(body), &url)
     }
 
     pub fn post_json_string_blocking(
@@ -142,22 +105,8 @@ where
             ));
         }
 
-        let url = self.inject_url_credentials(url)?;
-        let parsed = reqwest::Url::parse(&url)
-            .map_err(|err| HttpError::InvalidRequest(format!("invalid URL: {err}")))?;
-
-        if parsed.scheme() != "https" && !is_loopback_http(&parsed) {
-            return Err(HttpError::InvalidRequest(
-                "only https URLs are allowed, except loopback http".to_string(),
-            ));
-        }
-        self.ensure_allowed_host(&parsed)?;
-
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(60))
-            .build()
-            .map_err(sanitize_blocking_reqwest_error)?;
-        let mut request = client.request(method.clone(), parsed.clone());
+        let url = self.prepare_url(url)?;
+        let mut request = self.client()?.request(method.clone(), url.clone());
         if method == Method::POST {
             let body_json = self.inject_string_credentials(body_json)?;
             let body = serde_json::from_str::<serde_json::Value>(&body_json)
@@ -165,21 +114,10 @@ where
             request = request.json(&body);
         }
 
-        for credential in self.credentials_for(&parsed) {
-            if credential.placeholder.is_some() {
-                continue;
-            }
-            let value = self
-                .secrets
-                .get_secret(&credential.secret)
-                .ok_or_else(|| HttpError::MissingCredential(credential.secret.clone()))?;
-            request = request.header(
-                credential.header.as_str(),
-                format!("{}{}", credential.prefix, value),
-            );
-        }
-
-        let response = request.send().map_err(sanitize_blocking_reqwest_error)?;
+        let response = self
+            .authorize(request, &url)?
+            .send()
+            .map_err(sanitize_blocking_reqwest_error)?;
         let status = response.status();
         let body = response.bytes().map_err(sanitize_blocking_reqwest_error)?;
 
@@ -202,17 +140,7 @@ where
         mime_type: &str,
         data_base64: &str,
     ) -> Result<String, HttpError> {
-        let url = self.inject_url_credentials(url)?;
-        let parsed = reqwest::Url::parse(&url)
-            .map_err(|err| HttpError::InvalidRequest(format!("invalid URL: {err}")))?;
-
-        if parsed.scheme() != "https" && !is_loopback_http(&parsed) {
-            return Err(HttpError::InvalidRequest(
-                "only https URLs are allowed, except loopback http".to_string(),
-            ));
-        }
-        self.ensure_allowed_host(&parsed)?;
-
+        let url = self.prepare_url(url)?;
         let fields_json = self.inject_string_credentials(fields_json)?;
         let fields =
             serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&fields_json)
@@ -234,13 +162,35 @@ where
             form = form.text(key, value);
         }
 
-        let client = reqwest::blocking::Client::builder()
+        self.send_text(self.client()?.post(url.clone()).multipart(form), &url)
+    }
+
+    fn client(&self) -> Result<Client, HttpError> {
+        Client::builder()
             .timeout(Duration::from_secs(60))
             .build()
-            .map_err(sanitize_blocking_reqwest_error)?;
-        let mut request = client.post(parsed.clone()).multipart(form);
+            .map_err(sanitize_blocking_reqwest_error)
+    }
 
-        for credential in self.credentials_for(&parsed) {
+    fn prepare_url(&self, url: &str) -> Result<reqwest::Url, HttpError> {
+        let url = self.inject_url_credentials(url)?;
+        let parsed = reqwest::Url::parse(&url)
+            .map_err(|err| HttpError::InvalidRequest(format!("invalid URL: {err}")))?;
+        if parsed.scheme() != "https" && !is_loopback_http(&parsed) {
+            return Err(HttpError::InvalidRequest(
+                "only https URLs are allowed, except loopback http".to_string(),
+            ));
+        }
+        self.ensure_allowed_host(&parsed)?;
+        Ok(parsed)
+    }
+
+    fn authorize(
+        &self,
+        mut request: RequestBuilder,
+        url: &reqwest::Url,
+    ) -> Result<RequestBuilder, HttpError> {
+        for credential in self.credentials_for(url) {
             if credential.placeholder.is_some() {
                 continue;
             }
@@ -253,8 +203,14 @@ where
                 format!("{}{}", credential.prefix, value),
             );
         }
+        Ok(request)
+    }
 
-        let response = request.send().map_err(sanitize_blocking_reqwest_error)?;
+    fn send_text(&self, request: RequestBuilder, url: &reqwest::Url) -> Result<String, HttpError> {
+        let response = self
+            .authorize(request, url)?
+            .send()
+            .map_err(sanitize_blocking_reqwest_error)?;
         let status = response.status();
         let body = response.text().map_err(sanitize_blocking_reqwest_error)?;
 

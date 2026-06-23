@@ -153,13 +153,10 @@ impl Agent {
                 round + 1,
                 tool_calls.len()
             ));
+            let has_malformed_tool_call = tool_calls.iter().any(|tool_call| {
+                serde_json::from_str::<serde_json::Value>(&tool_call.arguments).is_err()
+            });
             let mut tool_results = Vec::new();
-            let mut has_malformed_tool_call = false;
-            for tool_call in &tool_calls {
-                if serde_json::from_str::<serde_json::Value>(&tool_call.arguments).is_err() {
-                    has_malformed_tool_call = true;
-                }
-            }
             for tool_call in tool_calls {
                 self.publish_tool_progress(run.destination, &tool_call.name);
                 let tool_result = execute_tool_call(
@@ -182,7 +179,10 @@ impl Agent {
                 );
                 self.history.append(
                     run.conversation_id,
-                    &history_entries(tool_results, run.destination, run.conversation_id),
+                    &tool_results
+                        .into_iter()
+                        .map(|message| history_entry(message, run.destination, run.conversation_id))
+                        .collect::<Vec<_>>(),
                 );
             } else {
                 run.transient_messages.push(output);
@@ -290,17 +290,6 @@ fn tool_definitions(tools: &[Arc<dyn InternalTool>]) -> Vec<ToolDefinition> {
     tools
         .iter()
         .map(|tool| tools::definition_for_model(tool.as_ref()))
-        .collect()
-}
-
-fn history_entries(
-    messages: Vec<Message>,
-    destination: Destination<'_>,
-    conversation_id: &str,
-) -> Vec<HistoryEntry> {
-    messages
-        .into_iter()
-        .map(|message| history_entry(message, destination, conversation_id))
         .collect()
 }
 

@@ -22,9 +22,7 @@ use crate::{
 };
 
 use self::{
-    automation::{
-        CreateAutomationTool, DeleteAutomationTool, InspectAutomationTool, ListAutomationsTool,
-    },
+    automation::{AutomationTool, AutomationToolKind},
     dynamic::CreateToolTool,
     image_generation::ImageGenerationTool,
     inspect_file::InspectFileTool,
@@ -147,38 +145,33 @@ impl InternalTools {
         let delete_message = Arc::new(delete_message);
         let registry = Arc::new(ToolRegistry::new());
         let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&registry)));
-        let image_generation = Arc::new(ImageGenerationTool::new(files_dir.clone()));
-        let inspect_file = Arc::new(InspectFileTool::new(files_dir, raw_inference.clone()));
-        let todo = Arc::new(TodoTool::new());
-        let create_automation = Arc::new(CreateAutomationTool::new(bus.clone()));
-        let delete_automation = Arc::new(DeleteAutomationTool::new(bus.clone()));
-        let inspect_automation = Arc::new(InspectAutomationTool::new(bus.clone()));
-        let list_automations = Arc::new(ListAutomationsTool::new(bus));
-        let list_channels = Arc::new(ListChannelsTool::new(layout.clone()));
         let create_tool = Arc::new(CreateToolTool::new(
             Arc::clone(&registry),
             Arc::clone(&scripts),
             layout.tools_dir(),
         ));
-        let web_fetch = Arc::new(WebFetchTool::new());
-        let web_search = Arc::new(WebSearchTool::new());
-        let search_history = Arc::new(SearchHistoryTool::new(Arc::clone(&history)));
+        fn tool<T: InternalTool + 'static>(tool: T) -> Arc<dyn InternalTool> {
+            Arc::new(tool)
+        }
         for tool in vec![
-            Arc::new(raw_inference.clone()),
+            tool(raw_inference.clone()),
             Arc::clone(&send_message) as Arc<dyn InternalTool>,
             Arc::clone(&delete_message) as Arc<dyn InternalTool>,
-            image_generation,
-            inspect_file,
-            todo,
-            Arc::clone(&create_automation) as Arc<dyn InternalTool>,
-            Arc::clone(&delete_automation) as Arc<dyn InternalTool>,
-            Arc::clone(&inspect_automation) as Arc<dyn InternalTool>,
-            Arc::clone(&list_automations) as Arc<dyn InternalTool>,
-            Arc::clone(&list_channels) as Arc<dyn InternalTool>,
+            tool(ImageGenerationTool::new(files_dir.clone())),
+            tool(InspectFileTool::new(files_dir, raw_inference.clone())),
+            tool(TodoTool::new()),
+            tool(AutomationTool::new(bus.clone(), AutomationToolKind::Create)),
+            tool(AutomationTool::new(bus.clone(), AutomationToolKind::Delete)),
+            tool(AutomationTool::new(
+                bus.clone(),
+                AutomationToolKind::Inspect,
+            )),
+            tool(AutomationTool::new(bus, AutomationToolKind::List)),
+            tool(ListChannelsTool::new(layout.clone())),
             Arc::clone(&create_tool) as Arc<dyn InternalTool>,
-            search_history,
-            web_fetch,
-            web_search,
+            tool(SearchHistoryTool::new(Arc::clone(&history))),
+            tool(WebFetchTool::new()),
+            tool(WebSearchTool::new()),
         ] {
             registry.add(tool).expect("unique built-in tool name");
         }
