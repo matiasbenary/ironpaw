@@ -1,10 +1,13 @@
 pub mod install_channel;
+pub mod install_common;
+pub mod install_tool;
 pub mod onboarding;
 mod services;
 
 use crate::tools::{self, InternalTools, ToolContext};
 
 pub use install_channel::{InstallChannelTool, ListChannelsTool};
+pub use install_tool::{InstallToolTool, ListToolsTool};
 pub use onboarding::OnboardingTool;
 pub use services::SetupServices;
 

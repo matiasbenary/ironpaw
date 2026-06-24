@@ -12,6 +12,7 @@ The current implementation is intentionally small, and is composed of:
 - [Automations](#automations), which connect triggers to tool calls.
 - An [Agent](#agent), which runs a bounded LLM tool loop.
 - A small set of internal [Tools](#tools) exposed both to the agent and system components.
+- [External WASM Tools](#external-wasm-tools), which package provider integrations behind a host-enforced HTTP boundary.
 - The capability to create [Dynamic Tools](#dynamic-tools) at runtime, which are QuickJS scripts that can combine other existing tools.
 - A [History](#history) store for durable conversation history and search.
 - An [HTTP and Secrets](#http-and-secrets) system for loading credentials at the host boundary.
@@ -45,9 +46,9 @@ The default runtime root is the directory containing the `warden` binary unless 
 <runtime-root>/data
 ```
 
-On a fresh install, Warden installs a default onboarding automation that greets the user and queries for two required secrets: the NEAR API key (for AI inference), and the Brave Search API key (for web search).
+On a fresh install, Warden installs a default onboarding automation that greets the user and queries for the NEAR API key used for AI inference.
 
-After onboarding, it sets `answer-the-user` as the default automation, which routes inbound messages to the agent and sends answers back to the user through the same channel.
+After onboarding, it sets `answer-the-user` as the default automation, which routes inbound messages to the agent and sends answers back to the user through the same channel. Web search is implemented as an external WASM tool, so it is available after the `web_search` tool package has been installed into the runtime tools directory.
 
 ---
 
@@ -226,7 +227,7 @@ Once a trigger fires, the automation runs a single pre-defined tool call. The to
 
 ### Examples
 
-When `warden` starts, it installs a default automation that reacts to inbound user messages with an `onboarding` tool. This tool asks the user for required secrets (APIs to enable ai_inference and web_search), then installs the default `answer-the-user` automation, which reacts to inbound user messages by calling the agent and sending the final answer back to the user.
+When `warden` starts, it installs a default automation that reacts to inbound user messages with an `onboarding` tool. This tool asks the user for the NEAR API key needed for AI inference, then installs the default `answer-the-user` automation, which reacts to inbound user messages by calling the agent and sending the final answer back to the user.
 
 ```text answer-the-user
 MessageIn(User, any channel)
@@ -278,7 +279,7 @@ Inbound user messages are persisted by the automation runtime before matching au
 
 ## Tools
 
-In Warden we currently distinguish between internal tools and dynamic ones.
+In Warden we currently distinguish between internal tools, external WASM tools, and dynamic ones.
 
 ### Internal Tools
 
@@ -295,7 +296,6 @@ Implemented internal tools include:
 - `raw_inference`: calls `/v1/chat/completions` using the configured NEAR API key.
 - `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image, and returns a `file_id` for later delivery.
 - `inspect_file`: inspects a locally stored file by numeric `file_id`, using text extraction for documents and a vision model for images.
-- `web_search`: searches the web through Brave Search.
 - `web_fetch`: fetches a public URL with no credentials.
 - `send_message`: publishes a message to a user through a channel.
 - `delete_message`: deletes a channel message when the channel supports it.
@@ -303,8 +303,28 @@ Implemented internal tools include:
 - `create_tool`: writes and registers a new dynamic tool.
 - `create_automation`, `delete_automation`, `inspect_automation`, `list_automations`: manage persisted automations.
 - `list_channels`, `install_channel`: inspect and install local channel packages.
+- `list_tools`, `install_tool`: inspect and install local external WASM tool packages.
 - `onboarding`: collects required setup secrets and installs the normal answer automation.
 - `todo`: a small scratchpad-style tool.
+
+### External WASM Tools
+
+External WASM tools are provider integrations packaged as WASM components. They are request/response tools, not channels: the agent calls them with JSON arguments, and they return JSON output.
+
+They live in:
+
+```text
+<runtime-root>/tools/<name>.wasm
+<runtime-root>/tools/<name>.config.json
+```
+
+At startup, Warden discovers installed WASM tools from the runtime tools directory and registers them in the same tool registry as internal and dynamic tools. The WASM component exports its name, description, parameter schema, and execute function through `wit/tool.wit`.
+
+External tools do not receive raw secrets directly. They use the host-provided `http_request` import. The host wraps that import with `HttpTool<ToolSecrets>`, so the installed tool config decides which hosts are allowed and where credentials are injected.
+
+The install flow is implemented through `list_tools` and `install_tool`. It discovers local packages from `WARDEN_TOOLS_SRC`, `<runtime-root>/tool-store`, and the built-in `tools-src` directory. Installation asks deterministic setup questions, writes required secrets to `.env`, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers the tool immediately.
+
+The first external WASM tool is `web_search`. It searches Brave Search through `https://api.search.brave.com/res/v1/web/search`, while the `BRAVE_SEARCH_API` key is injected by the host as `X-Subscription-Token`.
 
 ### Dynamic Tools
 
@@ -373,6 +393,7 @@ This example assumes Telegram has already received at least one valid owner mess
    create_tool
    create_automation
    install_channel
+   install_tool
    ```
 
 8. The model decides to call:
@@ -435,10 +456,6 @@ Channel config files currently work, and channel installation can handle some se
 ### Web / Browser Channel
 
 The current architecture can support a web UI as another channel, but there is no `warden-browser` or web channel implementation yet.
-
-### External Tools
-
-Only internal Rust tools and QuickJS dynamic tools exist today. There is no external tool runtime yet for user-installed WASM tools, shell tools, or other sandboxed extensions.
 
 ### Tool Permissions
 

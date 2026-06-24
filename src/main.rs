@@ -14,7 +14,10 @@ use warden::{
         dynamic::DynamicTool,
         messages::{DeleteMessageTool, SendMessageTool},
         raw_inference::RawInferenceTool,
-        setup::{InstallChannelTool, OnboardingTool, SetupServices},
+        setup::{
+            InstallChannelTool, InstallToolTool, ListToolsTool, OnboardingTool, SetupServices,
+        },
+        wasm::WasmTool,
     },
 };
 
@@ -54,6 +57,15 @@ async fn main() -> std::io::Result<()> {
             .add(Arc::new(tool))
             .map_err(std::io::Error::other)?;
     }
+    for manifest in warden::tools::wasm::discover(&layout).map_err(std::io::Error::other)? {
+        let name = manifest.name.clone();
+        let tool = WasmTool::from_manifest(manifest).map_err(std::io::Error::other)?;
+        tools
+            .registry
+            .add(Arc::new(tool))
+            .map_err(std::io::Error::other)?;
+        println!("loaded tool: {name}");
+    }
     let automation_store = Arc::new(
         SqliteAutomations::new(layout.data_dir().join("automations.db"))
             .map_err(std::io::Error::other)?,
@@ -84,6 +96,14 @@ async fn main() -> std::io::Result<()> {
             &setup_services,
         ))))
         .map_err(std::io::Error::other)?;
+    tools
+        .registry
+        .add(Arc::new(ListToolsTool::new(layout.clone())))
+        .map_err(std::io::Error::other)?;
+    tools
+        .registry
+        .add(Arc::new(InstallToolTool::new(Arc::clone(&setup_services))))
+        .map_err(std::io::Error::other)?;
     let stored_count = automations.load_stored().map_err(std::io::Error::other)?;
     automations
         .recover_stale_channel_auth()
@@ -92,11 +112,7 @@ async fn main() -> std::io::Result<()> {
         let setup_complete = secrets
             .tools
             .get("NEAR_API_KEY")
-            .is_some_and(|value| !value.trim().is_empty())
-            && secrets
-                .tools
-                .get("BRAVE_SEARCH_API")
-                .is_some_and(|value| !value.trim().is_empty());
+            .is_some_and(|value| !value.trim().is_empty());
         if setup_complete {
             automations
                 .add(Automations::handle_conversation())

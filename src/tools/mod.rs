@@ -7,6 +7,7 @@ pub mod raw_inference;
 pub mod search_history;
 pub mod setup;
 pub mod todo;
+pub mod wasm;
 pub mod web;
 
 use std::sync::{Arc, RwLock};
@@ -31,7 +32,7 @@ use self::{
     search_history::SearchHistoryTool,
     setup::ListChannelsTool,
     todo::TodoTool,
-    web::{WebFetchTool, WebSearchTool},
+    web::WebFetchTool,
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can
@@ -171,7 +172,6 @@ impl InternalTools {
             Arc::clone(&create_tool) as Arc<dyn InternalTool>,
             tool(SearchHistoryTool::new(Arc::clone(&history))),
             tool(WebFetchTool::new()),
-            tool(WebSearchTool::new()),
         ] {
             registry.add(tool).expect("unique built-in tool name");
         }

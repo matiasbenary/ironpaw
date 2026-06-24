@@ -1,0 +1,12 @@
+{
+  "name": "web_search",
+  "display_name": "Web Search",
+  "description": "Search the web using Brave Search.",
+  "setup_url": "https://brave.com/search/api/",
+  "secrets": [
+    {
+      "name": "BRAVE_SEARCH_API",
+      "prompt": "Paste your Brave Search API key."
+    }
+  ]
+}

@@ -11,7 +11,11 @@ use crate::{
     message::ToolDefinition,
     tools::{
         self, InternalTool, ToolContext, ToolOutput,
-        setup::{SetupServices, delete_current_message, send},
+        setup::{
+            SetupServices, delete_current_message,
+            install_common::{reload_env, write_env_secret},
+            send,
+        },
     },
 };
 
@@ -25,7 +29,6 @@ pub struct OnboardingParams {
 enum Stage {
     Greeting,
     NeedNear,
-    NeedSearch,
     Complete,
 }
 
@@ -69,7 +72,7 @@ impl OnboardingTool {
                 *self.stage.lock().expect("onboarding stage lock") = Stage::NeedNear;
                 send(
                     &self.setup.tools,
-                    "Welcome to Warden. Let's set up the two API keys I need. Paste your NEAR API key first.",
+                    "Welcome to Warden. Let's set up the API key I need. Paste your NEAR API key.",
                     ctx,
                 )
                 .await?;
@@ -82,9 +85,9 @@ impl OnboardingTool {
                     ctx,
                 )
                 .await?;
-                delete_current_message(&self.setup.tools, ctx, "onboarding").await;
                 write_env_secret(&self.setup.env_path, "NEAR_API_KEY", &key)?;
                 reload_env(&self.setup.env_path)?;
+                delete_current_message(&self.setup.tools, ctx, "onboarding").await;
                 send(
                     &self.setup.tools,
                     "Thanks, let me test the key to make sure it works.",
@@ -105,56 +108,13 @@ impl OnboardingTool {
                     .await?;
                     return Ok(serde_json::json!({ "ok": false, "error": err }));
                 }
-                *self.stage.lock().expect("onboarding stage lock") = Stage::NeedSearch;
-                send(
-                    &self.setup.tools,
-                    "NEAR works. Now paste your Brave Search API key.",
-                    ctx,
-                )
-                .await?;
-            }
-            Stage::NeedSearch => {
-                let key = clean_key(&params.message)?;
-                send(
-                    &self.setup.tools,
-                    "Thanks, let me redact that for you.",
-                    ctx,
-                )
-                .await?;
-                delete_current_message(&self.setup.tools, ctx, "onboarding").await;
-                write_env_secret(&self.setup.env_path, "BRAVE_SEARCH_API", &key)?;
-                reload_env(&self.setup.env_path)?;
-                send(
-                    &self.setup.tools,
-                    "Thanks, let me test the key to make sure it works.",
-                    ctx,
-                )
-                .await?;
-                self.test_search_and_finish(ctx).await?;
+                self.finish(ctx).await?;
             }
             Stage::Complete => {
                 send(&self.setup.tools, "Warden is already set up.", ctx).await?;
             }
         }
         Ok(serde_json::json!({ "ok": true }))
-    }
-
-    async fn test_search_and_finish(&self, ctx: &ToolContext) -> Result<(), String> {
-        if let Err(err) = self.test_search(ctx).await {
-            remove_env_secret(&self.setup.env_path, "BRAVE_SEARCH_API")?;
-            reload_env(&self.setup.env_path)?;
-            *self.stage.lock().expect("onboarding stage lock") = Stage::NeedSearch;
-            send(
-                &self.setup.tools,
-                &format!(
-                    "The Brave Search API key did not pass a basic search test: {err}. Paste your Brave Search API key again."
-                ),
-                ctx,
-            )
-            .await?;
-            return Err(err);
-        }
-        self.finish(ctx).await
     }
 
     async fn test_near(&self, ctx: &ToolContext) -> Result<(), String> {
@@ -165,20 +125,6 @@ impl OnboardingTool {
                 "messages": [
                     { "User": { "text": "Reply with exactly OK.", "attachments": [] } }
                 ]
-            }),
-            ctx,
-        )
-        .await;
-        tool_result_ok(result)
-    }
-
-    async fn test_search(&self, ctx: &ToolContext) -> Result<(), String> {
-        let result = tools::run_tool(
-            &self.setup.tools,
-            "web_search",
-            serde_json::json!({
-                "query": "Illia Polosukhin Wikipedia",
-                "count": 1
             }),
             ctx,
         )
@@ -220,29 +166,6 @@ fn clean_key(message: &str) -> Result<String, String> {
     Ok(key.to_string())
 }
 
-fn write_env_secret(path: &Path, name: &str, value: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let replacement = format!("{name}={}\n", quote_env_value(value));
-    let mut found = false;
-    let mut output = String::new();
-    for line in existing.lines() {
-        if line.trim_start().starts_with(&format!("{name}=")) {
-            output.push_str(&replacement);
-            found = true;
-        } else {
-            output.push_str(line);
-            output.push('\n');
-        }
-    }
-    if !found {
-        output.push_str(&replacement);
-    }
-    std::fs::write(path, output).map_err(|err| err.to_string())
-}
-
 fn remove_env_secret(path: &Path, name: &str) -> Result<(), String> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let mut output = String::new();
@@ -255,15 +178,6 @@ fn remove_env_secret(path: &Path, name: &str) -> Result<(), String> {
     std::fs::write(path, output).map_err(|err| err.to_string())
 }
 
-fn quote_env_value(value: &str) -> String {
-    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
-}
-
-fn reload_env(path: &Path) -> Result<(), String> {
-    dotenvy::from_path_override(path).map_err(|err| err.to_string())
-}
-
 #[async_trait]
 impl InternalTool for OnboardingTool {
     fn name(&self) -> &str {
@@ -273,9 +187,9 @@ impl InternalTool for OnboardingTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<OnboardingParams>(
             self.name(),
-            "First-run Warden setup. Greets the user, collects NEAR_API_KEY \
-             and BRAVE_SEARCH_API, writes them to .env, tests raw_inference \
-             and web_search, then enables the normal handle-conversation automation.",
+            "First-run Warden setup. Greets the user, collects NEAR_API_KEY, \
+             writes it to .env, tests raw_inference, then enables the normal \
+             handle-conversation automation.",
         )
     }
 
@@ -304,12 +218,12 @@ mod tests {
         std::fs::write(&path, "EXISTING=1\nNEAR_API_KEY=\"old\"\n").unwrap();
 
         write_env_secret(&path, "NEAR_API_KEY", "near-new").unwrap();
-        write_env_secret(&path, "BRAVE_SEARCH_API", "brave-new").unwrap();
+        write_env_secret(&path, "EXTRA_API_KEY", "extra-new").unwrap();
 
         let contents = std::fs::read_to_string(path).unwrap();
         assert!(contents.contains("EXISTING=1\n"));
         assert!(contents.contains("NEAR_API_KEY=\"near-new\"\n"));
-        assert!(contents.contains("BRAVE_SEARCH_API=\"brave-new\"\n"));
+        assert!(contents.contains("EXTRA_API_KEY=\"extra-new\"\n"));
         assert!(!contents.contains("NEAR_API_KEY=\"old\""));
     }
 
@@ -321,7 +235,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "EXISTING=1\nNEAR_API_KEY=\"bad\"\nBRAVE_SEARCH_API=\"ok\"\n",
+            "EXISTING=1\nNEAR_API_KEY=\"bad\"\nEXTRA_API_KEY=\"ok\"\n",
         )
         .unwrap();
 
@@ -329,7 +243,7 @@ mod tests {
 
         let contents = std::fs::read_to_string(path).unwrap();
         assert!(contents.contains("EXISTING=1\n"));
-        assert!(contents.contains("BRAVE_SEARCH_API=\"ok\"\n"));
+        assert!(contents.contains("EXTRA_API_KEY=\"ok\"\n"));
         assert!(!contents.contains("NEAR_API_KEY="));
     }
 }

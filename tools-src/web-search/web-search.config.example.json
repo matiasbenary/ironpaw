@@ -1,0 +1,11 @@
+{
+  "http_credentials": [
+    {
+      "host": "api.search.brave.com",
+      "secret": "BRAVE_SEARCH_API",
+      "header": "X-Subscription-Token",
+      "prefix": ""
+    }
+  ],
+  "config": {}
+}
