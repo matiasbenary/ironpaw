@@ -1,0 +1,43 @@
+{
+  "name": "email",
+  "display_name": "Email",
+  "description": "Read and send email through configured IMAP and SMTP servers.",
+  "secrets": [
+    {
+      "name": "EMAIL_PASSWORD",
+      "prompt": "Paste your email password or app password."
+    }
+  ],
+  "config": [
+    {
+      "path": "/email/username",
+      "prompt": "Email username, usually your email address.",
+      "type": "string"
+    },
+    {
+      "path": "/email/from",
+      "prompt": "Default From address for sent mail.",
+      "type": "string"
+    },
+    {
+      "path": "/email/imap/host",
+      "prompt": "IMAP server host, for example imap.fastmail.com.",
+      "type": "string"
+    },
+    {
+      "path": "/email/imap/port",
+      "prompt": "IMAP server port, usually 993.",
+      "type": "number"
+    },
+    {
+      "path": "/email/smtp/host",
+      "prompt": "SMTP server host, for example smtp.fastmail.com.",
+      "type": "string"
+    },
+    {
+      "path": "/email/smtp/port",
+      "prompt": "SMTP server port, usually 465.",
+      "type": "number"
+    }
+  ]
+}

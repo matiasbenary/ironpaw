@@ -1,0 +1,18 @@
+{
+  "email": {
+    "imap": {
+      "host": "",
+      "port": 993,
+      "tls": "tls"
+    },
+    "smtp": {
+      "host": "",
+      "port": 465,
+      "tls": "tls"
+    },
+    "username": "",
+    "password_secret": "EMAIL_PASSWORD",
+    "from": ""
+  },
+  "config": {}
+}

@@ -320,11 +320,11 @@ They live in:
 
 At startup, Warden discovers installed WASM tools from the runtime tools directory and registers them in the same tool registry as internal and dynamic tools. The WASM component exports its name, description, parameter schema, and execute function through `wit/tool.wit`.
 
-External tools do not receive raw secrets directly. They use the host-provided `http_request` import. The host wraps that import with `HttpTool<ToolSecrets>`, so the installed tool config decides which hosts are allowed and where credentials are injected.
+External tools do not receive raw secrets directly. They use host-provided imports for external effects. HTTP tools call `http_request`, which the host wraps with `HttpTool<ToolSecrets>` so the installed tool config decides which hosts are allowed and where credentials are injected. Email tools call IMAP/SMTP-specific host imports, so the host owns the configured mail server connections and injects credentials without exposing passwords to WASM.
 
 The install flow is implemented through `list_tools` and `install_tool`. It discovers local packages from `WARDEN_TOOLS_SRC`, `<runtime-root>/tool-store`, and the built-in `tools-src` directory. Installation asks deterministic setup questions, writes required secrets to `.env`, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers the tool immediately.
 
-The first external WASM tool is `web_search`. It searches Brave Search through `https://api.search.brave.com/res/v1/web/search`, while the `BRAVE_SEARCH_API` key is injected by the host as `X-Subscription-Token`.
+The first external WASM tool is `web_search`. It searches Brave Search through `https://api.search.brave.com/res/v1/web/search`, while the `BRAVE_SEARCH_API` key is injected by the host as `X-Subscription-Token`. The `email` tool demonstrates a non-HTTP external tool: it can list and read messages through the configured IMAP server, and send plain-text mail through the configured SMTP server.
 
 ### Dynamic Tools
 
