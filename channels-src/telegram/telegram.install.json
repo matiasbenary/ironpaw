@@ -18,11 +18,5 @@
       }
     }
   ],
-  "config": [
-    {
-      "path": "/owner_id",
-      "prompt": "Enter your numeric Telegram user id. This is not your bot token; you can get it by messaging @userinfobot.",
-      "type": "string"
-    }
-  ]
+  "config": []
 }

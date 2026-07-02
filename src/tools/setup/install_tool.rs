@@ -11,15 +11,16 @@ use crate::{
     bus::Sender,
     config::RuntimeLayout,
     message::ToolDefinition,
+    secrets::Secrets,
     tools::{
-        self, InternalTool, ToolContext, ToolOutput,
+        self, InternalTool, ToolCallContext, ToolContext, ToolOutcome,
         setup::{
             SetupServices, delete_current_message,
             install_common::{
-                SetupConfig, SetupSecret, apply_config_values, config_prompt, config_value,
-                env_secret_name, is_yes, reload_env, secret_value, write_env_secret,
+                SetupConfig, SetupSecret, apply_config_values, config_prompt, config_value, is_yes,
+                secret_value, stored_secret_name,
             },
-            send,
+            publish_tool_result, send,
         },
         wasm::{WasmTool, WasmToolConfig, WasmToolManifest},
     },
@@ -45,6 +46,7 @@ struct InstallSession {
     package: ToolPackage,
     stage: InstallStage,
     config_values: BTreeMap<String, serde_json::Value>,
+    continuation: Option<ToolCallContext>,
 }
 
 #[derive(Clone)]
@@ -85,6 +87,7 @@ pub struct InstallToolTool {
 
 pub struct ListToolsTool {
     layout: RuntimeLayout,
+    secrets: Secrets,
 }
 
 pub fn install_packaged_tool(
@@ -119,8 +122,8 @@ pub fn install_packaged_tool(
 }
 
 impl ListToolsTool {
-    pub fn new(layout: RuntimeLayout) -> Self {
-        Self { layout }
+    pub fn new(layout: RuntimeLayout, secrets: Secrets) -> Self {
+        Self { layout, secrets }
     }
 
     async fn execute(&self) -> Result<serde_json::Value, String> {
@@ -140,7 +143,7 @@ impl ListToolsTool {
                 "description": package.manifest.description,
                 "installed": installed,
                 "installable": !installed,
-                "required_secrets": secret_statuses(&package),
+                "required_secrets": secret_statuses(&package, &self.secrets),
                 "required_config": config_statuses(&package),
             }));
         }
@@ -212,6 +215,7 @@ impl InstallToolTool {
             package,
             stage: InstallStage::Confirm,
             config_values: BTreeMap::new(),
+            continuation: ctx.tool_call.clone(),
         });
         self.setup
             .automations
@@ -252,7 +256,7 @@ impl InstallToolTool {
         match session.stage {
             InstallStage::Confirm => {
                 if !is_yes(message) {
-                    self.cancel(&session.package.name, ctx).await?;
+                    self.cancel(session, ctx).await?;
                     return Ok(serde_json::json!({ "ok": true, "cancelled": true }));
                 }
                 let mut session = session;
@@ -275,8 +279,9 @@ impl InstallToolTool {
                 let secrets = required_secrets(&session.package);
                 let secret = &secrets[index];
                 let value = secret_value(secret, message)?;
-                write_env_secret(&self.setup.env_path, &env_secret_name(&secret.name), &value)?;
-                reload_env(&self.setup.env_path)?;
+                self.setup
+                    .secrets
+                    .set(&stored_secret_name(&secret.name), &value)?;
                 delete_current_message(&self.setup.tools, ctx, "install_tool").await;
 
                 let next = index + 1;
@@ -336,12 +341,14 @@ impl InstallToolTool {
     async fn complete(&self, session: InstallSession, ctx: &ToolContext) -> Result<(), String> {
         let manifest =
             install_package(&self.setup.layout, &session.package, &session.config_values)?;
-        let tool = WasmTool::from_manifest(manifest)?;
+        let tool = WasmTool::from_manifest(manifest, self.setup.secrets.tools.clone())?;
         self.setup.tools.registry.add(Arc::new(tool))?;
-        self.finish(&session.package.name, ctx).await
+        self.finish(session, ctx).await
     }
 
-    async fn cancel(&self, name: &str, ctx: &ToolContext) -> Result<(), String> {
+    async fn cancel(&self, session: InstallSession, ctx: &ToolContext) -> Result<(), String> {
+        let name = session.package.name.clone();
+        let continuation = session.continuation.clone();
         *self.session.lock().expect("install tool session lock") = None;
         self.setup
             .automations
@@ -360,10 +367,18 @@ impl InstallToolTool {
             "Tool installation cancelled. I will answer normally again.",
             ctx,
         )
-        .await
+        .await?;
+        publish_tool_result(
+            &self.setup.bus,
+            continuation.as_ref(),
+            serde_json::json!({ "ok": true, "tool": name, "cancelled": true }),
+        );
+        Ok(())
     }
 
-    async fn finish(&self, name: &str, ctx: &ToolContext) -> Result<(), String> {
+    async fn finish(&self, session: InstallSession, ctx: &ToolContext) -> Result<(), String> {
+        let name = session.package.name.clone();
+        let continuation = session.continuation.clone();
         *self.session.lock().expect("install tool session lock") = None;
         self.setup
             .automations
@@ -382,7 +397,13 @@ impl InstallToolTool {
             &format!("The {name} tool is installed."),
             ctx,
         )
-        .await
+        .await?;
+        publish_tool_result(
+            &self.setup.bus,
+            continuation.as_ref(),
+            serde_json::json!({ "ok": true, "tool": name, "installed": true }),
+        );
+        Ok(())
     }
 }
 
@@ -405,8 +426,9 @@ impl InternalTool for ListToolsTool {
         &self,
         _args: serde_json::Value,
         _ctx: &ToolContext,
-    ) -> Result<ToolOutput, String> {
-        ListToolsTool::execute(self).await
+    ) -> Result<ToolOutcome, String> {
+        let output = ListToolsTool::execute(self).await?;
+        Ok(ToolOutcome::Finished(output))
     }
 }
 
@@ -430,11 +452,15 @@ impl InternalTool for InstallToolTool {
         &self,
         args: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<ToolOutput, String> {
-        tools::execute_typed(args, |params| async {
-            InstallToolTool::execute(self, params, ctx).await
-        })
-        .await
+    ) -> Result<ToolOutcome, String> {
+        let params: InstallToolParams =
+            serde_json::from_value(args).map_err(|err| err.to_string())?;
+        let starts_setup = params.message.is_none();
+        let result = InstallToolTool::execute(self, params, ctx).await?;
+        if starts_setup && result.get("ok").and_then(|ok| ok.as_bool()) == Some(true) {
+            return Ok(ToolOutcome::Deferred);
+        }
+        Ok(ToolOutcome::Finished(result))
     }
 }
 
@@ -591,17 +617,15 @@ fn required_config(package: &ToolPackage) -> Vec<SetupConfig> {
     package.manifest.config.clone()
 }
 
-fn secret_statuses(package: &ToolPackage) -> Vec<serde_json::Value> {
+fn secret_statuses(package: &ToolPackage, secrets_store: &Secrets) -> Vec<serde_json::Value> {
     required_secrets(package)
         .into_iter()
         .map(|secret| {
-            let env_name = env_secret_name(&secret.name);
+            let secret_name = stored_secret_name(&secret.name);
             serde_json::json!({
                 "name": secret.name,
-                "env": env_name,
-                "configured": std::env::var(&env_name)
-                    .ok()
-                    .is_some_and(|value| !value.trim().is_empty()),
+                "secret": secret_name,
+                "configured": secrets_store.exists(&secret_name),
                 "optional": secret.optional,
             })
         })

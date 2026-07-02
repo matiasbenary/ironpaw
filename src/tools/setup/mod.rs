@@ -4,9 +4,12 @@ pub mod install_tool;
 pub mod onboarding;
 mod services;
 
-use crate::tools::{self, InternalTools, ToolContext};
+use crate::{
+    bus::Event,
+    tools::{self, InternalTools, ToolCallContext, ToolContext},
+};
 
-pub use install_channel::{InstallChannelTool, ListChannelsTool};
+pub use install_channel::{InstallChannelTool, ListChannelsTool, RemoveChannelTool};
 pub use install_tool::{InstallToolTool, ListToolsTool};
 pub use onboarding::OnboardingTool;
 pub use services::SetupServices;
@@ -36,4 +39,20 @@ async fn delete_current_message(tools: &InternalTools, ctx: &ToolContext, label:
             result["error"].as_str().unwrap_or("unknown error")
         );
     }
+}
+
+fn publish_tool_result(
+    bus: &crate::bus::Bus,
+    continuation: Option<&ToolCallContext>,
+    result: serde_json::Value,
+) {
+    let Some(continuation) = continuation else {
+        return;
+    };
+    bus.publish(Event::ToolResult {
+        origin: continuation.origin.clone(),
+        tool_call_id: continuation.tool_call_id.clone(),
+        tool_name: continuation.tool_name.clone(),
+        result,
+    });
 }

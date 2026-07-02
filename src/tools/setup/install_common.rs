@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
 #[derive(Clone, serde::Deserialize)]
 pub struct SetupSecret {
@@ -88,7 +88,7 @@ pub fn config_value(config: &SetupConfig, message: &str) -> Result<serde_json::V
     }
 }
 
-pub fn env_secret_name(name: &str) -> String {
+pub fn stored_secret_name(name: &str) -> String {
     if name.starts_with("WARDEN_") {
         name.to_string()
     } else {
@@ -156,41 +156,6 @@ pub fn is_yes(message: &str) -> bool {
         message.trim().to_ascii_lowercase().as_str(),
         "y" | "yes" | "ok" | "okay" | "sure" | "confirm" | "install"
     )
-}
-
-pub fn write_env_secret(path: &Path, name: &str, value: &str) -> Result<(), String> {
-    if value.is_empty() {
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let replacement = format!("{name}={}\n", quote_env_value(value));
-    let mut found = false;
-    let mut output = String::new();
-    for line in existing.lines() {
-        if line.trim_start().starts_with(&format!("{name}=")) {
-            output.push_str(&replacement);
-            found = true;
-        } else {
-            output.push_str(line);
-            output.push('\n');
-        }
-    }
-    if !found {
-        output.push_str(&replacement);
-    }
-    std::fs::write(path, output).map_err(|err| err.to_string())
-}
-
-pub fn quote_env_value(value: &str) -> String {
-    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
-}
-
-pub fn reload_env(path: &Path) -> Result<(), String> {
-    dotenvy::from_path_override(path).map_err(|err| err.to_string())
 }
 
 #[cfg(test)]

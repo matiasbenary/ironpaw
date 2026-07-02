@@ -19,7 +19,7 @@ use crate::{
     http::{CredentialInjection, HttpTool},
     message::ToolDefinition,
     secrets::ToolSecrets,
-    tools::{InternalTool, ToolContext, ToolOutput},
+    tools::{InternalTool, ToolContext, ToolOutcome},
 };
 
 wasmtime::component::bindgen!({
@@ -34,12 +34,16 @@ pub struct WasmTool {
     wasm_path: PathBuf,
     guest_config_json: String,
     config: WasmToolConfig,
+    secrets: ToolSecrets,
 }
 
 impl WasmTool {
-    pub fn from_manifest(manifest: WasmToolManifest) -> Result<Self, String> {
-        let mut loaded =
-            LoadedTool::load(&manifest.wasm_path, ToolSecrets, manifest.config.clone())?;
+    pub fn from_manifest(manifest: WasmToolManifest, secrets: ToolSecrets) -> Result<Self, String> {
+        let mut loaded = LoadedTool::load(
+            &manifest.wasm_path,
+            secrets.clone(),
+            manifest.config.clone(),
+        )?;
         let name = loaded.name()?;
         if name != manifest.name {
             return Err(format!(
@@ -59,6 +63,7 @@ impl WasmTool {
             guest_config_json: serde_json::to_string(&manifest.config.config)
                 .map_err(|err| err.to_string())?,
             config: manifest.config,
+            secrets,
         })
     }
 }
@@ -81,11 +86,21 @@ impl InternalTool for WasmTool {
         &self,
         args: serde_json::Value,
         _ctx: &ToolContext,
-    ) -> Result<ToolOutput, String> {
+    ) -> Result<ToolOutcome, String> {
         let args_json = serde_json::to_string(&args).map_err(|err| err.to_string())?;
-        let mut loaded = LoadedTool::load(&self.wasm_path, ToolSecrets, self.config.clone())?;
-        let output = loaded.execute(&args_json, &self.guest_config_json)?;
-        serde_json::from_str(&output).map_err(|err| format!("invalid WASM tool output: {err}"))
+        let wasm_path = self.wasm_path.clone();
+        let secrets = self.secrets.clone();
+        let config = self.config.clone();
+        let guest_config_json = self.guest_config_json.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            let mut loaded = LoadedTool::load(&wasm_path, secrets, config)?;
+            loaded.execute(&args_json, &guest_config_json)
+        })
+        .await
+        .map_err(|err| err.to_string())??;
+        let output = serde_json::from_str(&output)
+            .map_err(|err| format!("invalid WASM tool output: {err}"))?;
+        Ok(ToolOutcome::Finished(output))
     }
 }
 

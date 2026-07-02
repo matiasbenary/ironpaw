@@ -13,6 +13,7 @@ use warden::{
         messages::{DeleteMessageTool, SendMessageTool},
         raw_inference::RawInferenceTool,
         setup::{OnboardingTool, SetupServices},
+        wasm::{self, WasmTool},
     },
 };
 
@@ -21,14 +22,22 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
     let layout = warden::config::RuntimeLayout::from_root(
         std::env::temp_dir().join(format!("warden-live-test-runtime-{}", uuid::Uuid::new_v4())),
     );
+    let secrets = warden::secrets::Secrets::for_tests();
+    if let Ok(near_api_key) = std::env::var("NEAR_API_KEY") {
+        secrets.set("NEAR_API_KEY", &near_api_key).unwrap();
+    }
+    if let Ok(brave_search_api) = std::env::var("BRAVE_SEARCH_API") {
+        secrets.set("BRAVE_SEARCH_API", &brave_search_api).unwrap();
+    }
     let tools = InternalTools::new(
         bus.clone(),
         layout.clone(),
-        RawInferenceTool::new().unwrap(),
+        RawInferenceTool::new(secrets.tools.clone()).unwrap(),
         send_message_tool(bus, files_dir.clone()),
         DeleteMessageTool::new(bus.clone()),
         files_dir,
         Arc::clone(&history),
+        secrets.clone(),
     );
     let tools = Arc::new(tools);
     let agent = Arc::new(Agent::new(
@@ -49,11 +58,13 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
         Arc::clone(&agent),
         automation_store,
     ));
+    install_web_search_for_live_tests(&layout, &tools, &secrets);
     let setup_services = Arc::new(SetupServices::new(
+        bus.clone(),
         Arc::clone(&tools),
         Arc::clone(&automations),
         layout,
-        std::env::temp_dir().join(format!("warden-live-test-env-{}.env", uuid::Uuid::new_v4())),
+        secrets,
     ));
     tools
         .registry
@@ -62,7 +73,46 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
     automations
         .add(Automations::handle_conversation())
         .expect("stock automation registers");
+    automations
+        .add_transient(Automations::handle_tool_result())
+        .expect("tool result automation registers");
     (automations.start(), history)
+}
+
+fn install_web_search_for_live_tests(
+    layout: &warden::config::RuntimeLayout,
+    tools: &Arc<InternalTools>,
+    secrets: &warden::secrets::Secrets,
+) {
+    if !secrets.exists("BRAVE_SEARCH_API") {
+        return;
+    }
+
+    let tools_dir = layout.tools_dir();
+    std::fs::create_dir_all(&tools_dir).expect("live test tools dir");
+    let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tools-src/web-search");
+    std::fs::copy(
+        package_dir.join("web-search.wasm"),
+        tools_dir.join("web_search.wasm"),
+    )
+    .expect("copy web_search wasm");
+    std::fs::copy(
+        package_dir.join("web-search.config.example.json"),
+        tools_dir.join("web_search.config.json"),
+    )
+    .expect("copy web_search config");
+
+    let manifest = wasm::discover(layout)
+        .expect("discover wasm tools")
+        .into_iter()
+        .find(|manifest| manifest.name == "web_search")
+        .expect("web_search manifest");
+    let tool =
+        WasmTool::from_manifest(manifest, secrets.tools.clone()).expect("load web_search tool");
+    tools
+        .registry
+        .add(Arc::new(tool))
+        .expect("register web_search tool");
 }
 
 fn temp_history() -> Arc<dyn History> {
@@ -92,6 +142,7 @@ fn publish_user_message(
     bus.publish(Event::MessageIn {
         channel: address.channel.clone(),
         sender: Sender::User,
+        channel_user_id: None,
         address,
         message,
     });

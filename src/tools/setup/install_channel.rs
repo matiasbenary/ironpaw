@@ -8,19 +8,19 @@ use async_trait::async_trait;
 
 use crate::{
     automations::{Automation, AutomationEffect, Automations, Trigger},
-    bus::Sender,
     channels,
     config::RuntimeLayout,
     message::ToolDefinition,
+    secrets::Secrets,
     tools::{
-        self, InternalTool, InternalTools, ToolContext, ToolOutput,
+        self, InternalTool, InternalTools, ToolCallContext, ToolContext, ToolOutcome,
         setup::{
             SetupServices, delete_current_message,
             install_common::{
                 SetupConfig, SetupSecret, apply_config_values, config_prompt, config_value,
-                env_secret_name, is_yes, reload_env, secret_value, write_env_secret,
+                generate_secret, is_yes, secret_value, stored_secret_name,
             },
-            send,
+            publish_tool_result, send,
         },
     },
 };
@@ -33,6 +33,12 @@ const BUILTIN_CHANNELS: &[&str] = &["tui"];
 pub struct InstallChannelParams {
     /// Channel name to install, for example "telegram".
     pub name: String,
+    /// Channel that produced this setup reply.
+    #[serde(default)]
+    pub channel: Option<String>,
+    /// Stable user id emitted by the channel that produced this setup reply.
+    #[serde(default)]
+    pub channel_user_id: Option<String>,
     /// Latest user message. Omitted when the LLM starts setup; filled by the
     /// temporary channel_auth automation for follow-up replies.
     #[serde(default)]
@@ -40,13 +46,35 @@ pub struct InstallChannelParams {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct InstallChannelStartParams {
+    /// Channel name to install, for example "telegram".
+    pub name: String,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct ListChannelsParams {}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct RemoveChannelParams {
+    /// Channel name to remove, for example "telegram".
+    pub name: String,
+}
 
 #[derive(Clone)]
 struct InstallSession {
     package: ChannelPackage,
+    secrets: Vec<SetupSecret>,
     stage: InstallStage,
     config_values: BTreeMap<String, serde_json::Value>,
+    setup_conversation: Option<SetupConversation>,
+    continuation: Option<ToolCallContext>,
+}
+
+#[derive(Clone)]
+struct SetupConversation {
+    channel: String,
+    conversation_id: String,
+    thread_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -54,6 +82,7 @@ enum InstallStage {
     Confirm,
     Secret { index: usize },
     Config { index: usize },
+    Verify { activated: bool, code: String },
 }
 
 #[derive(Clone)]
@@ -85,13 +114,18 @@ pub struct InstallChannelTool {
     session: Mutex<Option<InstallSession>>,
 }
 
+pub struct RemoveChannelTool {
+    setup: Arc<SetupServices>,
+}
+
 pub struct ListChannelsTool {
     layout: RuntimeLayout,
+    secrets: Secrets,
 }
 
 impl ListChannelsTool {
-    pub fn new(layout: RuntimeLayout) -> Self {
-        Self { layout }
+    pub fn new(layout: RuntimeLayout, secrets: Secrets) -> Self {
+        Self { layout, secrets }
     }
 
     async fn execute(&self) -> Result<serde_json::Value, String> {
@@ -111,7 +145,7 @@ impl ListChannelsTool {
                 "installed": installed,
                 "installable": !installed,
                 "external": package.manifest.external,
-                "required_secrets": secret_statuses(&package),
+                "required_secrets": secret_statuses(&package, &self.secrets),
                 "required_config": config_statuses(&package),
             }));
         }
@@ -153,13 +187,15 @@ impl InstallChannelTool {
         Automation {
             name: format!("channel_auth:{channel_name}"),
             trigger: Trigger::MessageIn {
-                sender: Some(Sender::User),
+                sender: None,
                 channel: None,
             },
             effect: AutomationEffect::Tool {
                 tool: "install_channel".to_string(),
                 args: serde_json::json!({
                     "name": channel_name,
+                    "channel": "{{event.channel}}",
+                    "channel_user_id": "{{event.channel_user_id}}",
                     "message": "{{event.text}}",
                 }),
             },
@@ -172,10 +208,23 @@ impl InstallChannelTool {
         ctx: &ToolContext,
     ) -> Result<serde_json::Value, String> {
         let name = normalize_channel_name(&params.name)?;
+        let channel = params.channel.as_deref();
+        let channel_user_id = params.channel_user_id.as_deref();
         match params.message {
-            None => self.start(&name, ctx).await,
-            Some(message) => self.continue_setup(&name, &message, ctx).await,
+            Some(message) if self.active_session_name().is_some() => {
+                self.continue_setup(&name, channel, channel_user_id, &message, ctx)
+                    .await
+            }
+            _ => self.start(&name, ctx).await,
         }
+    }
+
+    fn active_session_name(&self) -> Option<String> {
+        self.session
+            .lock()
+            .expect("install channel session lock")
+            .as_ref()
+            .map(|session| session.package.name.clone())
     }
 
     async fn start(&self, name: &str, ctx: &ToolContext) -> Result<serde_json::Value, String> {
@@ -183,10 +232,29 @@ impl InstallChannelTool {
         let automations = &self.setup.automations;
         let layout = &self.setup.layout;
         let package = locate_channel_package(layout, name)?;
+        if installed_package_exists(layout, &package) {
+            send(
+                tools,
+                &format!(
+                    "The {name} channel is already installed. Ask me to remove it first if you want to reinstall it."
+                ),
+                ctx,
+            )
+            .await?;
+            return Ok(serde_json::json!({
+                "ok": true,
+                "channel": name,
+                "already_installed": true,
+            }));
+        }
+        let secrets = required_secrets(&package, &self.setup.secrets);
         *self.session.lock().expect("install channel session lock") = Some(InstallSession {
             package,
+            secrets,
             stage: InstallStage::Confirm,
             config_values: BTreeMap::new(),
+            setup_conversation: setup_conversation(ctx),
+            continuation: ctx.tool_call.clone(),
         });
         automations.delete(HANDLE_CONVERSATION_AUTOMATION)?;
         automations.add(Self::automation(name))?;
@@ -206,13 +274,14 @@ impl InstallChannelTool {
     async fn continue_setup(
         &self,
         name: &str,
+        channel: Option<&str>,
+        channel_user_id: Option<&str>,
         message: &str,
         ctx: &ToolContext,
     ) -> Result<serde_json::Value, String> {
         let tools = Arc::as_ref(&self.setup.tools);
         let automations = &self.setup.automations;
         let layout = &self.setup.layout;
-        let env_path = &self.setup.env_path;
         let session = self
             .session
             .lock()
@@ -231,37 +300,40 @@ impl InstallChannelTool {
         match session.stage {
             InstallStage::Confirm => {
                 if !is_yes(message) {
-                    self.cancel(&session.package.name, tools, automations, ctx)
-                        .await?;
+                    self.cancel(session, tools, automations, ctx).await?;
                     return Ok(serde_json::json!({ "ok": true, "cancelled": true }));
                 }
                 let mut session = session;
-                let secrets = required_secrets(&session.package);
-                if secrets.is_empty() {
-                    self.prompt_config_or_finish(session, layout, tools, automations, ctx)
+                if session.secrets.is_empty() {
+                    self.prompt_config_or_finish(session, layout, tools, ctx)
                         .await?;
                     return Ok(serde_json::json!({ "ok": true }));
                 }
                 session.stage = InstallStage::Secret { index: 0 };
                 self.save_session(session.clone());
-                send(tools, &secret_prompt(&session.package, &secrets[0]), ctx).await?;
+                send(
+                    tools,
+                    &secret_prompt(&session.package, &session.secrets[0]),
+                    ctx,
+                )
+                .await?;
             }
             InstallStage::Secret { index } => {
                 let mut session = session;
-                let secrets = required_secrets(&session.package);
-                let secret = &secrets[index];
+                let secret = &session.secrets[index];
                 let value = secret_value(secret, message)?;
-                write_env_secret(env_path, &env_secret_name(&secret.name), &value)?;
-                reload_env(env_path)?;
+                self.setup
+                    .secrets
+                    .set(&stored_secret_name(&secret.name), &value)?;
                 delete_current_message(tools, ctx, "install_channel").await;
 
                 let next = index + 1;
-                if let Some(secret) = secrets.get(next) {
+                if let Some(secret) = session.secrets.get(next) {
                     session.stage = InstallStage::Secret { index: next };
                     self.save_session(session.clone());
                     send(tools, &secret_prompt(&session.package, secret), ctx).await?;
                 } else {
-                    self.prompt_config_or_finish(session, layout, tools, automations, ctx)
+                    self.prompt_config_or_finish(session, layout, tools, ctx)
                         .await?;
                 }
             }
@@ -279,8 +351,76 @@ impl InstallChannelTool {
                     self.save_session(session.clone());
                     send(tools, config_prompt(config), ctx).await?;
                 } else {
-                    self.complete(session, layout, tools, automations, ctx)
+                    self.complete(session, layout, tools, ctx).await?;
+                }
+            }
+            InstallStage::Verify {
+                activated,
+                ref code,
+            } => {
+                if activated
+                    && channel == Some(session.package.name.as_str())
+                    && message.trim().eq_ignore_ascii_case(code)
+                {
+                    let Some(channel_user_id) = channel_user_id else {
+                        send(
+                            tools,
+                            "I received the verification code, but this channel did not provide a stable user id. Continue setup from the original conversation.",
+                            ctx,
+                        )
                         .await?;
+                        return Ok(serde_json::json!({ "ok": false, "verified": false }));
+                    };
+                    set_channel_owner_id(layout, &session.package, channel_user_id)?;
+                    self.activate_package(&session.package).await?;
+                    self.finish(session, tools, automations, ctx).await?;
+                    return Ok(serde_json::json!({ "ok": true, "verified": true }));
+                }
+
+                let is_setup_conversation = is_setup_conversation(&session, ctx);
+                match message.trim().to_ascii_lowercase().as_str() {
+                    _ if !is_setup_conversation
+                        && channel == Some(session.package.name.as_str()) =>
+                    {
+                        send(tools, "Please enter the verification code.", ctx).await?;
+                    }
+                    _ if !is_setup_conversation => {}
+                    "retry" => {
+                        self.retry(session, tools, ctx).await?;
+                    }
+                    "continue" if activated => {
+                        self.finish(session, tools, automations, ctx).await?;
+                    }
+                    "continue" => {
+                        send(
+                            tools,
+                            "The channel has not started successfully yet. Reply retry to reconfigure it, or rollback to cancel setup.",
+                            ctx,
+                        )
+                        .await?;
+                    }
+                    "rollback" | "cancel" => {
+                        self.rollback(session, tools, automations, ctx).await?;
+                    }
+                    _ if activated => {
+                        send(
+                            tools,
+                            &format!(
+                                "I am waiting for a message from the {} channel containing the verification code I sent above. Reply retry to reconfigure, continue to skip verification, or rollback to cancel setup.",
+                                session.package.name
+                            ),
+                            ctx,
+                        )
+                        .await?;
+                    }
+                    _ => {
+                        send(
+                            tools,
+                            "Reply retry to reconfigure the channel, or rollback to cancel setup.",
+                            ctx,
+                        )
+                        .await?;
+                    }
                 }
             }
         }
@@ -297,14 +437,11 @@ impl InstallChannelTool {
         mut session: InstallSession,
         layout: &RuntimeLayout,
         tools: &InternalTools,
-        automations: &Arc<Automations>,
         ctx: &ToolContext,
     ) -> Result<(), String> {
         let configs = required_config(&session.package);
         let Some(config) = configs.first() else {
-            return self
-                .complete(session, layout, tools, automations, ctx)
-                .await;
+            return self.complete(session, layout, tools, ctx).await;
         };
         session.stage = InstallStage::Config { index: 0 };
         self.save_session(session);
@@ -316,22 +453,118 @@ impl InstallChannelTool {
         session: InstallSession,
         layout: &RuntimeLayout,
         tools: &InternalTools,
-        automations: &Arc<Automations>,
         ctx: &ToolContext,
     ) -> Result<(), String> {
-        install_package(layout, &session.package, &session.config_values)?;
-        self.activate_package(&session.package).await?;
-        self.finish(&session.package.name, tools, automations, ctx)
-            .await
+        write_package(layout, &session.package, &session.config_values)?;
+        match self.activate_package(&session.package).await {
+            Ok(()) => {
+                let code = verification_code();
+                let mut session = session;
+                session.stage = InstallStage::Verify {
+                    activated: true,
+                    code: code.clone(),
+                };
+                self.save_session(session.clone());
+                send(
+                    tools,
+                    &format!(
+                        "The {} channel is installed and started. Send me this code from that channel to confirm it works: {}. You can also reply retry to reconfigure, continue to skip verification, or rollback to cancel setup.",
+                        session.package.name,
+                        code
+                    ),
+                    ctx,
+                )
+                .await
+            }
+            Err(err) => {
+                let mut session = session;
+                session.stage = InstallStage::Verify {
+                    activated: false,
+                    code: verification_code(),
+                };
+                self.save_session(session);
+                send(
+                    tools,
+                    &format!(
+                        "I installed the channel files, but the channel did not start: {err}. Reply retry to reconfigure it, or rollback to cancel setup."
+                    ),
+                    ctx,
+                )
+                .await
+            }
+        }
     }
 
-    async fn cancel(
+    async fn retry(
         &self,
-        name: &str,
+        mut session: InstallSession,
+        tools: &InternalTools,
+        ctx: &ToolContext,
+    ) -> Result<(), String> {
+        session.config_values.clear();
+        if session.secrets.is_empty() {
+            let configs = required_config(&session.package);
+            if let Some(config) = configs.first() {
+                session.stage = InstallStage::Config { index: 0 };
+                self.save_session(session);
+                return send(tools, config_prompt(config), ctx).await;
+            }
+            return self.complete(session, &self.setup.layout, tools, ctx).await;
+        }
+        session.stage = InstallStage::Secret { index: 0 };
+        self.save_session(session.clone());
+        send(
+            tools,
+            &secret_prompt(&session.package, &session.secrets[0]),
+            ctx,
+        )
+        .await
+    }
+
+    async fn rollback(
+        &self,
+        session: InstallSession,
         tools: &InternalTools,
         automations: &Arc<Automations>,
         ctx: &ToolContext,
     ) -> Result<(), String> {
+        let continuation = session.continuation.clone();
+        self.setup
+            .channel_runtime()?
+            .remove_channel(&session.package.name)
+            .await;
+        remove_installed_package(&self.setup.layout, &session.package);
+        *self.session.lock().expect("install channel session lock") = None;
+        automations.delete(&format!("channel_auth:{}", session.package.name))?;
+        if !automations.contains(HANDLE_CONVERSATION_AUTOMATION) {
+            automations.add(Automations::handle_conversation())?;
+        }
+        send(
+            tools,
+            &format!(
+                "I rolled back the {} channel setup. I will answer normally again.",
+                session.package.name
+            ),
+            ctx,
+        )
+        .await?;
+        publish_tool_result(
+            &self.setup.bus,
+            continuation.as_ref(),
+            serde_json::json!({ "ok": false, "channel": session.package.name, "rolled_back": true }),
+        );
+        Ok(())
+    }
+
+    async fn cancel(
+        &self,
+        session: InstallSession,
+        tools: &InternalTools,
+        automations: &Arc<Automations>,
+        ctx: &ToolContext,
+    ) -> Result<(), String> {
+        let name = session.package.name.clone();
+        let continuation = session.continuation.clone();
         *self.session.lock().expect("install channel session lock") = None;
         automations.delete(&format!("channel_auth:{name}"))?;
         if !automations.contains(HANDLE_CONVERSATION_AUTOMATION) {
@@ -342,16 +575,24 @@ impl InstallChannelTool {
             "Channel installation cancelled. I will answer normally again.",
             ctx,
         )
-        .await
+        .await?;
+        publish_tool_result(
+            &self.setup.bus,
+            continuation.as_ref(),
+            serde_json::json!({ "ok": true, "channel": name, "cancelled": true }),
+        );
+        Ok(())
     }
 
     async fn finish(
         &self,
-        name: &str,
+        session: InstallSession,
         tools: &InternalTools,
         automations: &Arc<Automations>,
         ctx: &ToolContext,
     ) -> Result<(), String> {
+        let name = session.package.name.clone();
+        let continuation = session.continuation.clone();
         *self.session.lock().expect("install channel session lock") = None;
         automations.delete(&format!("channel_auth:{name}"))?;
         if !automations.contains(HANDLE_CONVERSATION_AUTOMATION) {
@@ -362,7 +603,13 @@ impl InstallChannelTool {
             &format!("The {name} channel is installed and running."),
             ctx,
         )
-        .await
+        .await?;
+        publish_tool_result(
+            &self.setup.bus,
+            continuation.as_ref(),
+            serde_json::json!({ "ok": true, "channel": name, "installed": true }),
+        );
+        Ok(())
     }
 
     async fn activate_package(&self, package: &ChannelPackage) -> Result<(), String> {
@@ -370,6 +617,76 @@ impl InstallChannelTool {
         runtime
             .activate_installed_channel(&package.name, package.manifest.external)
             .await
+    }
+}
+
+fn setup_conversation(ctx: &ToolContext) -> Option<SetupConversation> {
+    let (channel, address) = ctx.destination.as_ref()?;
+    Some(SetupConversation {
+        channel: channel.clone(),
+        conversation_id: address.conversation_id.clone(),
+        thread_id: address.thread_id.clone(),
+    })
+}
+
+fn is_setup_conversation(session: &InstallSession, ctx: &ToolContext) -> bool {
+    let Some(expected) = &session.setup_conversation else {
+        return true;
+    };
+    let Some((channel, address)) = &ctx.destination else {
+        return false;
+    };
+    expected.channel == *channel
+        && expected.conversation_id == address.conversation_id
+        && expected.thread_id == address.thread_id
+}
+
+impl RemoveChannelTool {
+    pub fn new(setup: Arc<SetupServices>) -> Self {
+        Self { setup }
+    }
+
+    async fn execute(
+        &self,
+        params: RemoveChannelParams,
+        ctx: &ToolContext,
+    ) -> Result<serde_json::Value, String> {
+        let name = normalize_channel_name(&params.name)?;
+        if BUILTIN_CHANNELS.contains(&name.as_str()) {
+            return Err(format!(
+                "the {name} channel is built in and cannot be removed"
+            ));
+        }
+
+        let removed_files = remove_channel_files(&self.setup.layout, &name);
+        let removed_runtime = self.setup.channel_runtime()?.remove_channel(&name).await;
+        if !removed_files && !removed_runtime {
+            send(
+                &self.setup.tools,
+                &format!("The {name} channel is not installed."),
+                ctx,
+            )
+            .await?;
+            return Ok(serde_json::json!({
+                "ok": true,
+                "channel": name,
+                "removed": false,
+            }));
+        }
+
+        send(
+            &self.setup.tools,
+            &format!(
+                "The {name} channel has been removed. You can install it again whenever you want."
+            ),
+            ctx,
+        )
+        .await?;
+        Ok(serde_json::json!({
+            "ok": true,
+            "channel": name,
+            "removed": true,
+        }))
     }
 }
 
@@ -392,8 +709,36 @@ impl InternalTool for ListChannelsTool {
         &self,
         _args: serde_json::Value,
         _ctx: &ToolContext,
-    ) -> Result<ToolOutput, String> {
-        ListChannelsTool::execute(self).await
+    ) -> Result<ToolOutcome, String> {
+        let output = ListChannelsTool::execute(self).await?;
+        Ok(ToolOutcome::Finished(output))
+    }
+}
+
+#[async_trait]
+impl InternalTool for RemoveChannelTool {
+    fn name(&self) -> &str {
+        "remove_channel"
+    }
+
+    fn tool_definition(&self) -> ToolDefinition {
+        tools::tool_definition::<RemoveChannelParams>(
+            self.name(),
+            "Remove an installed Warden channel so it can be installed again. \
+             Use this when the user asks to uninstall, remove, reset, or reinstall a channel.",
+        )
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutcome, String> {
+        let output = tools::execute_typed(args, |params| async {
+            RemoveChannelTool::execute(self, params, ctx).await
+        })
+        .await?;
+        Ok(ToolOutcome::Finished(output))
     }
 }
 
@@ -404,7 +749,7 @@ impl InternalTool for InstallChannelTool {
     }
 
     fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<InstallChannelParams>(
+        tools::tool_definition::<InstallChannelStartParams>(
             self.name(),
             "Install a local channel package. When called with only `name`, \
              this starts a deterministic setup flow that asks the user for \
@@ -417,11 +762,21 @@ impl InternalTool for InstallChannelTool {
         &self,
         args: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<ToolOutput, String> {
-        tools::execute_typed(args, |params| async {
-            InstallChannelTool::execute(self, params, ctx).await
-        })
-        .await
+    ) -> Result<ToolOutcome, String> {
+        let params: InstallChannelParams =
+            serde_json::from_value(args).map_err(|err| err.to_string())?;
+        let starts_setup = params.message.is_none() || self.active_session_name().is_none();
+        let result = InstallChannelTool::execute(self, params, ctx).await?;
+        if starts_setup
+            && result.get("ok").and_then(|ok| ok.as_bool()) == Some(true)
+            && result
+                .get("already_installed")
+                .and_then(|value| value.as_bool())
+                != Some(true)
+        {
+            return Ok(ToolOutcome::Deferred);
+        }
+        Ok(ToolOutcome::Finished(result))
     }
 }
 
@@ -566,13 +921,9 @@ fn parse_install_manifest(json: &str) -> Result<ChannelInstallManifest, String> 
     serde_json::from_str(json).map_err(|err| err.to_string())
 }
 
-fn required_secrets(package: &ChannelPackage) -> Vec<SetupSecret> {
+fn required_secrets(package: &ChannelPackage, secrets_store: &Secrets) -> Vec<SetupSecret> {
     let mut secrets = Vec::new();
-    if package.manifest.external
-        && std::env::var(NGROK_SECRET)
-            .ok()
-            .is_none_or(|value| value.trim().is_empty())
-    {
+    if package.manifest.external && !secrets_store.exists(NGROK_SECRET) {
         secrets.push(SetupSecret {
             name: NGROK_SECRET.to_string(),
             prompt: Some(
@@ -590,17 +941,15 @@ fn required_config(package: &ChannelPackage) -> Vec<SetupConfig> {
     package.manifest.config.clone()
 }
 
-fn secret_statuses(package: &ChannelPackage) -> Vec<serde_json::Value> {
-    required_secrets(package)
+fn secret_statuses(package: &ChannelPackage, secrets_store: &Secrets) -> Vec<serde_json::Value> {
+    required_secrets(package, secrets_store)
         .into_iter()
         .map(|secret| {
-            let env_name = env_secret_name(&secret.name);
+            let secret_name = stored_secret_name(&secret.name);
             serde_json::json!({
                 "name": secret.name,
-                "env": env_name,
-                "configured": std::env::var(&env_name)
-                    .ok()
-                    .is_some_and(|value| !value.trim().is_empty()),
+                "secret": secret_name,
+                "configured": secrets_store.exists(&secret_name),
                 "optional": secret.optional,
                 "auto_generate": secret.auto_generate.is_some(),
             })
@@ -635,7 +984,32 @@ fn secret_prompt(package: &ChannelPackage, secret: &SetupSecret) -> String {
     prompt
 }
 
-fn install_package(
+fn verification_code() -> String {
+    generate_secret(3).to_ascii_uppercase()
+}
+
+fn set_channel_owner_id(
+    layout: &RuntimeLayout,
+    package: &ChannelPackage,
+    owner_id: &str,
+) -> Result<(), String> {
+    let config_path = layout
+        .channels_dir()
+        .join(format!("{}.config.json", package.name));
+    let mut config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&config_path)
+            .map_err(|err| format!("could not read {}: {err}", config_path.display()))?,
+    )
+    .map_err(|err| format!("could not parse {}: {err}", config_path.display()))?;
+    config["owner_id"] = serde_json::Value::String(owner_id.to_string());
+    std::fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())
+}
+
+fn write_package(
     layout: &RuntimeLayout,
     package: &ChannelPackage,
     config_values: &BTreeMap<String, serde_json::Value>,
@@ -644,9 +1018,6 @@ fn install_package(
     std::fs::create_dir_all(&channels_dir).map_err(|err| err.to_string())?;
     let wasm_dst = channels_dir.join(format!("{}.wasm", package.name));
     let config_dst = channels_dir.join(format!("{}.config.json", package.name));
-    if wasm_dst.exists() || config_dst.exists() {
-        return Err(format!("channel '{}' is already installed", package.name));
-    }
     let mut config: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(&package.config_template_path).map_err(|err| {
             format!(
@@ -672,6 +1043,36 @@ fn install_package(
     Ok(())
 }
 
+fn installed_package_exists(layout: &RuntimeLayout, package: &ChannelPackage) -> bool {
+    let channels_dir = layout.channels_dir();
+    channels_dir.join(format!("{}.wasm", package.name)).exists()
+        || channels_dir
+            .join(format!("{}.config.json", package.name))
+            .exists()
+}
+
+fn remove_installed_package(layout: &RuntimeLayout, package: &ChannelPackage) {
+    remove_channel_files(layout, &package.name);
+}
+
+fn remove_channel_files(layout: &RuntimeLayout, name: &str) -> bool {
+    let channels_dir = layout.channels_dir();
+    let mut removed = false;
+    for path in [
+        channels_dir.join(format!("{name}.wasm")),
+        channels_dir.join(format!("{name}.config.json")),
+    ] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed = true,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                eprintln!("failed to remove channel file {}: {err}", path.display());
+            }
+        }
+    }
+    removed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,9 +1089,7 @@ mod tests {
                 { "name": "telegram_bot_token", "prompt": "Bot token" },
                 { "name": "telegram_webhook_secret", "prompt": "Webhook", "optional": true, "auto_generate": { "length": 4 } }
               ],
-              "config": [
-                { "path": "/owner_id", "prompt": "Owner id", "type": "string" }
-              ]
+              "config": []
             }"#,
         )
         .unwrap();
@@ -698,7 +1097,6 @@ mod tests {
         assert_eq!(manifest.name, "telegram");
         assert!(manifest.external);
         assert_eq!(manifest.secrets.len(), 2);
-        assert_eq!(manifest.config.len(), 1);
-        assert_eq!(manifest.config[0].path, "/owner_id");
+        assert!(manifest.config.is_empty());
     }
 }

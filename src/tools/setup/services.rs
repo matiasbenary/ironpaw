@@ -1,30 +1,33 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, OnceLock},
+use std::sync::{Arc, OnceLock};
+
+use crate::{
+    automations::Automations, bus::Bus, channels, config::RuntimeLayout, secrets::Secrets,
+    tools::InternalTools,
 };
 
-use crate::{automations::Automations, channels, config::RuntimeLayout, tools::InternalTools};
-
 pub struct SetupServices {
+    pub bus: Bus,
     pub tools: Arc<InternalTools>,
     pub automations: Arc<Automations>,
     pub layout: RuntimeLayout,
-    pub env_path: PathBuf,
+    pub secrets: Secrets,
     channel_runtime: OnceLock<Arc<channels::ChannelRuntime>>,
 }
 
 impl SetupServices {
     pub fn new(
+        bus: Bus,
         tools: Arc<InternalTools>,
         automations: Arc<Automations>,
         layout: RuntimeLayout,
-        env_path: PathBuf,
+        secrets: Secrets,
     ) -> Self {
         Self {
+            bus,
             tools,
             automations,
             layout,
-            env_path,
+            secrets,
             channel_runtime: OnceLock::new(),
         }
     }

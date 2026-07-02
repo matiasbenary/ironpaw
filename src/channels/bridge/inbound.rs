@@ -79,6 +79,7 @@ pub(super) async fn message_channel_to_warden(
         state.bus.publish(Event::MessageIn {
             channel: inbound.channel.clone(),
             sender,
+            channel_user_id: Some(inbound.channel_user_id),
             address: inbound.address,
             message,
         });
