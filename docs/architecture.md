@@ -35,7 +35,7 @@ You cannot simply say "The default `answer-the-user` path is also an automation"
 
 ## Main
 
-`src/main.rs` scaffolds the agent: it prepares runtime state, wires the core components together, then starts automations and channels. It also creates the per-start bridge token printed to stdout for local clients such as `warden-tui`.
+`src/main.rs` owns the startup lifecycle. It unlocks or initializes the encrypted secret store first; only after secrets are unlocked does it wire the agent, tools, automations, and channels. It also creates the per-start bridge token printed to stdout for local clients such as `warden-tui`.
 
 The default runtime root is the directory containing the `warden` binary unless `WARDEN_HOME` is set. Runtime data lives under:
 
@@ -44,9 +44,12 @@ The default runtime root is the directory containing the `warden` binary unless 
 <runtime-root>/tools
 <runtime-root>/files
 <runtime-root>/data
+<runtime-root>/secrets
 ```
 
-On a fresh install, Warden installs a default onboarding automation that greets the user and queries for the NEAR API key used for AI inference.
+On a fresh install, Warden starts the bus, loads the TUI channel, runs the boot unlock automation, generates a six-word unlock phrase, asks the user to verify selected words through normal channel messages, and creates an encrypted local secret store. On later starts, Warden asks for the phrase through the same message/automation path and does not load normal tools, extra channels, or stored automations until the store unlocks. Unlock is handled by an internal tool and asks the active channel to delete sensitive inbound messages after they are consumed.
+
+Once unlocked, Warden installs a default onboarding automation if required setup secrets such as `NEAR_API_KEY` are missing.
 
 After onboarding, it sets `answer-the-user` as the default automation, which routes inbound messages to the agent and sends answers back to the user through the same channel. Web search is implemented as an external WASM tool, so it is available after the `web_search` tool package has been installed into the runtime tools directory.
 
@@ -124,7 +127,7 @@ Channels do not receive raw secrets directly. They use the host-provided `http_r
 
 <summary> Adding Channels </summary>
 
-Channel installation is partly implemented inside the agent through `list_channels` and `install_channel`. The install flow discovers local channel packages, asks deterministic setup questions, writes secrets to `.env`, copies the WASM/config into the runtime `channels` directory, and activates the channel in the running channel runtime.
+Channel installation is partly implemented inside the agent through `list_channels` and `install_channel`. The install flow discovers local channel packages, asks deterministic setup questions, stores required secrets in the encrypted secret store, copies the WASM/config into the runtime `channels` directory, and activates the channel in the running channel runtime.
 
 </details>
 
@@ -179,18 +182,21 @@ The bridge has two directional halves:
 
 ## HTTP and Secrets
 
-Secrets are loaded once at startup from:
+Secrets are unlocked once at startup from:
 
-1. `WARDEN_ENV`, when set.
-2. `<runtime-root>/.env`.
-3. current working directory `.env`.
+```text
+<runtime-root>/secrets/secrets.json.enc
+<runtime-root>/secrets/secrets.meta.json
+```
+
+The encrypted payload is a JSON map of secret names to values. Metadata contains non-secret crypto parameters such as version, Argon2id settings, salt, cipher, and nonce.
 
 They are exposed as separate namespaces:
 
 - `secrets.channels`
 - `secrets.tools`
 
-Today both namespaces read from environment variables after `.env` loading, but the API boundary is already separated so channel code does not ask for tool secrets and tool code does not ask for channel secrets.
+Both namespaces read from the same unlocked encrypted store, but the API boundary is still separated so channel code does not ask for tool secrets and tool code does not ask for channel secrets.
 
 `HttpTool<S>` is a reusable HTTP helper for controlled credential injection. It:
 
@@ -322,7 +328,7 @@ At startup, Warden discovers installed WASM tools from the runtime tools directo
 
 External tools do not receive raw secrets directly. They use host-provided imports for external effects. HTTP tools call `http_request`, which the host wraps with `HttpTool<ToolSecrets>` so the installed tool config decides which hosts are allowed and where credentials are injected. Email tools call IMAP/SMTP-specific host imports, so the host owns the configured mail server connections and injects credentials without exposing passwords to WASM.
 
-The install flow is implemented through `list_tools` and `install_tool`. It discovers local packages from `WARDEN_TOOLS_SRC`, `<runtime-root>/tool-store`, and the built-in `tools-src` directory. Installation asks deterministic setup questions, writes required secrets to `.env`, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers the tool immediately.
+The install flow is implemented through `list_tools` and `install_tool`. It discovers local packages from `WARDEN_TOOLS_SRC`, `<runtime-root>/tool-store`, and the built-in `tools-src` directory. Installation asks deterministic setup questions, stores required secrets in the encrypted secret store, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers the tool immediately.
 
 The first external WASM tool is `web_search`. It searches Brave Search through `https://api.search.brave.com/res/v1/web/search`, while the `BRAVE_SEARCH_API` key is injected by the host as `X-Subscription-Token`. The `email` tool demonstrates a non-HTTP external tool: it can list and read messages through the configured IMAP server, and send plain-text mail through the configured SMTP server.
 
@@ -442,12 +448,15 @@ This flow is the intended uniform shape: TUI and Telegram are both channels, and
 ## Appendix: ToDo
 
 - Change the channel outbound ABI so successful sends can return the provider message id; then `send_message` can persist history with `external_id` instead of `None`.
+- Teach the TUI channel to delete messages. Sensitive setup flows, especially unlock and secret entry, should be able to request deletion through the normal `DeleteMessage` event and have TUI remove the message from its frontend state.
+- Make telegram automatically convert user name into user id on onboarding.
 - Decide whether dynamic tools should have a richer manifest: version, description, parameter schema, allowed tool calls, and allowed outbound HTTPS endpoints.
 - Decide whether runtime reload/file watching is needed.
 - Decide whether some internal tools should eventually move to packaged WASM tools with declared capabilities and secret requirements.
-- Replace plaintext `.env` secret storage with an encrypted local store or OS keychain-backed secret store.
+- Add optional secret unlock backends beyond the local six-word phrase, such as an OS keychain or external KMS.
 - Add durable tool execution audit logs.
 - Add channel-level message deletion/redaction coverage for all setup flows.
+- I asked warden to install a channel, and it said "ok, I need your token to do that" instead of starting the install flow!
 
 ### Better Config UX
 
@@ -485,3 +494,22 @@ The model seems to take well to using an `inspect_file` tool to "see" the image,
 Tried using the `/responses` API, but NEAR AI's `previous_response_id` does not load conversation history into the model.
 
 The agent therefore does not rely on `previous_response_id` or `function_call_output` for its main loop.
+
+
+----
+
+## Appendix: Tools that can take over the automation
+
+hmmm, since we have such a deep issue, lets think about this more broadly
+
+we have the agent calling an internal tool [1] that switches the automation so it can talk with the user
+
+we proposed a solution which was giving tools two types of return -> `Finished(result)` and `InteractingWithUser(message)`. So the agent can call an internal tool, and if it returns `InteractingWithUser`, the agent will stop and let the tool take over. If it returns `Finished`, the agent will continue.
+
+Now, the issue is that we want to have Tools behave similarly, but we do not want to let external tools take over the automation. Of course we could put an `if` somewhere, and if an external tool says `InteractingWIthUser` we block it, but that does sound hacky, I prefer if they simply cannot return `InteractingWithUser` at all, without having to separate their return type.
+
+Another thing is that when a tool is `InteractingWithUser` and later `Finishes`, we want the agent to continue, but for that we need to somehow make the agent resume. Apparently this is not currently possible. This created a problem, because how does the tool send a message to the AI Engine? We thought about publishing a message with `Sender::System`, but then we do not want the agent to get stuck in a loop if himself sends a `System` message. Thought maybe the agent never sends `system` messages? I honestly don't remember, we need to check.
+
+I honestly thought this was going to be simpler, the agent would call the tool, some internal tools [1] would simply change the automation and thus take over, until finished, where it would switch automation back and post the tool result. Why was this not possible? 
+
+[1] these tools will be `install_tool`, `install_channel`, `set_secret` (future)

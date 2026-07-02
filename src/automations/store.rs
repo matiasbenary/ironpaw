@@ -153,6 +153,7 @@ enum StoredTrigger {
         #[serde(default)]
         channel: Option<String>,
     },
+    ToolResult,
 }
 
 impl StoredTrigger {
@@ -168,6 +169,7 @@ impl StoredTrigger {
                 sender: sender.clone(),
                 channel: channel.clone(),
             },
+            Trigger::ToolResult => Self::ToolResult,
         }
     }
 
@@ -178,6 +180,7 @@ impl StoredTrigger {
                 datetime: parse_datetime(&datetime)?,
             }),
             Self::MessageIn { sender, channel } => Ok(Trigger::MessageIn { sender, channel }),
+            Self::ToolResult => Ok(Trigger::ToolResult),
         }
     }
 }

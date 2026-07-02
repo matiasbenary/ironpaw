@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    bus::{Bus, ChannelAction, ChannelAddress},
+    bus::{Bus, ChannelAction, ChannelAddress, Event, Sender, ToolOrigin},
     history::{History, HistoryEntry, MessageMetadata},
     message::{Message, ToolCall, ToolDefinition},
     models,
@@ -153,40 +153,66 @@ impl Agent {
                 round + 1,
                 tool_calls.len()
             ));
-            let has_malformed_tool_call = tool_calls.iter().any(|tool_call| {
-                serde_json::from_str::<serde_json::Value>(&tool_call.arguments).is_err()
-            });
             let mut tool_results = Vec::new();
+            let mut tool_requests = Vec::new();
             for tool_call in tool_calls {
                 self.publish_tool_progress(run.destination, &tool_call.name);
-                let tool_result = execute_tool_call(
-                    &self.tools,
-                    tool_call,
-                    &ctx,
-                    run.allowed_tool_names.as_deref(),
-                )
-                .await;
-                tool_results.push(tool_result);
+                match prepare_tool_request(tool_call, run.allowed_tool_names.as_deref()) {
+                    PreparedToolCall::Request { tool_call, args } => {
+                        tool_requests.push((tool_call, args));
+                    }
+                    PreparedToolCall::Result(message) => tool_results.push(message),
+                }
             }
-            if has_malformed_tool_call {
+            if !tool_results.is_empty() {
                 run.transient_messages
                     .push(assistant_message_for_history(output));
                 run.transient_messages.extend(tool_results);
+            } else if tool_requests.len() == 1
+                && run.persist_history
+                && let Some((channel, address)) = run.destination
+            {
+                self.history.append(
+                    run.conversation_id,
+                    &[history_entry(output, run.destination, run.conversation_id)],
+                );
+                let (tool_call, args) = tool_requests.pop().expect("single tool request exists");
+                self.bus.publish(Event::ToolRequest {
+                    origin: ToolOrigin::Conversation {
+                        channel: channel.to_string(),
+                        sender: Sender::System,
+                        address: address.clone(),
+                    },
+                    tool_call_id: tool_call.id,
+                    tool_name: tool_call.name,
+                    args,
+                });
+                return Ok(None);
             } else if run.persist_history {
                 self.history.append(
                     run.conversation_id,
                     &[history_entry(output, run.destination, run.conversation_id)],
                 );
+                let mut direct_results = Vec::new();
+                for (tool_call, args) in tool_requests {
+                    let tool_result =
+                        execute_prepared_tool_call(&self.tools, tool_call, args, &ctx).await;
+                    direct_results.push(tool_result.message);
+                }
                 self.history.append(
                     run.conversation_id,
-                    &tool_results
+                    &direct_results
                         .into_iter()
                         .map(|message| history_entry(message, run.destination, run.conversation_id))
                         .collect::<Vec<_>>(),
                 );
             } else {
                 run.transient_messages.push(output);
-                run.transient_messages.extend(tool_results);
+                for (tool_call, args) in tool_requests {
+                    let tool_result =
+                        execute_prepared_tool_call(&self.tools, tool_call, args, &ctx).await;
+                    run.transient_messages.push(tool_result.message);
+                }
             }
         }
 
@@ -316,36 +342,104 @@ fn history_metadata(destination: Destination<'_>, conversation_id: &str) -> Mess
     MessageMetadata::new("internal", conversation_id.to_string(), None, None)
 }
 
+#[cfg(test)]
 async fn execute_tool_call(
     tools: &ToolRegistry,
     tool_call: ToolCall,
     ctx: &ToolContext,
     allowed_tool_names: Option<&[String]>,
-) -> Message {
+) -> ExecutedToolCall {
     let tool_name = tool_call.name;
     if allowed_tool_names.is_some_and(|names| !names.iter().any(|name| name == &tool_name)) {
-        return Message::ToolResult {
+        return ExecutedToolCall::finished(Message::ToolResult {
             tool_call_id: tool_call.id,
             tool_name,
             result: error_result("tool is not allowed in this agent run"),
-        };
+        });
     }
     let args: serde_json::Value = match serde_json::from_str(&tool_call.arguments) {
         Ok(args) => args,
         Err(err) => {
-            return Message::ToolResult {
+            return ExecutedToolCall::finished(Message::ToolResult {
                 tool_call_id: tool_call.id,
                 tool_name,
                 result: error_result(err.to_string()),
-            };
+            });
         }
     };
-    let result = tools::run_registered_tool(tools, &tool_name, args, ctx).await;
+    execute_prepared_tool_call(
+        tools,
+        ToolCall {
+            id: tool_call.id,
+            name: tool_name,
+            arguments: "{}".to_string(),
+        },
+        args,
+        ctx,
+    )
+    .await
+}
+
+async fn execute_prepared_tool_call(
+    tools: &ToolRegistry,
+    tool_call: ToolCall,
+    args: serde_json::Value,
+    ctx: &ToolContext,
+) -> ExecutedToolCall {
+    let tool_name = tool_call.name;
+    let outcome = tools::run_registered_tool_outcome(tools, &tool_name, args, ctx).await;
+    let result = outcome.into_output();
     debug_log(format!("agent: tool {tool_name} finished"));
-    Message::ToolResult {
-        tool_call_id: tool_call.id,
-        tool_name,
-        result,
+    ExecutedToolCall {
+        message: Message::ToolResult {
+            tool_call_id: tool_call.id,
+            tool_name,
+            result,
+        },
+    }
+}
+
+enum PreparedToolCall {
+    Request {
+        tool_call: ToolCall,
+        args: serde_json::Value,
+    },
+    Result(Message),
+}
+
+fn prepare_tool_request(
+    tool_call: ToolCall,
+    allowed_tool_names: Option<&[String]>,
+) -> PreparedToolCall {
+    let tool_name = tool_call.name.clone();
+    if allowed_tool_names.is_some_and(|names| !names.iter().any(|name| name == &tool_name)) {
+        return PreparedToolCall::Result(Message::ToolResult {
+            tool_call_id: tool_call.id,
+            tool_name,
+            result: error_result("tool is not allowed in this agent run"),
+        });
+    }
+    let args: serde_json::Value = match serde_json::from_str(&tool_call.arguments) {
+        Ok(args) => args,
+        Err(err) => {
+            return PreparedToolCall::Result(Message::ToolResult {
+                tool_call_id: tool_call.id,
+                tool_name,
+                result: error_result(err.to_string()),
+            });
+        }
+    };
+    PreparedToolCall::Request { tool_call, args }
+}
+
+struct ExecutedToolCall {
+    message: Message,
+}
+
+#[cfg(test)]
+impl ExecutedToolCall {
+    fn finished(message: Message) -> Self {
+        Self { message }
     }
 }
 
@@ -388,7 +482,8 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
-    use crate::{bus::Event, tools::InternalTools};
+    use crate::bus::Event;
+    use crate::tools::InternalTools;
 
     fn test_tools(bus: &Bus) -> InternalTools {
         let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
@@ -401,16 +496,18 @@ mod tests {
             "warden-agent-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
+        let secrets = crate::secrets::Secrets::for_tests();
         InternalTools::new(
             bus.clone(),
             layout,
-            crate::tools::raw_inference::RawInferenceTool::new().unwrap(),
+            crate::tools::raw_inference::RawInferenceTool::new(secrets.tools.clone()).unwrap(),
             crate::tools::messages::SendMessageTool::new(bus.clone(), |_| {
                 Err("unexpected attachment lookup".to_string())
             }),
             crate::tools::messages::DeleteMessageTool::new(bus.clone()),
             files_dir,
             Arc::new(crate::history::SqliteHistory::new(history).unwrap()),
+            secrets,
         )
     }
 
@@ -431,6 +528,7 @@ mod tests {
 
         let result =
             execute_tool_call(&tools.registry, tool_call, &ToolContext::default(), None).await;
+        let result = result.message;
         let Message::ToolResult {
             tool_call_id,
             tool_name,
@@ -477,6 +575,7 @@ mod tests {
 
         let result =
             execute_tool_call(&tools.registry, tool_call, &ToolContext::default(), None).await;
+        let result = result.message;
         let Message::ToolResult {
             tool_call_id,
             tool_name,

@@ -18,6 +18,8 @@ pub enum Trigger {
         sender: Option<Sender>,
         channel: Option<String>,
     },
+    /// Fires when a conversation-owned tool request has finished.
+    ToolResult,
 }
 
 impl Trigger {
@@ -63,6 +65,13 @@ impl Trigger {
                         .as_ref()
                         .is_none_or(|channel| channel == event_channel)
             }
+            (
+                Trigger::ToolResult,
+                Event::ToolResult {
+                    origin: crate::bus::ToolOrigin::Conversation { .. },
+                    ..
+                },
+            ) => true,
             _ => false,
         }
     }
@@ -93,6 +102,7 @@ mod tests {
         Event::MessageIn {
             channel: channel.to_string(),
             sender,
+            channel_user_id: None,
             address: ChannelAddress {
                 channel: channel.to_string(),
                 conversation_id: "c1".to_string(),

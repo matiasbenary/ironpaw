@@ -2,7 +2,11 @@ use std::sync::{Arc, RwLock};
 
 use crate::{
     agent::Agent,
-    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, Sender},
+    bus::{
+        AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, Sender, ToolOrigin,
+    },
+    history::{HistoryEntry, MessageMetadata},
+    message::Message,
     tools::{InternalTools, ToolContext},
 };
 
@@ -30,6 +34,7 @@ impl AutomationEvent<'_> {
                 Event::MessageIn {
                     channel,
                     sender,
+                    channel_user_id,
                     address,
                     message,
                 } => {
@@ -46,10 +51,39 @@ impl AutomationEvent<'_> {
                         "type": "message_in",
                         "channel": channel,
                         "sender": sender_name(sender),
+                        "channel_user_id": channel_user_id,
                         "conversation_id": address.conversation_id,
                         "thread_id": address.thread_id,
                         "message_id": address.message_id,
                         "text": text,
+                    });
+                    (ctx, event)
+                }
+                Event::ToolResult {
+                    origin:
+                        ToolOrigin::Conversation {
+                            channel,
+                            sender: _,
+                            address,
+                        },
+                    tool_call_id,
+                    tool_name,
+                    result,
+                } => {
+                    let ctx = ToolContext {
+                        destination: Some((channel.clone(), address.clone())),
+                        conversation_id: Some(address.conversation_id.clone()),
+                        ..ToolContext::default()
+                    };
+                    let event = serde_json::json!({
+                        "type": "tool_result",
+                        "channel": channel,
+                        "conversation_id": address.conversation_id,
+                        "thread_id": address.thread_id,
+                        "message_id": address.message_id,
+                        "tool_call_id": tool_call_id,
+                        "tool_name": tool_name,
+                        "result": result,
                     });
                     (ctx, event)
                 }
@@ -74,6 +108,32 @@ fn sender_name(sender: &Sender) -> &'static str {
         Sender::User => "user",
         Sender::Guest => "guest",
         Sender::System => "system",
+    }
+}
+
+fn tool_context_for_request(
+    origin: &ToolOrigin,
+    tool_call_id: &str,
+    tool_name: &str,
+) -> ToolContext {
+    let (destination, conversation_id) = match origin {
+        ToolOrigin::Conversation {
+            channel, address, ..
+        } => (
+            Some((channel.clone(), address.clone())),
+            Some(address.conversation_id.clone()),
+        ),
+        ToolOrigin::Automation { .. } => (None, None),
+    };
+    ToolContext {
+        destination,
+        conversation_id,
+        tool_call: Some(crate::tools::ToolCallContext {
+            origin: origin.clone(),
+            tool_call_id: tool_call_id.to_string(),
+            tool_name: tool_name.to_string(),
+        }),
+        ..ToolContext::default()
     }
 }
 
@@ -133,12 +193,30 @@ impl Automations {
         }
     }
 
+    pub fn handle_tool_result() -> Automation {
+        Automation {
+            name: "handle-tool-result".to_string(),
+            trigger: Trigger::ToolResult,
+            effect: AutomationEffect::ContinueConversation {
+                conversation_id: "{{event.conversation_id}}".to_string(),
+            },
+        }
+    }
+
     /// Register an automation. Cron and at automations get their timer task
     /// spawned immediately.
     pub fn add(self: &Arc<Self>, automation: Automation) -> Result<(), String> {
         self.ensure_unique_name(&automation.name)?;
         self.store.insert(&automation)?;
         self.add_runtime(automation)
+    }
+
+    pub fn add_transient(self: &Arc<Self>, automation: Automation) -> Result<(), String> {
+        self.add_runtime(automation)
+    }
+
+    pub fn remove_transient(&self, name: &str) {
+        self.remove_runtime(name);
     }
 
     pub fn load_stored(self: &Arc<Self>) -> Result<usize, String> {
@@ -215,6 +293,7 @@ impl Automations {
             AutomationTriggerSpec::MessageIn { sender, channel } => {
                 Trigger::MessageIn { sender, channel }
             }
+            AutomationTriggerSpec::ToolResult => Trigger::ToolResult,
         };
         match &spec.effect {
             AutomationEffect::Tool { tool, args } => {
@@ -252,7 +331,7 @@ impl Automations {
         match &automation.trigger {
             Trigger::At { datetime } => self.spawn_at(automation.clone(), *datetime),
             Trigger::Cron { schedule, .. } => self.spawn_cron(automation.clone(), schedule.clone()),
-            Trigger::MessageIn { .. } => {}
+            Trigger::MessageIn { .. } | Trigger::ToolResult => {}
         }
         Ok(())
     }
@@ -310,6 +389,19 @@ impl Automations {
             return;
         }
 
+        if let Event::ToolRequest {
+            origin,
+            tool_call_id,
+            tool_name,
+            args,
+        } = event
+        {
+            self.spawn_tool_request(origin, tool_call_id, tool_name, args);
+            return;
+        }
+
+        self.persist_tool_result(event);
+
         let matching: Vec<_> = self
             .automations
             .read()
@@ -321,6 +413,66 @@ impl Automations {
         for automation in matching {
             self.execute(&automation, AutomationEvent::Bus(event)).await;
         }
+    }
+
+    fn spawn_tool_request(
+        &self,
+        origin: &ToolOrigin,
+        tool_call_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) {
+        let bus = self.bus.clone();
+        let tools = Arc::clone(&self.tools);
+        let ctx = tool_context_for_request(origin, tool_call_id, tool_name);
+        let origin = origin.clone();
+        let tool_call_id = tool_call_id.to_string();
+        let tool_name = tool_name.to_string();
+        let args = args.clone();
+        tokio::spawn(async move {
+            let outcome =
+                crate::tools::run_registered_tool_outcome(&tools.registry, &tool_name, args, &ctx)
+                    .await;
+            if outcome.is_deferred() {
+                return;
+            }
+            bus.publish(Event::ToolResult {
+                origin,
+                tool_call_id,
+                tool_name,
+                result: outcome.into_output(),
+            });
+        });
+    }
+
+    fn persist_tool_result(&self, event: &Event) {
+        let Event::ToolResult {
+            origin: ToolOrigin::Conversation {
+                channel, address, ..
+            },
+            tool_call_id,
+            tool_name,
+            result,
+        } = event
+        else {
+            return;
+        };
+        self.tools.history.append(
+            &address.conversation_id,
+            &[HistoryEntry {
+                message: Message::ToolResult {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    result: result.clone(),
+                },
+                metadata: MessageMetadata::new(
+                    channel.clone(),
+                    address.conversation_id.clone(),
+                    address.thread_id.clone(),
+                    None,
+                ),
+            }],
+        );
     }
 
     fn handle_action(
@@ -453,6 +605,9 @@ fn trigger_json(trigger: &Trigger) -> serde_json::Value {
             "sender": sender,
             "channel": channel,
         }),
+        Trigger::ToolResult => serde_json::json!({
+            "type": "tool_result",
+        }),
     }
 }
 
@@ -478,14 +633,16 @@ mod tests {
             "warden-automation-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
+        let secrets = crate::secrets::Secrets::for_tests();
         Arc::new(InternalTools::new(
             bus.clone(),
             layout,
-            RawInferenceTool::new().unwrap(),
+            RawInferenceTool::new(secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             crate::tools::messages::DeleteMessageTool::new(bus.clone()),
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
+            secrets,
         ))
     }
 
@@ -521,6 +678,7 @@ mod tests {
         Event::MessageIn {
             channel: channel.to_string(),
             sender,
+            channel_user_id: None,
             address: ChannelAddress {
                 channel: channel.to_string(),
                 conversation_id: "c1".to_string(),

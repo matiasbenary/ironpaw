@@ -47,6 +47,7 @@ pub enum AutomationTriggerSpec {
         #[serde(default)]
         channel: Option<String>,
     },
+    ToolResult,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -62,6 +63,8 @@ pub enum Event {
     MessageIn {
         channel: String,
         sender: Sender,
+        #[serde(default)]
+        channel_user_id: Option<String>,
         address: ChannelAddress,
         message: Message,
     },
@@ -89,5 +92,31 @@ pub enum Event {
     AutomationResult {
         id: String,
         result: Result<serde_json::Value, String>,
+    },
+    ToolRequest {
+        origin: ToolOrigin,
+        tool_call_id: String,
+        tool_name: String,
+        args: serde_json::Value,
+    },
+    ToolResult {
+        origin: ToolOrigin,
+        tool_call_id: String,
+        tool_name: String,
+        result: serde_json::Value,
+    },
+    #[serde(skip)]
+    SecretsUnlocked,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ToolOrigin {
+    Conversation {
+        channel: String,
+        sender: Sender,
+        address: ChannelAddress,
+    },
+    Automation {
+        automation_id: String,
     },
 }
