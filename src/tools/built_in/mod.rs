@@ -1,0 +1,10 @@
+pub mod automation;
+pub mod image_generation;
+pub mod inspect_file;
+pub mod messages;
+pub mod raw_inference;
+pub mod search_history;
+pub mod setup;
+pub mod todo;
+pub mod unlock;
+pub mod web;

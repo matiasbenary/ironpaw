@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
     message::{Attachment, Message},
-    tools::{self, InternalTool, ToolContext, ToolOutcome},
+    tools::{self, InternalTool, ToolContext},
 };
 
 type AttachmentResolver = Arc<dyn Fn(u32) -> Result<Attachment, String> + Send + Sync>;
@@ -70,16 +70,13 @@ impl InternalTool for SendMessageTool {
         )
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String> {
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
         let mut input: SendMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_destination(ctx);
         let output = SendMessageTool::execute(self, input).await?;
-        Ok(ToolOutcome::Finished(output))
+        ctx.respond(output)?;
+        Ok(())
     }
 }
 
@@ -199,16 +196,13 @@ impl InternalTool for DeleteMessageTool {
         )
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String> {
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
         let mut input: DeleteMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_message(ctx);
         let output = DeleteMessageTool::execute(self, input).await?;
-        Ok(ToolOutcome::Finished(output))
+        ctx.respond(output)?;
+        Ok(())
     }
 }
 
@@ -383,7 +377,7 @@ mod tests {
     async fn delete_message_defaults_to_current_message() {
         let bus = Bus::new(16);
         let mut events = bus.subscribe();
-        let tool = DeleteMessageTool::new(bus);
+        let tool = Arc::new(DeleteMessageTool::new(bus));
         let ctx = ToolContext {
             destination: Some((
                 "telegram".to_string(),
@@ -397,9 +391,7 @@ mod tests {
             ..ToolContext::default()
         };
 
-        <DeleteMessageTool as InternalTool>::execute(&tool, serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
+        tools::run_internal_tool(tool, serde_json::json!({}), &ctx).await;
 
         let Event::DeleteMessage { channel, address } = events.try_recv().unwrap() else {
             panic!("expected delete message event");

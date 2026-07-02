@@ -12,6 +12,7 @@ The current implementation is intentionally small, and is composed of:
 - [Automations](#automations), which connect triggers to tool calls.
 - An [Agent](#agent), which runs a bounded LLM tool loop.
 - A small set of internal [Tools](#tools) exposed both to the agent and system components.
+- A tool handler, which listens for tool requests on the bus and publishes tool results.
 - [External WASM Tools](#external-wasm-tools), which package provider integrations behind a host-enforced HTTP boundary.
 - The capability to create [Dynamic Tools](#dynamic-tools) at runtime, which are QuickJS scripts that can combine other existing tools.
 - A [History](#history) store for durable conversation history and search.
@@ -74,6 +75,8 @@ Implemented event types are:
 - `AgentResponse { request_id, response }`
 - `Automation { id, action }`
 - `AutomationResult { id, result }`
+- `ToolRequest { origin, tool_call_id, tool_name, args }`
+- `ToolResult { origin, tool_call_id, tool_name, result }`
 
 ### Message Types
 

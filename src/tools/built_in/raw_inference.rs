@@ -10,7 +10,7 @@ use crate::{
     message::{Attachment, Message, ToolCall, ToolDefinition},
     models,
     secrets::ToolSecrets,
-    tools::{self, InternalTool, ToolOutcome},
+    tools::{self, InternalTool},
 };
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -368,13 +368,14 @@ impl InternalTool for RawInferenceTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &tools::ToolContext,
-    ) -> Result<ToolOutcome, String> {
+        ctx: &tools::ToolContext,
+    ) -> Result<(), String> {
         let output = tools::execute_typed(args, |request: RawInferenceRequest| async {
             RawInferenceTool::execute(self, request).await
         })
         .await?;
-        Ok(ToolOutcome::Finished(output))
+        ctx.respond(output)?;
+        Ok(())
     }
 }
 

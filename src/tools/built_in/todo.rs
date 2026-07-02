@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::tools::{self, InternalTool, ToolContext, ToolOutcome};
+use crate::tools::{self, InternalTool, ToolContext};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -64,11 +64,7 @@ impl InternalTool for TodoTool {
         )
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String> {
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
         let input: TodoInput = serde_json::from_value(args).map_err(|e| e.to_string())?;
         let key = ctx
             .conversation_id
@@ -113,12 +109,13 @@ impl InternalTool for TodoTool {
             lines.push("All tasks completed.".to_string());
         }
 
-        Ok(ToolOutcome::Finished(serde_json::json!({
+        ctx.respond(serde_json::json!({
             "ok": true,
             "old_todos": old_todos,
             "new_todos": input.todos,
             "result": lines.join("\n")
-        })))
+        }))?;
+        Ok(())
     }
 }
 
@@ -132,30 +129,26 @@ mod tests {
 
     #[tokio::test]
     async fn returns_previous_todos_for_conversation() {
-        let tool = TodoTool::new();
+        let tool = Arc::new(TodoTool::new());
         let ctx = ToolContext {
             conversation_id: Some("chat-1".to_string()),
             ..ToolContext::default()
         };
 
-        let first = tool
-            .execute(
-                serde_json::json!({ "todos": [item("Plan", TodoStatus::InProgress)] }),
-                &ctx,
-            )
-            .await
-            .unwrap()
-            .into_output();
+        let first = tools::run_internal_tool(
+            Arc::clone(&tool) as Arc<dyn InternalTool>,
+            serde_json::json!({ "todos": [item("Plan", TodoStatus::InProgress)] }),
+            &ctx,
+        )
+        .await;
         assert_eq!(first["old_todos"], serde_json::json!([]));
 
-        let second = tool
-            .execute(
-                serde_json::json!({ "todos": [item("Plan", TodoStatus::Completed)] }),
-                &ctx,
-            )
-            .await
-            .unwrap()
-            .into_output();
+        let second = tools::run_internal_tool(
+            Arc::clone(&tool) as Arc<dyn InternalTool>,
+            serde_json::json!({ "todos": [item("Plan", TodoStatus::Completed)] }),
+            &ctx,
+        )
+        .await;
         assert_eq!(
             second["old_todos"],
             serde_json::json!([{ "description": "Plan", "status": "in_progress" }])
@@ -164,32 +157,30 @@ mod tests {
 
     #[tokio::test]
     async fn completed_lists_clear_stored_todos() {
-        let tool = TodoTool::new();
+        let tool = Arc::new(TodoTool::new());
         let ctx = ToolContext {
             conversation_id: Some("chat-1".to_string()),
             ..ToolContext::default()
         };
 
-        tool.execute(
+        tools::run_internal_tool(
+            Arc::clone(&tool) as Arc<dyn InternalTool>,
             serde_json::json!({ "todos": [item("Plan", TodoStatus::InProgress)] }),
             &ctx,
         )
-        .await
-        .unwrap();
-        tool.execute(
+        .await;
+        tools::run_internal_tool(
+            Arc::clone(&tool) as Arc<dyn InternalTool>,
             serde_json::json!({ "todos": [item("Plan", TodoStatus::Completed)] }),
             &ctx,
         )
-        .await
-        .unwrap();
-        let next = tool
-            .execute(
-                serde_json::json!({ "todos": [item("Next", TodoStatus::Pending)] }),
-                &ctx,
-            )
-            .await
-            .unwrap()
-            .into_output();
+        .await;
+        let next = tools::run_internal_tool(
+            Arc::clone(&tool) as Arc<dyn InternalTool>,
+            serde_json::json!({ "todos": [item("Next", TodoStatus::Pending)] }),
+            &ctx,
+        )
+        .await;
 
         assert_eq!(next["old_todos"], serde_json::json!([]));
     }

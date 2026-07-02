@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crate::{
     models,
     secrets::ToolSecrets,
-    tools::{self, InternalTool, ToolOutcome},
+    tools::{self, InternalTool},
 };
 
 pub struct ImageGenerationTool {
@@ -95,8 +95,8 @@ impl InternalTool for ImageGenerationTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &crate::tools::ToolContext,
-    ) -> Result<ToolOutcome, String> {
+        ctx: &crate::tools::ToolContext,
+    ) -> Result<(), String> {
         let params: ImageGenerationParams =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         let data_base64 = self.generate(&params.prompt).await?;
@@ -108,10 +108,11 @@ impl InternalTool for ImageGenerationTool {
         let path = self.files_dir.join(format!("{file_id}.png"));
         let bytes = base64_decode(&data_base64)?;
         std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-        Ok(ToolOutcome::Finished(serde_json::json!({
+        ctx.respond(serde_json::json!({
             "status": "ok",
             "file_id": file_id,
-        })))
+        }))?;
+        Ok(())
     }
 }
 

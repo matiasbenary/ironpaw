@@ -9,7 +9,7 @@ use warden::{
     history::{History, SqliteHistory},
     message::Attachment,
     tools::{
-        InternalTool, InternalTools,
+        InternalTool, InternalTools, ToolHandler,
         dynamic::DynamicTool,
         messages::{DeleteMessageTool, SendMessageTool},
         raw_inference::RawInferenceTool,
@@ -81,6 +81,7 @@ async fn main() -> io::Result<()> {
         Arc::clone(&agent),
         automation_store,
     ));
+    let tool_handler = Arc::new(ToolHandler::new(bus.clone(), Arc::clone(&tools.registry)));
     let boot_events = bus.subscribe();
     tools
         .registry
@@ -94,6 +95,7 @@ async fn main() -> io::Result<()> {
     automations
         .add_transient(UnlockSecretsTool::automation())
         .map_err(std::io::Error::other)?;
+    let tool_handler_task = tool_handler.start();
     let automations_task = automations.start();
 
     println!("unlock bridge token: {token}");
@@ -204,6 +206,7 @@ async fn main() -> io::Result<()> {
     println!(
         "warden is running. Use `warden-tui {token}` to send a message. Press Ctrl-C to stop."
     );
+    let _tool_handler_task = tool_handler_task;
     let _automations_task = automations_task;
     tokio::signal::ctrl_c().await?;
 

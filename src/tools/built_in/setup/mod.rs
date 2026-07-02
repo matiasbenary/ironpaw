@@ -4,10 +4,7 @@ pub mod install_tool;
 pub mod onboarding;
 mod services;
 
-use crate::{
-    bus::Event,
-    tools::{self, InternalTools, ToolCallContext, ToolContext},
-};
+use crate::tools::{self, InternalTools, ToolContext, ToolResponder};
 
 pub use install_channel::{InstallChannelTool, ListChannelsTool, RemoveChannelTool};
 pub use install_tool::{InstallToolTool, ListToolsTool};
@@ -41,18 +38,9 @@ async fn delete_current_message(tools: &InternalTools, ctx: &ToolContext, label:
     }
 }
 
-fn publish_tool_result(
-    bus: &crate::bus::Bus,
-    continuation: Option<&ToolCallContext>,
-    result: serde_json::Value,
-) {
+fn publish_tool_result(continuation: Option<&ToolResponder>, result: serde_json::Value) {
     let Some(continuation) = continuation else {
         return;
     };
-    bus.publish(Event::ToolResult {
-        origin: continuation.origin.clone(),
-        tool_call_id: continuation.tool_call_id.clone(),
-        tool_name: continuation.tool_name.clone(),
-        result,
-    });
+    let _ = continuation.respond(result);
 }

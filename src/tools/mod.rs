@@ -1,32 +1,30 @@
-pub mod automation;
+mod built_in;
+mod context;
 pub mod dynamic;
-pub mod image_generation;
-pub mod inspect_file;
-pub mod messages;
-pub mod raw_inference;
-pub mod search_history;
-pub mod setup;
-pub mod todo;
-pub mod unlock;
+mod handler;
+mod runner;
 pub mod wasm;
-pub mod web;
 
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 
 use crate::{
-    bus::{Bus, ChannelAddress, ToolOrigin},
-    config::RuntimeLayout,
-    history::History,
-    message::ToolDefinition,
-    scripts::ScriptRuntime,
-    secrets::Secrets,
+    bus::Bus, config::RuntimeLayout, history::History, message::ToolDefinition,
+    scripts::ScriptRuntime, secrets::Secrets,
 };
 
-use self::{
+pub use built_in::{
+    automation, image_generation, inspect_file, messages, raw_inference, search_history, setup,
+    todo, unlock, web,
+};
+pub use context::{ToolCallContext, ToolContext, ToolResponder};
+pub use handler::ToolHandler;
+pub(crate) use runner::run_registered_tool_for_context;
+pub use runner::{run_internal_tool, run_registered_tool, run_tool};
+
+use self::built_in::{
     automation::{AutomationTool, AutomationToolKind},
-    dynamic::CreateToolTool,
     image_generation::ImageGenerationTool,
     inspect_file::InspectFileTool,
     messages::{DeleteMessageTool, SendMessageTool},
@@ -36,59 +34,9 @@ use self::{
     todo::TodoTool,
     web::WebFetchTool,
 };
-
-/// How deep tool-calls-tool chains may go (dynamic tools and agents can
-/// call tools, which can call them again).
-const MAX_TOOL_DEPTH: usize = 8;
-
-/// Context every tool receives alongside its arguments. Tools use what they
-/// need and ignore the rest.
-#[derive(Clone, Debug, Default)]
-pub struct ToolContext {
-    /// Channel + address of the event that triggered the current run, if any.
-    pub destination: Option<(String, ChannelAddress)>,
-    /// Conversation the current agent run belongs to.
-    pub conversation_id: Option<String>,
-    /// Tool call-chain depth, incremented by `run_tool`.
-    pub depth: usize,
-    /// Original bus request metadata when a tool may finish asynchronously.
-    pub tool_call: Option<ToolCallContext>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ToolCallContext {
-    pub origin: ToolOrigin,
-    pub tool_call_id: String,
-    pub tool_name: String,
-}
-
-impl ToolContext {
-    fn deeper(&self) -> Self {
-        let mut ctx = self.clone();
-        ctx.depth += 1;
-        ctx
-    }
-}
+use self::dynamic::CreateToolTool;
 
 pub type ToolOutput = serde_json::Value;
-
-pub enum ToolOutcome {
-    Finished(ToolOutput),
-    Deferred,
-}
-
-impl ToolOutcome {
-    pub fn into_output(self) -> ToolOutput {
-        match self {
-            Self::Finished(output) => output,
-            Self::Deferred => serde_json::json!({ "ok": true, "deferred": true }),
-        }
-    }
-
-    pub fn is_deferred(&self) -> bool {
-        matches!(self, Self::Deferred)
-    }
-}
 
 pub struct InternalTools {
     pub raw_inference: RawInferenceTool,
@@ -224,79 +172,7 @@ pub trait InternalTool: Send + Sync {
 
     fn tool_definition(&self) -> ToolDefinition;
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String>;
-}
-
-/// Execute a tool by name, folding errors into the result JSON so every
-/// caller (agent loop, scripts, automations) sees the same shape.
-pub async fn run_tool(
-    tools: &InternalTools,
-    name: &str,
-    args: serde_json::Value,
-    ctx: &ToolContext,
-) -> serde_json::Value {
-    run_registered_tool(&tools.registry, name, args, ctx).await
-}
-
-pub async fn run_registered_tool(
-    registry: &ToolRegistry,
-    name: &str,
-    args: serde_json::Value,
-    ctx: &ToolContext,
-) -> serde_json::Value {
-    run_registered_tool_outcome(registry, name, args, ctx)
-        .await
-        .into_output()
-}
-
-pub async fn run_registered_tool_outcome(
-    registry: &ToolRegistry,
-    name: &str,
-    args: serde_json::Value,
-    ctx: &ToolContext,
-) -> ToolOutcome {
-    let tool = registry
-        .all()
-        .iter()
-        .find(|tool| tool.name() == name)
-        .cloned();
-    let Some(tool) = tool else {
-        return ToolOutcome::Finished(
-            serde_json::json!({ "ok": false, "error": format!("unknown tool: {name}") }),
-        );
-    };
-    run_internal_tool_outcome(tool, args, ctx).await
-}
-
-pub async fn run_internal_tool(
-    tool: Arc<dyn InternalTool>,
-    args: serde_json::Value,
-    ctx: &ToolContext,
-) -> serde_json::Value {
-    run_internal_tool_outcome(tool, args, ctx)
-        .await
-        .into_output()
-}
-
-pub async fn run_internal_tool_outcome(
-    tool: Arc<dyn InternalTool>,
-    args: serde_json::Value,
-    ctx: &ToolContext,
-) -> ToolOutcome {
-    if ctx.depth >= MAX_TOOL_DEPTH {
-        return ToolOutcome::Finished(serde_json::json!({
-            "ok": false,
-            "error": format!("tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"),
-        }));
-    }
-    match tool.execute(args, &ctx.deeper()).await {
-        Ok(result) => result,
-        Err(err) => ToolOutcome::Finished(serde_json::json!({ "ok": false, "error": err })),
-    }
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String>;
 }
 
 pub async fn execute_typed<P, O, F>(
@@ -458,6 +334,7 @@ fn validate_object(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::{Event, ToolOrigin};
 
     struct FakeTool(&'static str);
 
@@ -477,14 +354,9 @@ mod tests {
             }
         }
 
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            ctx: &ToolContext,
-        ) -> Result<ToolOutcome, String> {
-            Ok(ToolOutcome::Finished(
-                serde_json::json!({ "depth": ctx.depth }),
-            ))
+        async fn execute(&self, _args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
+            ctx.respond(serde_json::json!({ "depth": ctx.depth }))?;
+            Ok(())
         }
     }
 
@@ -509,12 +381,9 @@ mod tests {
             }
         }
 
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            _ctx: &ToolContext,
-        ) -> Result<ToolOutcome, String> {
-            Ok(ToolOutcome::Finished(serde_json::json!({})))
+        async fn execute(&self, _args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
+            ctx.respond(serde_json::json!({}))?;
+            Ok(())
         }
     }
 
@@ -607,7 +476,7 @@ mod tests {
         tools.registry.add(Arc::new(FakeTool("fake"))).expect("add");
 
         let deep = ToolContext {
-            depth: MAX_TOOL_DEPTH,
+            depth: runner::MAX_TOOL_DEPTH,
             ..ToolContext::default()
         };
         let result = run_tool(&tools, "fake", serde_json::json!({}), &deep).await;
@@ -621,5 +490,45 @@ mod tests {
         )
         .await;
         assert_eq!(ok["depth"], 1);
+    }
+
+    #[tokio::test]
+    async fn tool_handler_runs_tool_requests() {
+        let bus = Bus::new(16);
+        let registry = Arc::new(ToolRegistry::new());
+        registry.add(Arc::new(FakeTool("fake"))).expect("add");
+        let handler = Arc::new(ToolHandler::new(bus.clone(), registry));
+        let task = handler.start();
+        let mut events = bus.subscribe();
+
+        bus.publish(Event::ToolRequest {
+            origin: ToolOrigin::Automation {
+                automation_id: "automation-1".to_string(),
+            },
+            tool_call_id: "call-1".to_string(),
+            tool_name: "fake".to_string(),
+            args: serde_json::json!({}),
+        });
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Event::ToolResult {
+                    tool_call_id,
+                    tool_name,
+                    result,
+                    ..
+                } = events.recv().await.expect("event")
+                {
+                    break (tool_call_id, tool_name, result);
+                }
+            }
+        })
+        .await
+        .expect("tool result");
+        task.abort();
+
+        assert_eq!(result.0, "call-1");
+        assert_eq!(result.1, "fake");
+        assert_eq!(result.2["depth"], 1);
     }
 }

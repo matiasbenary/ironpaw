@@ -9,7 +9,7 @@ use crate::{
     config::RuntimeLayout,
     message::ToolDefinition,
     secrets::{EncryptedSecretStore, Secrets, generate_phrase, phrase_is_valid, phrase_words},
-    tools::{self, InternalTool, InternalTools, ToolContext, ToolOutcome},
+    tools::{self, InternalTool, InternalTools, ToolContext},
 };
 
 pub const AUTOMATION_NAME: &str = "unlock-secrets";
@@ -88,17 +88,14 @@ impl InternalTool for UnlockSecretsTool {
         )
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String> {
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
         let output = tools::execute_typed(args, |params: UnlockSecretsParams| async {
             self.execute(params, ctx).await?;
             Ok(serde_json::json!({ "ok": true }))
         })
         .await?;
-        Ok(ToolOutcome::Finished(output))
+        ctx.respond(output)?;
+        Ok(())
     }
 }
 

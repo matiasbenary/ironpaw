@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use crate::{
     message::ToolDefinition,
     scripts::ScriptRuntime,
-    tools::{self, InternalTool, ToolContext, ToolOutcome, ToolRegistry},
+    tools::{self, InternalTool, ToolContext, ToolRegistry},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -99,16 +99,13 @@ impl InternalTool for CreateToolTool {
         )
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String> {
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
         let output = tools::execute_typed(args, |params: CreateToolParams| async {
             CreateToolTool::execute(self, params).await
         })
         .await?;
-        Ok(ToolOutcome::Finished(output))
+        ctx.respond(output)?;
+        Ok(())
     }
 }
 
@@ -259,16 +256,13 @@ impl InternalTool for DynamicTool {
         }
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String> {
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
         let result = self
             .scripts
             .run(self.script.clone(), ctx.clone(), args)
             .await?;
-        Ok(ToolOutcome::Finished(result))
+        ctx.respond(result)?;
+        Ok(())
     }
 }
 

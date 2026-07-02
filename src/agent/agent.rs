@@ -387,8 +387,7 @@ async fn execute_prepared_tool_call(
     ctx: &ToolContext,
 ) -> ExecutedToolCall {
     let tool_name = tool_call.name;
-    let outcome = tools::run_registered_tool_outcome(tools, &tool_name, args, ctx).await;
-    let result = outcome.into_output();
+    let result = tools::run_registered_tool(tools, &tool_name, args, ctx).await;
     debug_log(format!("agent: tool {tool_name} finished"));
     ExecutedToolCall {
         message: Message::ToolResult {

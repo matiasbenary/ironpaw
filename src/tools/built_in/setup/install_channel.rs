@@ -13,7 +13,7 @@ use crate::{
     message::ToolDefinition,
     secrets::Secrets,
     tools::{
-        self, InternalTool, InternalTools, ToolCallContext, ToolContext, ToolOutcome,
+        self, InternalTool, InternalTools, ToolContext, ToolResponder,
         setup::{
             SetupServices, delete_current_message,
             install_common::{
@@ -67,7 +67,7 @@ struct InstallSession {
     stage: InstallStage,
     config_values: BTreeMap<String, serde_json::Value>,
     setup_conversation: Option<SetupConversation>,
-    continuation: Option<ToolCallContext>,
+    continuation: Option<ToolResponder>,
 }
 
 #[derive(Clone)]
@@ -254,7 +254,7 @@ impl InstallChannelTool {
             stage: InstallStage::Confirm,
             config_values: BTreeMap::new(),
             setup_conversation: setup_conversation(ctx),
-            continuation: ctx.tool_call.clone(),
+            continuation: ctx.responder.clone(),
         });
         automations.delete(HANDLE_CONVERSATION_AUTOMATION)?;
         automations.add(Self::automation(name))?;
@@ -549,7 +549,6 @@ impl InstallChannelTool {
         )
         .await?;
         publish_tool_result(
-            &self.setup.bus,
             continuation.as_ref(),
             serde_json::json!({ "ok": false, "channel": session.package.name, "rolled_back": true }),
         );
@@ -577,7 +576,6 @@ impl InstallChannelTool {
         )
         .await?;
         publish_tool_result(
-            &self.setup.bus,
             continuation.as_ref(),
             serde_json::json!({ "ok": true, "channel": name, "cancelled": true }),
         );
@@ -605,7 +603,6 @@ impl InstallChannelTool {
         )
         .await?;
         publish_tool_result(
-            &self.setup.bus,
             continuation.as_ref(),
             serde_json::json!({ "ok": true, "channel": name, "installed": true }),
         );
@@ -705,13 +702,10 @@ impl InternalTool for ListChannelsTool {
         )
     }
 
-    async fn execute(
-        &self,
-        _args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String> {
+    async fn execute(&self, _args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
         let output = ListChannelsTool::execute(self).await?;
-        Ok(ToolOutcome::Finished(output))
+        ctx.respond(output)?;
+        Ok(())
     }
 }
 
@@ -729,16 +723,13 @@ impl InternalTool for RemoveChannelTool {
         )
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String> {
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
         let output = tools::execute_typed(args, |params| async {
             RemoveChannelTool::execute(self, params, ctx).await
         })
         .await?;
-        Ok(ToolOutcome::Finished(output))
+        ctx.respond(output)?;
+        Ok(())
     }
 }
 
@@ -758,11 +749,7 @@ impl InternalTool for InstallChannelTool {
         )
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String> {
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
         let params: InstallChannelParams =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         let starts_setup = params.message.is_none() || self.active_session_name().is_none();
@@ -774,9 +761,10 @@ impl InternalTool for InstallChannelTool {
                 .and_then(|value| value.as_bool())
                 != Some(true)
         {
-            return Ok(ToolOutcome::Deferred);
+            return Ok(());
         }
-        Ok(ToolOutcome::Finished(result))
+        ctx.respond(result)?;
+        Ok(())
     }
 }
 

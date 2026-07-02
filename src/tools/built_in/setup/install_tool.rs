@@ -13,7 +13,7 @@ use crate::{
     message::ToolDefinition,
     secrets::Secrets,
     tools::{
-        self, InternalTool, ToolCallContext, ToolContext, ToolOutcome,
+        self, InternalTool, ToolContext, ToolResponder,
         setup::{
             SetupServices, delete_current_message,
             install_common::{
@@ -46,7 +46,7 @@ struct InstallSession {
     package: ToolPackage,
     stage: InstallStage,
     config_values: BTreeMap<String, serde_json::Value>,
-    continuation: Option<ToolCallContext>,
+    continuation: Option<ToolResponder>,
 }
 
 #[derive(Clone)]
@@ -215,7 +215,7 @@ impl InstallToolTool {
             package,
             stage: InstallStage::Confirm,
             config_values: BTreeMap::new(),
-            continuation: ctx.tool_call.clone(),
+            continuation: ctx.responder.clone(),
         });
         self.setup
             .automations
@@ -369,7 +369,6 @@ impl InstallToolTool {
         )
         .await?;
         publish_tool_result(
-            &self.setup.bus,
             continuation.as_ref(),
             serde_json::json!({ "ok": true, "tool": name, "cancelled": true }),
         );
@@ -399,7 +398,6 @@ impl InstallToolTool {
         )
         .await?;
         publish_tool_result(
-            &self.setup.bus,
             continuation.as_ref(),
             serde_json::json!({ "ok": true, "tool": name, "installed": true }),
         );
@@ -422,13 +420,10 @@ impl InternalTool for ListToolsTool {
         )
     }
 
-    async fn execute(
-        &self,
-        _args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String> {
+    async fn execute(&self, _args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
         let output = ListToolsTool::execute(self).await?;
-        Ok(ToolOutcome::Finished(output))
+        ctx.respond(output)?;
+        Ok(())
     }
 }
 
@@ -448,19 +443,16 @@ impl InternalTool for InstallToolTool {
         )
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ToolOutcome, String> {
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
         let params: InstallToolParams =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         let starts_setup = params.message.is_none();
         let result = InstallToolTool::execute(self, params, ctx).await?;
         if starts_setup && result.get("ok").and_then(|ok| ok.as_bool()) == Some(true) {
-            return Ok(ToolOutcome::Deferred);
+            return Ok(());
         }
-        Ok(ToolOutcome::Finished(result))
+        ctx.respond(result)?;
+        Ok(())
     }
 }
 

@@ -111,32 +111,6 @@ fn sender_name(sender: &Sender) -> &'static str {
     }
 }
 
-fn tool_context_for_request(
-    origin: &ToolOrigin,
-    tool_call_id: &str,
-    tool_name: &str,
-) -> ToolContext {
-    let (destination, conversation_id) = match origin {
-        ToolOrigin::Conversation {
-            channel, address, ..
-        } => (
-            Some((channel.clone(), address.clone())),
-            Some(address.conversation_id.clone()),
-        ),
-        ToolOrigin::Automation { .. } => (None, None),
-    };
-    ToolContext {
-        destination,
-        conversation_id,
-        tool_call: Some(crate::tools::ToolCallContext {
-            origin: origin.clone(),
-            tool_call_id: tool_call_id.to_string(),
-            tool_name: tool_name.to_string(),
-        }),
-        ..ToolContext::default()
-    }
-}
-
 /// An automation is a trigger plus an effect. Effect fields may contain
 /// `{{event.field}}` placeholders, filled from the triggering event.
 #[derive(Clone)]
@@ -389,17 +363,6 @@ impl Automations {
             return;
         }
 
-        if let Event::ToolRequest {
-            origin,
-            tool_call_id,
-            tool_name,
-            args,
-        } = event
-        {
-            self.spawn_tool_request(origin, tool_call_id, tool_name, args);
-            return;
-        }
-
         self.persist_tool_result(event);
 
         let matching: Vec<_> = self
@@ -413,36 +376,6 @@ impl Automations {
         for automation in matching {
             self.execute(&automation, AutomationEvent::Bus(event)).await;
         }
-    }
-
-    fn spawn_tool_request(
-        &self,
-        origin: &ToolOrigin,
-        tool_call_id: &str,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) {
-        let bus = self.bus.clone();
-        let tools = Arc::clone(&self.tools);
-        let ctx = tool_context_for_request(origin, tool_call_id, tool_name);
-        let origin = origin.clone();
-        let tool_call_id = tool_call_id.to_string();
-        let tool_name = tool_name.to_string();
-        let args = args.clone();
-        tokio::spawn(async move {
-            let outcome =
-                crate::tools::run_registered_tool_outcome(&tools.registry, &tool_name, args, &ctx)
-                    .await;
-            if outcome.is_deferred() {
-                return;
-            }
-            bus.publish(Event::ToolResult {
-                origin,
-                tool_call_id,
-                tool_name,
-                result: outcome.into_output(),
-            });
-        });
     }
 
     fn persist_tool_result(&self, event: &Event) {
