@@ -7,7 +7,8 @@ use async_trait::async_trait;
 
 use crate::{
     models,
-    tools::{self, InternalTool, ToolOutput},
+    secrets::ToolSecrets,
+    tools::{self, InternalTool, ToolOutcome},
 };
 
 pub struct ImageGenerationTool {
@@ -15,10 +16,11 @@ pub struct ImageGenerationTool {
     base_url: String,
     model: String,
     files_dir: PathBuf,
+    secrets: ToolSecrets,
 }
 
 impl ImageGenerationTool {
-    pub fn new(files_dir: PathBuf) -> Self {
+    pub fn new(files_dir: PathBuf, secrets: ToolSecrets) -> Self {
         Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(120))
@@ -28,12 +30,15 @@ impl ImageGenerationTool {
                 .unwrap_or_else(|_| "https://cloud-api.near.ai".to_string()),
             model: models::image_model(),
             files_dir,
+            secrets,
         }
     }
 
     async fn generate(&self, prompt: &str) -> Result<String, String> {
-        let near_api_key =
-            std::env::var("NEAR_API_KEY").map_err(|_| "missing tool secret: NEAR_API_KEY")?;
+        let near_api_key = self
+            .secrets
+            .get("NEAR_API_KEY")
+            .ok_or_else(|| "missing tool secret: NEAR_API_KEY".to_string())?;
         let url = format!(
             "{}/v1/images/generations",
             self.base_url.trim_end_matches('/')
@@ -91,7 +96,7 @@ impl InternalTool for ImageGenerationTool {
         &self,
         args: serde_json::Value,
         _ctx: &crate::tools::ToolContext,
-    ) -> Result<ToolOutput, String> {
+    ) -> Result<ToolOutcome, String> {
         let params: ImageGenerationParams =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         let data_base64 = self.generate(&params.prompt).await?;
@@ -103,10 +108,10 @@ impl InternalTool for ImageGenerationTool {
         let path = self.files_dir.join(format!("{file_id}.png"));
         let bytes = base64_decode(&data_base64)?;
         std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-        Ok(serde_json::json!({
+        Ok(ToolOutcome::Finished(serde_json::json!({
             "status": "ok",
             "file_id": file_id,
-        }))
+        })))
     }
 }
 

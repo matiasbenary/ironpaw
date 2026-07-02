@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::tools::{self, InternalTool, ToolContext, ToolOutput};
+use crate::tools::{self, InternalTool, ToolContext, ToolOutcome};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -68,7 +68,7 @@ impl InternalTool for TodoTool {
         &self,
         args: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<ToolOutput, String> {
+    ) -> Result<ToolOutcome, String> {
         let input: TodoInput = serde_json::from_value(args).map_err(|e| e.to_string())?;
         let key = ctx
             .conversation_id
@@ -113,12 +113,12 @@ impl InternalTool for TodoTool {
             lines.push("All tasks completed.".to_string());
         }
 
-        Ok(serde_json::json!({
+        Ok(ToolOutcome::Finished(serde_json::json!({
             "ok": true,
             "old_todos": old_todos,
             "new_todos": input.todos,
             "result": lines.join("\n")
-        }))
+        })))
     }
 }
 
@@ -144,7 +144,8 @@ mod tests {
                 &ctx,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .into_output();
         assert_eq!(first["old_todos"], serde_json::json!([]));
 
         let second = tool
@@ -153,7 +154,8 @@ mod tests {
                 &ctx,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .into_output();
         assert_eq!(
             second["old_todos"],
             serde_json::json!([{ "description": "Plan", "status": "in_progress" }])
@@ -186,7 +188,8 @@ mod tests {
                 &ctx,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .into_output();
 
         assert_eq!(next["old_todos"], serde_json::json!([]));
     }

@@ -12,16 +12,25 @@ pub mod wasm;
 pub use bridge::DEFAULT_ADDR;
 
 pub struct ChannelRuntime {
-    pub statuses: Vec<String>,
+    pub statuses: Mutex<Vec<String>>,
     layout: RuntimeLayout,
     addr: String,
     secrets: ChannelSecrets,
     registry: Arc<bridge::ChannelRegistry>,
     ngrok: Arc<Mutex<Option<ngrok::ActiveNgrok>>>,
-    _bridge_task: JoinHandle<()>,
+    bridge_task: JoinHandle<()>,
 }
 
 impl ChannelRuntime {
+    pub async fn shutdown(self) {
+        self.bridge_task.abort();
+        let _ = self.bridge_task.await;
+    }
+
+    pub async fn statuses(&self) -> Vec<String> {
+        self.statuses.lock().await.clone()
+    }
+
     pub async fn activate_installed_channel(
         &self,
         name: &str,
@@ -48,6 +57,60 @@ impl ChannelRuntime {
         Ok(())
     }
 
+    pub async fn remove_channel(&self, name: &str) -> bool {
+        self.registry.remove_by_name(name).await
+    }
+
+    pub async fn load_installed_channels(&self) -> Result<(), String> {
+        self.load_installed_channels_matching(None).await
+    }
+
+    pub async fn load_only_channels(&self, names: &[String]) -> Result<(), String> {
+        self.load_installed_channels_matching(Some(names)).await
+    }
+
+    async fn load_installed_channels_matching(
+        &self,
+        only_names: Option<&[String]>,
+    ) -> Result<(), String> {
+        let manifests = config::discover(&self.layout)
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .filter(|manifest| {
+                only_names.is_none_or(|names| names.iter().any(|name| name == &manifest.name))
+            })
+            .collect::<Vec<_>>();
+        let public_url = self
+            .public_url_for_manifests(&manifests)
+            .await
+            .map_err(|err| err.to_string())?;
+        let manifests = manifests
+            .into_iter()
+            .map(|manifest| config::inject_public_url(manifest, public_url.as_deref()))
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(|err| err.to_string())?;
+        let mut statuses = Vec::new();
+        for manifest in manifests {
+            statuses.push(format!(
+                "{} -> {} ({})",
+                manifest.config.path,
+                manifest.wasm_path.display(),
+                manifest.config_path.display()
+            ));
+            let channel = bridge::load_channel(manifest, self.secrets.clone())?;
+            let config_json = channel.state.lock().await.config_json.clone();
+            if let Err(err) = channel.wasm.lock().await.on_start(&config_json) {
+                eprintln!("{} channel start failed: {err}", channel.name);
+            }
+            self.registry.add(channel).await;
+        }
+        if let Some(public_url) = public_url {
+            statuses.push(format!("ngrok -> {public_url}"));
+        }
+        *self.statuses.lock().await = statuses;
+        Ok(())
+    }
+
     async fn public_url_for_activation(&self, external: bool) -> Result<Option<String>, String> {
         if !external {
             return Ok(None);
@@ -67,9 +130,44 @@ impl ChannelRuntime {
         *self.ngrok.lock().await = Some(active_ngrok);
         Ok(Some(public_url))
     }
+
+    async fn public_url_for_manifests(
+        &self,
+        manifests: &[config::ChannelManifest],
+    ) -> io::Result<Option<String>> {
+        if !manifests.iter().any(|manifest| {
+            manifest
+                .config
+                .http_credentials
+                .iter()
+                .any(|credential| credential.host == "api.telegram.org")
+        }) {
+            return Ok(None);
+        }
+        ngrok::start_if_configured(self.layout.root(), &self.secrets, &self.addr)
+            .await
+            .map_err(io::Error::other)
+            .map(|active| active.map(|active_ngrok| active_ngrok.public_url))
+    }
 }
 
 pub async fn start(
+    bus: Bus,
+    history: Arc<dyn History>,
+    layout: &RuntimeLayout,
+    secrets: ChannelSecrets,
+    addr: &str,
+    token: String,
+) -> io::Result<ChannelRuntime> {
+    let runtime = start_bridge(bus, history, layout, secrets, addr, token).await?;
+    runtime
+        .load_installed_channels()
+        .await
+        .map_err(io::Error::other)?;
+    Ok(runtime)
+}
+
+pub async fn start_bridge(
     bus: Bus,
     history: Arc<dyn History>,
     layout: &RuntimeLayout,
@@ -83,42 +181,7 @@ pub async fn start(
             format!("failed to bind channel bridge at {addr}: {err}"),
         )
     })?;
-    let active_ngrok = ngrok::start_if_configured(layout.root(), &secrets, addr)
-        .await
-        .map_err(io::Error::other)?;
-    let public_url = active_ngrok
-        .as_ref()
-        .map(|active_ngrok| active_ngrok.public_url.as_str());
-    let manifests = config::discover(layout)?
-        .into_iter()
-        .map(|manifest| config::inject_public_url(manifest, public_url))
-        .collect::<io::Result<Vec<_>>>()?;
-    let mut statuses = manifests
-        .iter()
-        .map(|manifest| {
-            format!(
-                "{} -> {} ({})",
-                manifest.config.path,
-                manifest.wasm_path.display(),
-                manifest.config_path.display()
-            )
-        })
-        .collect::<Vec<_>>();
-    if let Some(public_url) = public_url {
-        statuses.push(format!("ngrok -> {public_url}"));
-    }
-    let channels = manifests
-        .into_iter()
-        .map(|manifest| bridge::load_channel(manifest, secrets.clone()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(io::Error::other)?;
-    for channel in &channels {
-        let config_json = channel.state.lock().await.config_json.clone();
-        if let Err(err) = channel.wasm.lock().await.on_start(&config_json) {
-            eprintln!("{} channel start failed: {err}", channel.name);
-        }
-    }
-    let registry = Arc::new(bridge::ChannelRegistry::new(channels).await);
+    let registry = Arc::new(bridge::ChannelRegistry::new(Vec::new()).await);
     let bridge_addr = addr.to_string();
     let runtime_addr = bridge_addr.clone();
     let bridge_secrets = secrets.clone();
@@ -142,12 +205,12 @@ pub async fn start(
     });
 
     Ok(ChannelRuntime {
-        statuses,
+        statuses: Mutex::new(Vec::new()),
         layout: layout.clone(),
         addr: runtime_addr,
         secrets: secrets.clone(),
         registry,
-        ngrok: Arc::new(Mutex::new(active_ngrok)),
-        _bridge_task: bridge_task,
+        ngrok: Arc::new(Mutex::new(None)),
+        bridge_task,
     })
 }

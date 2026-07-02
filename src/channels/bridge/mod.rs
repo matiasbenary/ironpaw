@@ -66,6 +66,13 @@ impl ChannelRegistry {
         channels.push(channel);
     }
 
+    pub async fn remove_by_name(&self, name: &str) -> bool {
+        let mut channels = self.channels.write().await;
+        let before = channels.len();
+        channels.retain(|channel| channel.name != name);
+        channels.len() != before
+    }
+
     pub(super) async fn by_path(&self, path: &str) -> Option<LoadedChannel> {
         self.channels
             .read()

@@ -9,7 +9,8 @@ use crate::{
     http::HttpError,
     message::{Attachment, Message, ToolCall, ToolDefinition},
     models,
-    tools::{self, InternalTool},
+    secrets::ToolSecrets,
+    tools::{self, InternalTool, ToolOutcome},
 };
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -75,10 +76,11 @@ impl JsonSchema for RawInferenceRequest {
 pub struct RawInferenceTool {
     client: Client,
     base_url: String,
+    secrets: ToolSecrets,
 }
 
 impl RawInferenceTool {
-    pub fn new() -> Result<Self, HttpError> {
+    pub fn new(secrets: ToolSecrets) -> Result<Self, HttpError> {
         let client = Client::builder()
             .timeout(Duration::from_secs(env_timeout_secs(
                 "NEAR_CHAT_TIMEOUT_SECS",
@@ -91,6 +93,7 @@ impl RawInferenceTool {
             client,
             base_url: std::env::var("NEAR_BASE_URL")
                 .unwrap_or_else(|_| "https://cloud-api.near.ai".to_string()),
+            secrets,
         })
     }
 
@@ -105,8 +108,10 @@ impl RawInferenceTool {
         &self,
         request: RawInferenceRequest,
     ) -> Result<RawInferenceOutput, String> {
-        let near_api_key =
-            std::env::var("NEAR_API_KEY").map_err(|_| "missing tool secret: NEAR_API_KEY")?;
+        let near_api_key = self
+            .secrets
+            .get("NEAR_API_KEY")
+            .ok_or_else(|| "missing tool secret: NEAR_API_KEY".to_string())?;
         log_entry("request", &request);
         let chat_request = self.chat_request(&request)?;
         log_entry("chat request", &chat_request);
@@ -364,11 +369,12 @@ impl InternalTool for RawInferenceTool {
         &self,
         args: serde_json::Value,
         _ctx: &tools::ToolContext,
-    ) -> Result<tools::ToolOutput, String> {
-        tools::execute_typed(args, |request: RawInferenceRequest| async {
+    ) -> Result<ToolOutcome, String> {
+        let output = tools::execute_typed(args, |request: RawInferenceRequest| async {
             RawInferenceTool::execute(self, request).await
         })
-        .await
+        .await?;
+        Ok(ToolOutcome::Finished(output))
     }
 }
 

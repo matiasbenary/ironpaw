@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::{
     bus::{Bus, ChannelAddress, Event, Sender},
     message::{Attachment, Message},
-    tools::{self, InternalTool, ToolContext},
+    tools::{self, InternalTool, ToolContext, ToolOutcome},
 };
 
 type AttachmentResolver = Arc<dyn Fn(u32) -> Result<Attachment, String> + Send + Sync>;
@@ -74,11 +74,12 @@ impl InternalTool for SendMessageTool {
         &self,
         args: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<tools::ToolOutput, String> {
+    ) -> Result<ToolOutcome, String> {
         let mut input: SendMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_destination(ctx);
-        SendMessageTool::execute(self, input).await
+        let output = SendMessageTool::execute(self, input).await?;
+        Ok(ToolOutcome::Finished(output))
     }
 }
 
@@ -202,11 +203,12 @@ impl InternalTool for DeleteMessageTool {
         &self,
         args: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<tools::ToolOutput, String> {
+    ) -> Result<ToolOutcome, String> {
         let mut input: DeleteMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_message(ctx);
-        DeleteMessageTool::execute(self, input).await
+        let output = DeleteMessageTool::execute(self, input).await?;
+        Ok(ToolOutcome::Finished(output))
     }
 }
 

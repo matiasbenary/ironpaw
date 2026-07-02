@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use crate::{
     message::ToolDefinition,
     scripts::ScriptRuntime,
-    tools::{self, InternalTool, ToolContext, ToolOutput, ToolRegistry},
+    tools::{self, InternalTool, ToolContext, ToolOutcome, ToolRegistry},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -103,11 +103,12 @@ impl InternalTool for CreateToolTool {
         &self,
         args: serde_json::Value,
         _ctx: &ToolContext,
-    ) -> Result<ToolOutput, String> {
-        tools::execute_typed(args, |params: CreateToolParams| async {
+    ) -> Result<ToolOutcome, String> {
+        let output = tools::execute_typed(args, |params: CreateToolParams| async {
             CreateToolTool::execute(self, params).await
         })
-        .await
+        .await?;
+        Ok(ToolOutcome::Finished(output))
     }
 }
 
@@ -262,12 +263,12 @@ impl InternalTool for DynamicTool {
         &self,
         args: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<ToolOutput, String> {
+    ) -> Result<ToolOutcome, String> {
         let result = self
             .scripts
             .run(self.script.clone(), ctx.clone(), args)
             .await?;
-        Ok(result)
+        Ok(ToolOutcome::Finished(result))
     }
 }
 
@@ -292,14 +293,16 @@ mod tests {
             "warden-create-tool-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
+        let secrets = crate::secrets::Secrets::for_tests();
         let tools = Arc::new(InternalTools::new(
             bus.clone(),
             layout.clone(),
-            RawInferenceTool::new().unwrap(),
+            RawInferenceTool::new(secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             crate::tools::messages::DeleteMessageTool::new(bus),
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
+            secrets,
         ));
         let scripts = Arc::clone(&tools.scripts);
         let tools_dir = layout.tools_dir();

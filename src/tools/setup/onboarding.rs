@@ -1,7 +1,4 @@
-use std::{
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
@@ -10,12 +7,8 @@ use crate::{
     bus::Sender,
     message::ToolDefinition,
     tools::{
-        self, InternalTool, ToolContext, ToolOutput,
-        setup::{
-            SetupServices, delete_current_message,
-            install_common::{reload_env, write_env_secret},
-            send,
-        },
+        self, InternalTool, ToolContext, ToolOutcome,
+        setup::{SetupServices, delete_current_message, send},
     },
 };
 
@@ -85,8 +78,7 @@ impl OnboardingTool {
                     ctx,
                 )
                 .await?;
-                write_env_secret(&self.setup.env_path, "NEAR_API_KEY", &key)?;
-                reload_env(&self.setup.env_path)?;
+                self.setup.secrets.set("NEAR_API_KEY", &key)?;
                 delete_current_message(&self.setup.tools, ctx, "onboarding").await;
                 send(
                     &self.setup.tools,
@@ -95,8 +87,7 @@ impl OnboardingTool {
                 )
                 .await?;
                 if let Err(err) = self.test_near(ctx).await {
-                    remove_env_secret(&self.setup.env_path, "NEAR_API_KEY")?;
-                    reload_env(&self.setup.env_path)?;
+                    self.setup.secrets.remove("NEAR_API_KEY")?;
                     *self.stage.lock().expect("onboarding stage lock") = Stage::NeedNear;
                     send(
                         &self.setup.tools,
@@ -166,18 +157,6 @@ fn clean_key(message: &str) -> Result<String, String> {
     Ok(key.to_string())
 }
 
-fn remove_env_secret(path: &Path, name: &str) -> Result<(), String> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let mut output = String::new();
-    for line in existing.lines() {
-        if !line.trim_start().starts_with(&format!("{name}=")) {
-            output.push_str(line);
-            output.push('\n');
-        }
-    }
-    std::fs::write(path, output).map_err(|err| err.to_string())
-}
-
 #[async_trait]
 impl InternalTool for OnboardingTool {
     fn name(&self) -> &str {
@@ -188,7 +167,7 @@ impl InternalTool for OnboardingTool {
         tools::tool_definition::<OnboardingParams>(
             self.name(),
             "First-run Warden setup. Greets the user, collects NEAR_API_KEY, \
-             writes it to .env, tests raw_inference, then enables the normal \
+             stores it encrypted, tests raw_inference, then enables the normal \
              handle-conversation automation.",
         )
     }
@@ -197,53 +176,11 @@ impl InternalTool for OnboardingTool {
         &self,
         args: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<ToolOutput, String> {
-        tools::execute_typed(args, |params: OnboardingParams| async {
+    ) -> Result<ToolOutcome, String> {
+        let output = tools::execute_typed(args, |params: OnboardingParams| async {
             OnboardingTool::execute(self, params, ctx).await
         })
-        .await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn write_env_secret_appends_and_replaces_values() {
-        let path = std::env::temp_dir().join(format!(
-            "warden-onboarding-env-test-{}.env",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::write(&path, "EXISTING=1\nNEAR_API_KEY=\"old\"\n").unwrap();
-
-        write_env_secret(&path, "NEAR_API_KEY", "near-new").unwrap();
-        write_env_secret(&path, "EXTRA_API_KEY", "extra-new").unwrap();
-
-        let contents = std::fs::read_to_string(path).unwrap();
-        assert!(contents.contains("EXISTING=1\n"));
-        assert!(contents.contains("NEAR_API_KEY=\"near-new\"\n"));
-        assert!(contents.contains("EXTRA_API_KEY=\"extra-new\"\n"));
-        assert!(!contents.contains("NEAR_API_KEY=\"old\""));
-    }
-
-    #[test]
-    fn remove_env_secret_removes_only_named_value() {
-        let path = std::env::temp_dir().join(format!(
-            "warden-onboarding-env-test-{}.env",
-            uuid::Uuid::new_v4()
-        ));
-        std::fs::write(
-            &path,
-            "EXISTING=1\nNEAR_API_KEY=\"bad\"\nEXTRA_API_KEY=\"ok\"\n",
-        )
-        .unwrap();
-
-        remove_env_secret(&path, "NEAR_API_KEY").unwrap();
-
-        let contents = std::fs::read_to_string(path).unwrap();
-        assert!(contents.contains("EXISTING=1\n"));
-        assert!(contents.contains("EXTRA_API_KEY=\"ok\"\n"));
-        assert!(!contents.contains("NEAR_API_KEY="));
+        .await?;
+        Ok(ToolOutcome::Finished(output))
     }
 }

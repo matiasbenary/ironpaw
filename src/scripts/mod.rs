@@ -154,14 +154,16 @@ mod tests {
             "warden-script-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
+        let secrets = crate::secrets::Secrets::for_tests();
         Arc::new(InternalTools::new(
             bus.clone(),
             layout,
-            RawInferenceTool::new().unwrap(),
+            RawInferenceTool::new(secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             crate::tools::messages::DeleteMessageTool::new(bus.clone()),
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
+            secrets,
         ))
     }
 

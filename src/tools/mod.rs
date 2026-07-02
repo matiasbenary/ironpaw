@@ -7,6 +7,7 @@ pub mod raw_inference;
 pub mod search_history;
 pub mod setup;
 pub mod todo;
+pub mod unlock;
 pub mod wasm;
 pub mod web;
 
@@ -15,11 +16,12 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 
 use crate::{
-    bus::{Bus, ChannelAddress},
+    bus::{Bus, ChannelAddress, ToolOrigin},
     config::RuntimeLayout,
     history::History,
     message::ToolDefinition,
     scripts::ScriptRuntime,
+    secrets::Secrets,
 };
 
 use self::{
@@ -49,6 +51,15 @@ pub struct ToolContext {
     pub conversation_id: Option<String>,
     /// Tool call-chain depth, incremented by `run_tool`.
     pub depth: usize,
+    /// Original bus request metadata when a tool may finish asynchronously.
+    pub tool_call: Option<ToolCallContext>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ToolCallContext {
+    pub origin: ToolOrigin,
+    pub tool_call_id: String,
+    pub tool_name: String,
 }
 
 impl ToolContext {
@@ -60,6 +71,24 @@ impl ToolContext {
 }
 
 pub type ToolOutput = serde_json::Value;
+
+pub enum ToolOutcome {
+    Finished(ToolOutput),
+    Deferred,
+}
+
+impl ToolOutcome {
+    pub fn into_output(self) -> ToolOutput {
+        match self {
+            Self::Finished(output) => output,
+            Self::Deferred => serde_json::json!({ "ok": true, "deferred": true }),
+        }
+    }
+
+    pub fn is_deferred(&self) -> bool {
+        matches!(self, Self::Deferred)
+    }
+}
 
 pub struct InternalTools {
     pub raw_inference: RawInferenceTool,
@@ -141,6 +170,7 @@ impl InternalTools {
         delete_message: DeleteMessageTool,
         files_dir: std::path::PathBuf,
         history: Arc<dyn History>,
+        secrets: Secrets,
     ) -> Self {
         let send_message = Arc::new(send_message);
         let delete_message = Arc::new(delete_message);
@@ -158,7 +188,10 @@ impl InternalTools {
             tool(raw_inference.clone()),
             Arc::clone(&send_message) as Arc<dyn InternalTool>,
             Arc::clone(&delete_message) as Arc<dyn InternalTool>,
-            tool(ImageGenerationTool::new(files_dir.clone())),
+            tool(ImageGenerationTool::new(
+                files_dir.clone(),
+                secrets.tools.clone(),
+            )),
             tool(InspectFileTool::new(files_dir, raw_inference.clone())),
             tool(TodoTool::new()),
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::Create)),
@@ -168,7 +201,7 @@ impl InternalTools {
                 AutomationToolKind::Inspect,
             )),
             tool(AutomationTool::new(bus, AutomationToolKind::List)),
-            tool(ListChannelsTool::new(layout.clone())),
+            tool(ListChannelsTool::new(layout.clone(), secrets.clone())),
             Arc::clone(&create_tool) as Arc<dyn InternalTool>,
             tool(SearchHistoryTool::new(Arc::clone(&history))),
             tool(WebFetchTool::new()),
@@ -195,7 +228,7 @@ pub trait InternalTool: Send + Sync {
         &self,
         args: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Result<ToolOutput, String>;
+    ) -> Result<ToolOutcome, String>;
 }
 
 /// Execute a tool by name, folding errors into the result JSON so every
@@ -215,15 +248,28 @@ pub async fn run_registered_tool(
     args: serde_json::Value,
     ctx: &ToolContext,
 ) -> serde_json::Value {
+    run_registered_tool_outcome(registry, name, args, ctx)
+        .await
+        .into_output()
+}
+
+pub async fn run_registered_tool_outcome(
+    registry: &ToolRegistry,
+    name: &str,
+    args: serde_json::Value,
+    ctx: &ToolContext,
+) -> ToolOutcome {
     let tool = registry
         .all()
         .iter()
         .find(|tool| tool.name() == name)
         .cloned();
     let Some(tool) = tool else {
-        return serde_json::json!({ "ok": false, "error": format!("unknown tool: {name}") });
+        return ToolOutcome::Finished(
+            serde_json::json!({ "ok": false, "error": format!("unknown tool: {name}") }),
+        );
     };
-    run_internal_tool(tool, args, ctx).await
+    run_internal_tool_outcome(tool, args, ctx).await
 }
 
 pub async fn run_internal_tool(
@@ -231,15 +277,25 @@ pub async fn run_internal_tool(
     args: serde_json::Value,
     ctx: &ToolContext,
 ) -> serde_json::Value {
+    run_internal_tool_outcome(tool, args, ctx)
+        .await
+        .into_output()
+}
+
+pub async fn run_internal_tool_outcome(
+    tool: Arc<dyn InternalTool>,
+    args: serde_json::Value,
+    ctx: &ToolContext,
+) -> ToolOutcome {
     if ctx.depth >= MAX_TOOL_DEPTH {
-        return serde_json::json!({
+        return ToolOutcome::Finished(serde_json::json!({
             "ok": false,
             "error": format!("tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"),
-        });
+        }));
     }
     match tool.execute(args, &ctx.deeper()).await {
         Ok(result) => result,
-        Err(err) => serde_json::json!({ "ok": false, "error": err }),
+        Err(err) => ToolOutcome::Finished(serde_json::json!({ "ok": false, "error": err })),
     }
 }
 
@@ -425,8 +481,10 @@ mod tests {
             &self,
             _args: serde_json::Value,
             ctx: &ToolContext,
-        ) -> Result<ToolOutput, String> {
-            Ok(serde_json::json!({ "depth": ctx.depth }))
+        ) -> Result<ToolOutcome, String> {
+            Ok(ToolOutcome::Finished(
+                serde_json::json!({ "depth": ctx.depth }),
+            ))
         }
     }
 
@@ -455,8 +513,8 @@ mod tests {
             &self,
             _args: serde_json::Value,
             _ctx: &ToolContext,
-        ) -> Result<ToolOutput, String> {
-            Ok(serde_json::json!({}))
+        ) -> Result<ToolOutcome, String> {
+            Ok(ToolOutcome::Finished(serde_json::json!({})))
         }
     }
 
@@ -472,14 +530,16 @@ mod tests {
             "warden-tools-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
+        let secrets = crate::secrets::Secrets::for_tests();
         InternalTools::new(
             bus.clone(),
             layout,
-            RawInferenceTool::new().unwrap(),
+            RawInferenceTool::new(secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             DeleteMessageTool::new(bus),
             files_dir,
             Arc::new(crate::history::SqliteHistory::new(history).unwrap()),
+            secrets,
         )
     }
 

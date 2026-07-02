@@ -6,7 +6,7 @@ use crate::{
     message::{Attachment, Message},
     models,
     tools::{
-        self, InternalTool, ToolOutput,
+        self, InternalTool, ToolOutcome, ToolOutput,
         raw_inference::{RawInferenceRequest, RawInferenceTool},
     },
 };
@@ -53,7 +53,7 @@ impl InternalTool for InspectFileTool {
         &self,
         args: serde_json::Value,
         _ctx: &crate::tools::ToolContext,
-    ) -> Result<ToolOutput, String> {
+    ) -> Result<ToolOutcome, String> {
         let params: InspectFileParams = serde_json::from_value(args).map_err(|e| e.to_string())?;
 
         let attachment = Attachment::from_file_id(&self.files_dir, params.file_id)?;
@@ -71,7 +71,11 @@ impl InternalTool for InspectFileTool {
 
         if attachment.mime_type.starts_with("image/") {
             let answer = self.inspect_image(attachment, query).await?;
-            return Ok(inspection_output(params.file_id, query, answer));
+            return Ok(ToolOutcome::Finished(inspection_output(
+                params.file_id,
+                query,
+                answer,
+            )));
         }
 
         let text = if ext == "pdf" {
@@ -87,7 +91,11 @@ impl InternalTool for InspectFileTool {
         };
 
         let answer = self.inspect_text(&text, query).await?;
-        Ok(inspection_output(params.file_id, query, answer))
+        Ok(ToolOutcome::Finished(inspection_output(
+            params.file_id,
+            query,
+            answer,
+        )))
     }
 }
 

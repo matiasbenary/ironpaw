@@ -1,39 +1,61 @@
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
 use warden::{
     agent::Agent,
     automations::{Automations, SqliteAutomations},
-    bus::Bus,
+    bus::{Bus, Event},
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
     history::{History, SqliteHistory},
     message::Attachment,
-    secrets::Secrets,
     tools::{
-        InternalTools,
+        InternalTool, InternalTools,
         dynamic::DynamicTool,
         messages::{DeleteMessageTool, SendMessageTool},
         raw_inference::RawInferenceTool,
         setup::{
-            InstallChannelTool, InstallToolTool, ListToolsTool, OnboardingTool, SetupServices,
+            InstallChannelTool, InstallToolTool, ListToolsTool, OnboardingTool, RemoveChannelTool,
+            SetupServices,
         },
+        unlock::{AUTOMATION_NAME as UNLOCK_AUTOMATION, UnlockSecretsTool},
         wasm::WasmTool,
     },
 };
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> io::Result<()> {
     let layout = RuntimeLayout::discover();
-    let secrets = Secrets::load(&layout);
-
+    let _ = dotenvy::from_path(layout.root().join(".env"));
+    let token = uuid::Uuid::new_v4().to_string();
+    let addr = std::env::var("WARDEN_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
     let bus = Bus::new(16);
+    let secrets = warden::secrets::Secrets::locked();
     let history: Arc<dyn History> = Arc::new(
         SqliteHistory::new(layout.data_dir().join("history.db")).map_err(std::io::Error::other)?,
     );
+    let channel_runtime = Arc::new(
+        channels::start_bridge(
+            bus.clone(),
+            Arc::clone(&history),
+            &layout,
+            secrets.channels.clone(),
+            &addr,
+            token.clone(),
+        )
+        .await
+        .map_err(std::io::Error::other)?,
+    );
+    channel_runtime
+        .load_only_channels(&["tui".to_string()])
+        .await
+        .map_err(std::io::Error::other)?;
+
+    let raw_inference =
+        RawInferenceTool::new(secrets.tools.clone()).map_err(std::io::Error::other)?;
     let tools = Arc::new(InternalTools::new(
         bus.clone(),
         layout.clone(),
-        RawInferenceTool::new().map_err(std::io::Error::other)?,
+        raw_inference,
         SendMessageTool::new(bus.clone(), {
             let files_dir = layout.files_dir();
             move |file_id| Attachment::from_file_id(&files_dir, file_id)
@@ -41,6 +63,7 @@ async fn main() -> std::io::Result<()> {
         DeleteMessageTool::new(bus.clone()),
         layout.files_dir(),
         Arc::clone(&history),
+        secrets.clone(),
     ));
     let agent = Arc::new(Agent::new(
         bus.clone(),
@@ -48,6 +71,38 @@ async fn main() -> std::io::Result<()> {
         Arc::clone(&history),
         tools.raw_inference.clone(),
     ));
+    let automation_store = Arc::new(
+        SqliteAutomations::new(layout.data_dir().join("automations.db"))
+            .map_err(std::io::Error::other)?,
+    );
+    let automations = Arc::new(Automations::new(
+        bus.clone(),
+        Arc::clone(&tools),
+        Arc::clone(&agent),
+        automation_store,
+    ));
+    let boot_events = bus.subscribe();
+    tools
+        .registry
+        .add(Arc::new(UnlockSecretsTool::new(
+            bus.clone(),
+            layout.clone(),
+            secrets.clone(),
+            Arc::clone(&tools),
+        )) as Arc<dyn InternalTool>)
+        .map_err(std::io::Error::other)?;
+    automations
+        .add_transient(UnlockSecretsTool::automation())
+        .map_err(std::io::Error::other)?;
+    let automations_task = automations.start();
+
+    println!("unlock bridge token: {token}");
+    println!("runtime root: {}", layout.root().display());
+    println!("Use `warden-tui {token}` to unlock Warden.");
+
+    wait_for_unlocked_store(boot_events).await?;
+    automations.remove_transient(UNLOCK_AUTOMATION);
+
     let scripts = Arc::clone(&tools.scripts);
     for tool in DynamicTool::discover(&layout.tools_dir(), Arc::clone(&scripts))
         .map_err(std::io::Error::other)?
@@ -59,32 +114,21 @@ async fn main() -> std::io::Result<()> {
     }
     for manifest in warden::tools::wasm::discover(&layout).map_err(std::io::Error::other)? {
         let name = manifest.name.clone();
-        let tool = WasmTool::from_manifest(manifest).map_err(std::io::Error::other)?;
+        let tool = WasmTool::from_manifest(manifest, secrets.tools.clone())
+            .map_err(std::io::Error::other)?;
         tools
             .registry
             .add(Arc::new(tool))
             .map_err(std::io::Error::other)?;
         println!("loaded tool: {name}");
     }
-    let automation_store = Arc::new(
-        SqliteAutomations::new(layout.data_dir().join("automations.db"))
-            .map_err(std::io::Error::other)?,
-    );
-    let automations = Arc::new(Automations::new(
-        bus.clone(),
-        Arc::clone(&tools),
-        Arc::clone(&agent),
-        automation_store,
-    ));
-    let env_path = secrets
-        .loaded_env()
-        .cloned()
-        .unwrap_or_else(|| layout.root().join(".env"));
+
     let setup_services = Arc::new(SetupServices::new(
+        bus.clone(),
         Arc::clone(&tools),
         Arc::clone(&automations),
         layout.clone(),
-        env_path,
+        secrets.clone(),
     ));
     tools
         .registry
@@ -98,7 +142,16 @@ async fn main() -> std::io::Result<()> {
         .map_err(std::io::Error::other)?;
     tools
         .registry
-        .add(Arc::new(ListToolsTool::new(layout.clone())))
+        .add(Arc::new(RemoveChannelTool::new(Arc::clone(
+            &setup_services,
+        ))))
+        .map_err(std::io::Error::other)?;
+    tools
+        .registry
+        .add(Arc::new(ListToolsTool::new(
+            layout.clone(),
+            secrets.clone(),
+        )))
         .map_err(std::io::Error::other)?;
     tools
         .registry
@@ -108,12 +161,13 @@ async fn main() -> std::io::Result<()> {
     automations
         .recover_stale_channel_auth()
         .map_err(std::io::Error::other)?;
+    if !automations.contains("handle-tool-result") {
+        automations
+            .add_transient(Automations::handle_tool_result())
+            .map_err(std::io::Error::other)?;
+    }
     if stored_count == 0 {
-        let setup_complete = secrets
-            .tools
-            .get("NEAR_API_KEY")
-            .is_some_and(|value| !value.trim().is_empty());
-        if setup_complete {
+        if secrets.exists("NEAR_API_KEY") {
             automations
                 .add(Automations::handle_conversation())
                 .map_err(std::io::Error::other)?;
@@ -123,45 +177,50 @@ async fn main() -> std::io::Result<()> {
                 .map_err(std::io::Error::other)?;
         }
     }
-    let _automations_task = automations.start();
 
-    let token = uuid::Uuid::new_v4().to_string();
-    let addr = std::env::var("WARDEN_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
-    let channel_runtime = Arc::new(
-        channels::start(
-            bus,
-            Arc::clone(&history),
-            &layout,
-            secrets.channels.clone(),
-            &addr,
-            token.clone(),
-        )
+    channel_runtime
+        .load_installed_channels()
         .await
-        .map_err(std::io::Error::other)?,
-    );
+        .map_err(std::io::Error::other)?;
     setup_services.set_channel_runtime(Arc::clone(&channel_runtime));
 
     println!("channel bridge token: {token}");
     println!("runtime root: {}", layout.root().display());
-    if let Some(path) = secrets.loaded_env() {
-        println!("loaded env: {}", path.display());
-    } else {
-        println!("loaded env: <none>");
-    }
-    if channel_runtime.statuses.is_empty() {
+    println!(
+        "loaded secrets: {}",
+        layout.root().join("secrets/secrets.json.enc").display()
+    );
+    let statuses = channel_runtime.statuses().await;
+    if statuses.is_empty() {
         println!(
             "no channels loaded from {}; add *.wasm with matching *.config.json",
             layout.channels_dir().display()
         );
     } else {
-        for status in &channel_runtime.statuses {
+        for status in &statuses {
             println!("loaded channel: {status}");
         }
     }
     println!(
         "warden is running. Use `warden-tui {token}` to send a message. Press Ctrl-C to stop."
     );
+    let _automations_task = automations_task;
     tokio::signal::ctrl_c().await?;
 
     Ok(())
+}
+
+async fn wait_for_unlocked_store(
+    mut events: tokio::sync::broadcast::Receiver<Event>,
+) -> io::Result<()> {
+    loop {
+        match events.recv().await {
+            Ok(Event::SecretsUnlocked) => return Ok(()),
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                return Err(io::Error::other("secrets unlock event bus closed"));
+            }
+        }
+    }
 }

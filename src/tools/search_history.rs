@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::{
     history::History,
     message::ToolDefinition,
-    tools::{self, InternalTool, ToolContext, ToolOutput},
+    tools::{self, InternalTool, ToolContext, ToolOutcome},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -53,10 +53,11 @@ impl InternalTool for SearchHistoryTool {
         &self,
         args: serde_json::Value,
         _ctx: &ToolContext,
-    ) -> Result<ToolOutput, String> {
-        tools::execute_typed(args, |params: SearchHistoryParams| async {
+    ) -> Result<ToolOutcome, String> {
+        let output = tools::execute_typed(args, |params: SearchHistoryParams| async {
             SearchHistoryTool::execute(self, params).await
         })
-        .await
+        .await?;
+        Ok(ToolOutcome::Finished(output))
     }
 }
