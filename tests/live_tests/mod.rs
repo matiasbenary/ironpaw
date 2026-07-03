@@ -18,6 +18,7 @@ use warden::{
 };
 
 fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, Arc<dyn History>) {
+    reset_raw_inference_log();
     let history = temp_history();
     let layout = warden::config::RuntimeLayout::from_root(
         std::env::temp_dir().join(format!("warden-live-test-runtime-{}", uuid::Uuid::new_v4())),
@@ -45,10 +46,11 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
         Arc::clone(&tools.registry),
         Arc::clone(&history),
     ));
+    let tool_handler_for_agent = Arc::clone(&tool_handler);
     let agent = Arc::new(Agent::new(
         bus.clone(),
         Arc::clone(&tools.registry),
-        tool_handler,
+        tool_handler_for_agent,
         Arc::clone(&history),
         tools.raw_inference.clone(),
     ));
@@ -82,7 +84,13 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
     automations
         .add_transient(Automations::handle_tool_result())
         .expect("tool result automation registers");
+    let _tool_handler_task = tool_handler.start();
     (automations.start(), history)
+}
+
+fn reset_raw_inference_log() {
+    let path = "/Users/gagdiez/tmp/miniclaw/release/llm_requests.log";
+    let _ = std::fs::write(path, "");
 }
 
 fn install_web_search_for_live_tests(
