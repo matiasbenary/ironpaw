@@ -1,5 +1,5 @@
-mod agent;
+mod core;
 mod preamble;
 mod utils;
 
-pub use agent::{Agent, Destination};
+pub use core::{Agent, Destination};

@@ -46,7 +46,7 @@ pub(super) async fn message_channel_to_warden(
 
     if emitted_messages.is_empty() {
         return Ok(Json(serde_json::json!({ "ok": true, "ignored": true })));
-    };
+    }
 
     let mut accepted = 0;
     for event_json in emitted_messages {
@@ -73,7 +73,8 @@ pub(super) async fn message_channel_to_warden(
             &inbound.conversation,
             inbound.message_id.clone(),
             &message,
-        );
+        )
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
 
         state.bus.publish(Event::MessageIn {
             channel: inbound.channel.clone(),

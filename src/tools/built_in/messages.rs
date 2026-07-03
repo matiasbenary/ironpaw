@@ -27,7 +27,7 @@ impl SendMessageTool {
         }
     }
 
-    pub async fn execute(&self, input: SendMessageToolInput) -> Result<serde_json::Value, String> {
+    pub fn execute(&self, input: SendMessageToolInput) -> Result<serde_json::Value, String> {
         let attachments = input
             .file_id
             .map(|file_id| (self.attachment_resolver)(file_id))
@@ -79,7 +79,7 @@ impl InternalTool for SendMessageTool {
         let mut input: SendMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_destination(ctx);
-        let output = SendMessageTool::execute(self, input).await?;
+        let output = SendMessageTool::execute(self, input)?;
         responder.respond(output)?;
         Ok(())
     }
@@ -155,10 +155,7 @@ impl DeleteMessageTool {
         Self { bus }
     }
 
-    pub async fn execute(
-        &self,
-        input: DeleteMessageToolInput,
-    ) -> Result<serde_json::Value, String> {
+    pub fn execute(&self, input: DeleteMessageToolInput) -> Result<serde_json::Value, String> {
         let channel = input
             .channel
             .filter(|channel| !channel.trim().is_empty())
@@ -211,7 +208,7 @@ impl InternalTool for DeleteMessageTool {
         let mut input: DeleteMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_message(ctx);
-        let output = DeleteMessageTool::execute(self, input).await?;
+        let output = DeleteMessageTool::execute(self, input)?;
         responder.respond(output)?;
         Ok(())
     }
@@ -316,26 +313,24 @@ mod tests {
         assert!(input.chat_id.is_none());
     }
 
-    #[tokio::test]
-    async fn send_message_requires_channel_after_context_defaults() {
+    #[test]
+    fn send_message_requires_channel_after_context_defaults() {
         let bus = Bus::new(16);
         let tool = SendMessageTool::new(bus, |_| Err("unexpected attachment".to_string()));
 
-        let result = tool
-            .execute(SendMessageToolInput {
-                channel: None,
-                file_id: None,
-                content: Some("hi".to_string()),
-                chat_id: None,
-                thread_id: None,
-            })
-            .await;
+        let result = tool.execute(SendMessageToolInput {
+            channel: None,
+            file_id: None,
+            content: Some("hi".to_string()),
+            chat_id: None,
+            thread_id: None,
+        });
 
         assert_eq!(result.err().as_deref(), Some("channel is required"));
     }
 
-    #[tokio::test]
-    async fn send_message_publishes_channel_delivery_request_when_conversation_is_known() {
+    #[test]
+    fn send_message_publishes_channel_delivery_request_when_conversation_is_known() {
         let bus = Bus::new(16);
         let mut events = bus.subscribe();
         let tool = SendMessageTool::new(bus, |_| Err("unexpected attachment".to_string()));
@@ -347,7 +342,6 @@ mod tests {
             chat_id: Some("chat-1".to_string()),
             thread_id: Some("thread-1".to_string()),
         })
-        .await
         .unwrap();
 
         let Event::MessageOut {
@@ -393,8 +387,8 @@ mod tests {
         assert_eq!(message.message_id, "456");
     }
 
-    #[tokio::test]
-    async fn delete_message_publishes_channel_delete_request() {
+    #[test]
+    fn delete_message_publishes_channel_delete_request() {
         let bus = Bus::new(16);
         let mut events = bus.subscribe();
         let tool = DeleteMessageTool::new(bus);
@@ -405,7 +399,6 @@ mod tests {
             message_id: Some("provider-1".to_string()),
             thread_id: None,
         })
-        .await
         .unwrap();
 
         let Event::DeleteMessage { channel, message } = events.try_recv().unwrap() else {

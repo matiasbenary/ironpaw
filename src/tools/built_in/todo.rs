@@ -46,6 +46,12 @@ impl TodoTool {
     }
 }
 
+impl Default for TodoTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl InternalTool for TodoTool {
     fn name(&self) -> &str {
@@ -103,14 +109,13 @@ impl InternalTool for TodoTool {
             .iter()
             .any(|t| !matches!(t.status, TodoStatus::Completed));
 
+        lines.push(String::new());
         if has_remaining {
-            lines.push(String::new());
             lines.push(
                 "Continue with the next pending task. Do not stop until all tasks are completed."
                     .to_string(),
             );
         } else {
-            lines.push(String::new());
             lines.push("All tasks completed.".to_string());
         }
 

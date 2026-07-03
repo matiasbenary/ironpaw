@@ -84,6 +84,7 @@ impl ToolRegistry {
             return Err(format!("a tool named '{}' already exists", tool.name()));
         }
         tools.push(tool);
+        drop(tools);
         Ok(())
     }
 
@@ -110,7 +111,14 @@ impl ToolRegistry {
     }
 }
 
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InternalTools {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bus: Bus,
         layout: RuntimeLayout,
@@ -150,7 +158,7 @@ impl InternalTools {
                 AutomationToolKind::Inspect,
             )),
             tool(AutomationTool::new(bus, AutomationToolKind::List)),
-            tool(ListChannelsTool::new(layout.clone(), secrets.clone())),
+            tool(ListChannelsTool::new(layout, secrets)),
             Arc::clone(&create_tool) as Arc<dyn InternalTool>,
             tool(SearchHistoryTool::new(Arc::clone(&history))),
             tool(WebFetchTool::new()),
@@ -158,7 +166,7 @@ impl InternalTools {
             registry.add(tool).expect("unique built-in tool name");
         }
         Self {
-            raw_inference: raw_inference.clone(),
+            raw_inference,
             create_tool: Arc::clone(&create_tool),
             scripts,
             history,
@@ -316,7 +324,7 @@ fn validate_object(
     let properties = schema.get("properties").and_then(|value| value.as_object());
     if schema
         .get("additionalProperties")
-        .and_then(|value| value.as_bool())
+        .and_then(serde_json::Value::as_bool)
         == Some(false)
     {
         for key in object.keys() {
@@ -589,9 +597,10 @@ mod tests {
 
         handler
             .execute_tool_call(tool_call, serde_json::json!({}), &ctx)
-            .await;
+            .await
+            .expect("execute tool call");
 
-        let entries = history.load(&conversation);
+        let entries = history.load(&conversation).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(matches!(entries[0].message, Message::Assistant { .. }));
         assert!(matches!(entries[1].message, Message::ToolResult { .. }));
@@ -635,7 +644,7 @@ mod tests {
         .expect("tool result");
         task.abort();
 
-        let entries = history.load(&conversation);
+        let entries = history.load(&conversation).unwrap();
         assert_eq!(entries.len(), 2);
         assert!(matches!(entries[0].message, Message::Assistant { .. }));
         assert!(matches!(entries[1].message, Message::ToolResult { .. }));

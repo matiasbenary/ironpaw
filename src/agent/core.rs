@@ -99,7 +99,7 @@ impl Agent {
                 publish_channel_action(&self.bus, conversation, ChannelAction::Typing);
             }
             let available_tools = tool_definitions(&run.tools);
-            let model_messages = self.model_messages(&run);
+            let model_messages = self.model_messages(&run)?;
             debug_log(format!(
                 "agent: round {} calling chat_completions(messages={}, tools={})",
                 round + 1,
@@ -113,11 +113,7 @@ impl Agent {
                 parallel_tool_calls: false,
             };
 
-            let output = self
-                .raw_inference
-                .execute(request)
-                .await
-                .map_err(|err| err.to_string())?;
+            let output = self.raw_inference.execute(request).await?;
             prompt_tokens += output.usage.prompt_tokens;
             if run.persist_history && prompt_tokens >= COMPACT_AFTER_PROMPT_TOKENS {
                 self.compact_history(run.conversation).await?;
@@ -140,7 +136,7 @@ impl Agent {
                     self.history.append(
                         run.conversation.expect("persistent run has conversation"),
                         &[history_entry(output.clone(), run.destination)],
-                    );
+                    )?;
                 }
                 return Ok(text.filter(|text| !text.is_empty()));
             }
@@ -177,7 +173,7 @@ impl Agent {
                 for (tool_call, args) in tool_requests {
                     self.tool_handler
                         .execute_tool_call(tool_call, args, &ctx)
-                        .await;
+                        .await?;
                 }
             } else {
                 run.transient_messages.push(output);
@@ -202,23 +198,23 @@ impl Agent {
                     },
                     run.destination,
                 )],
-            );
+            )?;
         }
         Ok(Some(stopped))
     }
 
-    fn model_messages(&self, run: &AgentRun<'_>) -> Vec<Message> {
+    fn model_messages(&self, run: &AgentRun<'_>) -> Result<Vec<Message>, String> {
         let mut messages = system_preamble(run.destination);
         if run.persist_history {
             messages.extend(
                 self.history
-                    .load(run.destination.expect("persistent run has conversation"))
+                    .load(run.destination.expect("persistent run has conversation"))?
                     .into_iter()
                     .map(|entry| entry.message),
             );
         }
         messages.extend(run.transient_messages.clone());
-        messages
+        Ok(messages)
     }
 
     fn publish_tool_progress(&self, destination: Destination<'_>, tool_name: &str) {
@@ -233,7 +229,7 @@ impl Agent {
         let Some(conversation) = conversation else {
             return Ok(());
         };
-        let history = self.history.load(conversation);
+        let history = self.history.load(conversation)?;
         if history.is_empty() {
             return Ok(());
         }
@@ -242,7 +238,7 @@ impl Agent {
             .map(|entry| entry.message.clone())
             .collect::<Vec<_>>();
         let summary = self.summarize_history(messages).await?;
-        self.history.compact(conversation, &summary);
+        self.history.compact(conversation, &summary)?;
         Ok(())
     }
 

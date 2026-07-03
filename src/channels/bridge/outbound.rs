@@ -13,7 +13,7 @@ pub(super) async fn message_warden_to_channel(
     bus: Bus,
     history: Arc<dyn History>,
     registry: Arc<ChannelRegistry>,
-) {
+) -> Result<(), String> {
     let mut events = bus.subscribe();
     loop {
         let (channel_runtime, channel, event) = match events.recv().await {
@@ -39,7 +39,7 @@ pub(super) async fn message_warden_to_channel(
                     eprintln!("{channel} message out was not deliverable to a channel");
                     continue;
                 }
-                append_channel_history(history.as_ref(), &conversation, None, &message);
+                append_channel_history(history.as_ref(), &conversation, None, &message)?;
                 (
                     channel_runtime,
                     channel.clone(),
@@ -56,7 +56,7 @@ pub(super) async fn message_warden_to_channel(
                     eprintln!("bridge: no loaded channel named {channel} for delete message");
                     continue;
                 };
-                history.delete_external_message(&message);
+                history.delete_external_message(&message)?;
                 (
                     channel_runtime,
                     channel.clone(),
@@ -84,8 +84,7 @@ pub(super) async fn message_warden_to_channel(
                     },
                 )
             }
-            Ok(_) => continue,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         };
         let channel_state = channel_runtime.state.lock().await.clone();
@@ -97,6 +96,7 @@ pub(super) async fn message_warden_to_channel(
         )
         .await;
     }
+    Ok(())
 }
 
 #[derive(Serialize)]

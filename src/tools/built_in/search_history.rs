@@ -24,14 +24,14 @@ impl SearchHistoryTool {
         Self { history }
     }
 
-    pub async fn execute(&self, params: SearchHistoryParams) -> Result<serde_json::Value, String> {
+    pub fn execute(&self, params: SearchHistoryParams) -> Result<serde_json::Value, String> {
         let query = params.query.trim();
         if query.is_empty() {
             return Err("query is required".to_string());
         }
         Ok(serde_json::json!({
             "ok": true,
-            "results": self.history.search(query),
+            "results": self.history.search(query)?,
         }))
     }
 }
@@ -55,10 +55,8 @@ impl InternalTool for SearchHistoryTool {
         _ctx: &ToolContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
-        let output = tools::execute_typed(args, |params: SearchHistoryParams| async {
-            SearchHistoryTool::execute(self, params).await
-        })
-        .await?;
+        let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
+        let output = SearchHistoryTool::execute(self, params)?;
         responder.respond(output)?;
         Ok(())
     }

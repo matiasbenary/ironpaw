@@ -461,13 +461,12 @@ This flow is the intended uniform shape: TUI and Telegram are both channels, and
 
 ## Appendix: ToDo
 
+- make sure code does not panic instead we need to return errors for the agent to handle or tell the user
 - Change the channel outbound ABI so successful sends can return the provider message id; then `send_message` can persist history with `external_id` instead of `None`.
 - Teach the TUI channel to delete messages. Sensitive setup flows, especially unlock and secret entry, should be able to request deletion through the normal `DeleteMessage` event and have TUI remove the message from its frontend state.
-- Make telegram automatically convert user name into user id on onboarding.
 - Decide whether dynamic tools should have a richer manifest: version, description, parameter schema, allowed tool calls, and allowed outbound HTTPS endpoints.
 - Decide whether runtime reload/file watching is needed.
 - Decide whether some internal tools should eventually move to packaged WASM tools with declared capabilities and secret requirements.
-- Add optional secret unlock backends beyond the local six-word phrase, such as an OS keychain or external KMS.
 - Add durable tool execution audit logs.
 - Add channel-level message deletion/redaction coverage for all setup flows.
 - I asked warden to install a channel, and it said "ok, I need your token to do that" instead of starting the install flow!

@@ -36,18 +36,22 @@ impl MessageMetadata {
 pub trait History: Send + Sync {
     /// Return active items for a conversation, oldest first.
     /// Inactive items stay on disk for search.
-    fn load(&self, conversation: &ConversationKey) -> Vec<HistoryEntry>;
+    fn load(&self, conversation: &ConversationKey) -> Result<Vec<HistoryEntry>, String>;
 
     /// Persist new items for a conversation.
-    fn append(&self, conversation: &ConversationKey, entries: &[HistoryEntry]);
+    fn append(
+        &self,
+        conversation: &ConversationKey,
+        entries: &[HistoryEntry],
+    ) -> Result<(), String>;
 
     /// Delete local entries that correspond to a channel/provider message id.
-    fn delete_external_message(&self, message: &MessageRef);
+    fn delete_external_message(&self, message: &MessageRef) -> Result<(), String>;
 
     /// Replace a conversation with a summary item.
-    fn compact(&self, conversation: &ConversationKey, summary: &str);
+    fn compact(&self, conversation: &ConversationKey, summary: &str) -> Result<(), String>;
 
     /// Full-text search over all stored items.
     /// Returns matching items newest first.
-    fn search(&self, query: &str) -> Vec<HistoryEntry>;
+    fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, String>;
 }

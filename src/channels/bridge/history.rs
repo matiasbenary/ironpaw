@@ -9,14 +9,14 @@ pub(super) fn append_channel_history(
     conversation: &ConversationKey,
     external_id: Option<String>,
     message: &Message,
-) {
+) -> Result<(), String> {
     history.append(
         conversation,
         &[HistoryEntry {
             message: message.clone(),
             metadata: MessageMetadata::new(conversation.clone(), external_id),
         }],
-    );
+    )
 }
 
 #[cfg(test)]
@@ -48,9 +48,10 @@ mod tests {
             &conversation,
             Some("provider-1".to_string()),
             &message,
-        );
+        )
+        .unwrap();
 
-        let entries = history.load(&conversation);
+        let entries = history.load(&conversation).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].metadata.conversation.channel, "telegram");
         assert_eq!(entries[0].metadata.conversation.chat_id, "chat");
@@ -79,9 +80,9 @@ mod tests {
             tool_calls: Vec::new(),
         };
 
-        append_channel_history(&history, &conversation, None, &message);
+        append_channel_history(&history, &conversation, None, &message).unwrap();
 
-        let entries = history.load(&conversation);
+        let entries = history.load(&conversation).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].metadata.conversation.channel, "telegram");
         assert_eq!(entries[0].metadata.conversation.chat_id, "chat");
@@ -110,13 +111,16 @@ mod tests {
             &conversation,
             Some("provider-1".to_string()),
             &message,
-        );
+        )
+        .unwrap();
 
-        history.delete_external_message(&MessageRef {
-            conversation: conversation.clone(),
-            message_id: "provider-1".to_string(),
-        });
+        history
+            .delete_external_message(&MessageRef {
+                conversation: conversation.clone(),
+                message_id: "provider-1".to_string(),
+            })
+            .unwrap();
 
-        assert!(history.load(&conversation).is_empty());
+        assert!(history.load(&conversation).unwrap().is_empty());
     }
 }

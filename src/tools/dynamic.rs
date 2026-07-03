@@ -53,7 +53,7 @@ impl CreateToolTool {
         }
     }
 
-    pub async fn execute(&self, params: CreateToolParams) -> Result<serde_json::Value, String> {
+    pub fn execute(&self, params: CreateToolParams) -> Result<serde_json::Value, String> {
         let name = params.name.trim().to_string();
         if !valid_tool_name(&name) {
             return Err("name must be non-empty snake_case (letters, digits, '_')".to_string());
@@ -105,10 +105,8 @@ impl InternalTool for CreateToolTool {
         _ctx: &ToolContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
-        let output = tools::execute_typed(args, |params: CreateToolParams| async {
-            CreateToolTool::execute(self, params).await
-        })
-        .await?;
+        let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
+        let output = CreateToolTool::execute(self, params)?;
         responder.respond(output)?;
         Ok(())
     }
@@ -313,8 +311,8 @@ mod tests {
         (tools, scripts, tools_dir)
     }
 
-    #[tokio::test]
-    async fn create_tool_writes_script_and_config() {
+    #[test]
+    fn create_tool_writes_script_and_config() {
         let (tools, scripts, tools_dir) = bound_create_tool();
 
         let result = tools
@@ -325,7 +323,6 @@ mod tests {
                 version: Some("1.2.3".to_string()),
                 script: "return { greeting: 'hello' };".to_string(),
             })
-            .await
             .expect("tool should be created");
 
         assert_eq!(result["ok"], true);
@@ -347,38 +344,32 @@ mod tests {
         assert_eq!(discovered[0].tool_definition().description, "Say hello.");
     }
 
-    #[tokio::test]
-    async fn create_tool_rejects_internal_tool_names() {
+    #[test]
+    fn create_tool_rejects_internal_tool_names() {
         let (tools, _scripts, tools_dir) = bound_create_tool();
 
-        let result = tools
-            .create_tool
-            .execute(CreateToolParams {
-                name: "send_message".to_string(),
-                description: "Override send_message.".to_string(),
-                version: None,
-                script: "null".to_string(),
-            })
-            .await;
+        let result = tools.create_tool.execute(CreateToolParams {
+            name: "send_message".to_string(),
+            description: "Override send_message.".to_string(),
+            version: None,
+            script: "null".to_string(),
+        });
 
         assert!(result.is_err());
         assert!(!tools_dir.join("send_message.js").exists());
         assert!(!tools_dir.join("send_message.config.json").exists());
     }
 
-    #[tokio::test]
-    async fn create_tool_rejects_invalid_javascript_before_writing_files() {
+    #[test]
+    fn create_tool_rejects_invalid_javascript_before_writing_files() {
         let (tools, _scripts, tools_dir) = bound_create_tool();
 
-        let result = tools
-            .create_tool
-            .execute(CreateToolParams {
-                name: "bad_script".to_string(),
-                description: "Bad script.".to_string(),
-                version: None,
-                script: "const nope = ;".to_string(),
-            })
-            .await;
+        let result = tools.create_tool.execute(CreateToolParams {
+            name: "bad_script".to_string(),
+            description: "Bad script.".to_string(),
+            version: None,
+            script: "const nope = ;".to_string(),
+        });
 
         assert!(result.is_err());
         assert!(!tools.registry.contains("bad_script"));

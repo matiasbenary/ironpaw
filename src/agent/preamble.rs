@@ -1,4 +1,4 @@
-use super::agent::Destination;
+use super::Destination;
 use crate::message::Message;
 
 pub(super) fn system_preamble(destination: Destination<'_>) -> Vec<Message> {

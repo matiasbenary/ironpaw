@@ -133,13 +133,15 @@ fn publish_user_message(
     conversation: ConversationKey,
     message: Message,
 ) {
-    history.append(
-        &conversation,
-        &[HistoryEntry {
-            message: message.clone(),
-            metadata: MessageMetadata::new(conversation.clone(), None),
-        }],
-    );
+    history
+        .append(
+            &conversation,
+            &[HistoryEntry {
+                message: message.clone(),
+                metadata: MessageMetadata::new(conversation.clone(), None),
+            }],
+        )
+        .expect("persist live test user message");
     bus.publish(Event::MessageIn {
         channel: conversation.channel.clone(),
         sender: Sender::User,

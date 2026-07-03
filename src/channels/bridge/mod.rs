@@ -92,30 +92,16 @@ impl ChannelRegistry {
     }
 }
 
-pub async fn run_server(
-    listener: TcpListener,
-    bus: Bus,
-    history: Arc<dyn History>,
-    addr: &str,
-    token: String,
-    secrets: ChannelSecrets,
-    registry: Arc<ChannelRegistry>,
-    files_dir: PathBuf,
-) -> io::Result<()> {
-    tokio::spawn(outbound::message_warden_to_channel(
-        bus.clone(),
-        Arc::clone(&history),
-        Arc::clone(&registry),
-    ));
+pub async fn run_server(listener: TcpListener, addr: &str, state: BridgeState) -> io::Result<()> {
+    let outbound_bus = state.bus.clone();
+    let outbound_history = Arc::clone(&state.history);
+    let outbound_registry = Arc::clone(&state.registry);
+    tokio::spawn(async move {
+        let _ =
+            outbound::message_warden_to_channel(outbound_bus, outbound_history, outbound_registry)
+                .await;
+    });
 
-    let state = BridgeState {
-        bus,
-        history,
-        token: Arc::new(token),
-        secrets,
-        registry,
-        files_dir,
-    };
     let app = Router::new()
         .route("/{*path}", post(inbound::message_channel_to_warden))
         .with_state(state);
@@ -134,7 +120,7 @@ pub fn load_channel(
         .http_credentials
         .clone()
         .into_iter()
-        .map(|credential| credential.into_injection())
+        .map(crate::channels::config::ChannelHttpCredential::into_injection)
         .collect();
     let wasm = WasmChannel::load(&manifest.wasm_path, secrets, credentials)
         .map_err(|err| err.to_string())?;

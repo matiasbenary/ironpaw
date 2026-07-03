@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Mutex, MutexGuard},
+};
 
 use rusqlite::{Connection, params};
 
@@ -55,6 +58,12 @@ impl SqliteHistory {
             conn: Mutex::new(conn),
         })
     }
+
+    fn conn(&self) -> Result<MutexGuard<'_, Connection>, String> {
+        self.conn
+            .lock()
+            .map_err(|_| "history mutex poisoned".to_string())
+    }
 }
 
 fn extract_search_text(item: &Message) -> String {
@@ -106,44 +115,58 @@ fn entry_from_row(item_json: String, metadata_json: String) -> Option<HistoryEnt
 }
 
 impl History for SqliteHistory {
-    fn load(&self, conversation: &crate::bus::ConversationKey) -> Vec<HistoryEntry> {
+    fn load(
+        &self,
+        conversation: &crate::bus::ConversationKey,
+    ) -> Result<Vec<HistoryEntry>, String> {
         let conversation_key = conversation.storage_key();
-        let conn = self.conn.lock().expect("history mutex poisoned");
+        let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT item_json, metadata_json FROM entries
                  WHERE conversation_key = ?1 AND active = 1
                  ORDER BY id ASC",
             )
-            .expect("prepare load");
-        stmt.query_map(params![conversation_key], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .expect("query load")
-        .filter_map(|r| r.ok())
-        .filter_map(|(item_json, metadata_json)| entry_from_row(item_json, metadata_json))
-        .collect()
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![conversation_key], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|err| err.to_string())?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (item_json, metadata_json) = row.map_err(|err| err.to_string())?;
+            if let Some(entry) = entry_from_row(item_json, metadata_json) {
+                entries.push(entry);
+            }
+        }
+        Ok(entries)
     }
 
-    fn append(&self, conversation: &crate::bus::ConversationKey, entries: &[HistoryEntry]) {
+    fn append(
+        &self,
+        conversation: &crate::bus::ConversationKey,
+        entries: &[HistoryEntry],
+    ) -> Result<(), String> {
         let conversation_key = conversation.storage_key();
-        let conn = self.conn.lock().expect("history mutex poisoned");
+        let conn = self.conn()?;
         for entry in entries {
-            let json = serde_json::to_string(&entry.message).expect("serialize Message");
+            let json = serde_json::to_string(&entry.message).map_err(|err| err.to_string())?;
             let metadata_json =
-                serde_json::to_string(&entry.metadata).expect("serialize MessageMetadata");
+                serde_json::to_string(&entry.metadata).map_err(|err| err.to_string())?;
             let text = extract_search_text(&entry.message);
             conn.execute(
                 "INSERT INTO entries(conversation_key, item_json, metadata_json, search_text)
                  VALUES (?1, ?2, ?3, ?4)",
                 params![conversation_key, json, metadata_json, text],
             )
-            .expect("insert entry");
+            .map_err(|err| err.to_string())?;
         }
+        Ok(())
     }
 
-    fn delete_external_message(&self, message: &crate::bus::MessageRef) {
-        let conn = self.conn.lock().expect("history mutex poisoned");
+    fn delete_external_message(&self, message: &crate::bus::MessageRef) -> Result<(), String> {
+        let conn = self.conn()?;
         match message.conversation.thread_id.as_deref() {
             Some(thread_id) => {
                 conn.execute(
@@ -160,7 +183,7 @@ impl History for SqliteHistory {
                         &message.message_id
                     ],
                 )
-                .expect("delete external message");
+                .map_err(|err| err.to_string())?;
             }
             None => {
                 conn.execute(
@@ -179,33 +202,40 @@ impl History for SqliteHistory {
                         &message.message_id
                     ],
                 )
-                .expect("delete external message");
+                .map_err(|err| err.to_string())?;
             }
         }
+        Ok(())
     }
 
-    fn compact(&self, conversation: &crate::bus::ConversationKey, summary: &str) {
+    fn compact(
+        &self,
+        conversation: &crate::bus::ConversationKey,
+        summary: &str,
+    ) -> Result<(), String> {
         let conversation_key = conversation.storage_key();
-        let conn = self.conn.lock().expect("history mutex poisoned");
+        let conn = self.conn()?;
         conn.execute(
             "UPDATE entries SET active = 0 WHERE conversation_key = ?1 AND active = 1",
             params![conversation_key],
         )
-        .expect("compact update");
+        .map_err(|err| err.to_string())?;
         let summary_item = Message::System(format!("[conversation summary] {summary}"));
         let summary_metadata = MessageMetadata::new(conversation.clone(), None);
-        let json = serde_json::to_string(&summary_item).expect("serialize summary");
-        let metadata_json = serde_json::to_string(&summary_metadata).expect("serialize metadata");
+        let json = serde_json::to_string(&summary_item).map_err(|err| err.to_string())?;
+        let metadata_json =
+            serde_json::to_string(&summary_metadata).map_err(|err| err.to_string())?;
         conn.execute(
             "INSERT INTO entries(conversation_key, item_json, metadata_json, search_text)
              VALUES (?1, ?2, ?3, ?4)",
             params![conversation_key, json, metadata_json, summary],
         )
-        .expect("insert summary");
+        .map_err(|err| err.to_string())?;
+        Ok(())
     }
 
-    fn search(&self, query: &str) -> Vec<HistoryEntry> {
-        let conn = self.conn.lock().expect("history mutex poisoned");
+    fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, String> {
+        let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT e.item_json, e.metadata_json
@@ -215,14 +245,20 @@ impl History for SqliteHistory {
                  ORDER BY e.id DESC
                  LIMIT 20",
             )
-            .expect("prepare search");
-        stmt.query_map(params![query], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .expect("query search")
-        .filter_map(|r| r.ok())
-        .filter_map(|(item_json, metadata_json)| entry_from_row(item_json, metadata_json))
-        .collect()
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![query], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|err| err.to_string())?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (item_json, metadata_json) = row.map_err(|err| err.to_string())?;
+            if let Some(entry) = entry_from_row(item_json, metadata_json) {
+                entries.push(entry);
+            }
+        }
+        Ok(entries)
     }
 }
 
@@ -253,9 +289,11 @@ mod tests {
             metadata: MessageMetadata::new(conversation.clone(), Some("provider-1".to_string())),
         };
 
-        history.append(&conversation, std::slice::from_ref(&entry));
+        history
+            .append(&conversation, std::slice::from_ref(&entry))
+            .unwrap();
 
-        let loaded = history.load(&conversation);
+        let loaded = history.load(&conversation).unwrap();
         assert_eq!(loaded, vec![entry]);
     }
 
@@ -267,19 +305,21 @@ mod tests {
             chat_id: "chat-1".to_string(),
             thread_id: None,
         };
-        history.append(
-            &conversation,
-            &[HistoryEntry {
-                message: Message::Assistant {
-                    text: Some("done".to_string()),
-                    attachments: Vec::new(),
-                    tool_calls: Vec::new(),
-                },
-                metadata: MessageMetadata::new(conversation.clone(), None),
-            }],
-        );
+        history
+            .append(
+                &conversation,
+                &[HistoryEntry {
+                    message: Message::Assistant {
+                        text: Some("done".to_string()),
+                        attachments: Vec::new(),
+                        tool_calls: Vec::new(),
+                    },
+                    metadata: MessageMetadata::new(conversation.clone(), None),
+                }],
+            )
+            .unwrap();
 
-        let loaded = history.load(&conversation);
+        let loaded = history.load(&conversation).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].metadata.conversation.channel, "telegram");
         assert_eq!(loaded[0].metadata.conversation.chat_id, "chat-1");
@@ -299,33 +339,45 @@ mod tests {
             chat_id: "chat-1".to_string(),
             thread_id: Some("thread-2".to_string()),
         };
-        history.append(
-            &thread_1,
-            &[HistoryEntry {
-                message: Message::User {
-                    text: "secret".to_string(),
-                    attachments: Vec::new(),
-                },
-                metadata: MessageMetadata::new(thread_1.clone(), Some("provider-1".to_string())),
-            }],
-        );
-        history.append(
-            &thread_2,
-            &[HistoryEntry {
-                message: Message::User {
-                    text: "keep".to_string(),
-                    attachments: Vec::new(),
-                },
-                metadata: MessageMetadata::new(thread_2.clone(), Some("provider-1".to_string())),
-            }],
-        );
+        history
+            .append(
+                &thread_1,
+                &[HistoryEntry {
+                    message: Message::User {
+                        text: "secret".to_string(),
+                        attachments: Vec::new(),
+                    },
+                    metadata: MessageMetadata::new(
+                        thread_1.clone(),
+                        Some("provider-1".to_string()),
+                    ),
+                }],
+            )
+            .unwrap();
+        history
+            .append(
+                &thread_2,
+                &[HistoryEntry {
+                    message: Message::User {
+                        text: "keep".to_string(),
+                        attachments: Vec::new(),
+                    },
+                    metadata: MessageMetadata::new(
+                        thread_2.clone(),
+                        Some("provider-1".to_string()),
+                    ),
+                }],
+            )
+            .unwrap();
 
-        history.delete_external_message(&MessageRef {
-            conversation: thread_1.clone(),
-            message_id: "provider-1".to_string(),
-        });
+        history
+            .delete_external_message(&MessageRef {
+                conversation: thread_1,
+                message_id: "provider-1".to_string(),
+            })
+            .unwrap();
 
-        let loaded = history.load(&thread_2);
+        let loaded = history.load(&thread_2).unwrap();
         assert_eq!(loaded.len(), 1);
         let Message::User { text, .. } = &loaded[0].message else {
             panic!("expected user message");

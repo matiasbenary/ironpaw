@@ -224,8 +224,7 @@ async fn wait_for_unlocked_store(
     loop {
         match events.recv().await {
             Ok(Event::SecretsUnlocked) => return Ok(()),
-            Ok(_) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                 return Err(io::Error::other("secrets unlock event bus closed"));
             }

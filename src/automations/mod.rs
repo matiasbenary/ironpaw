@@ -268,7 +268,7 @@ impl Automations {
                 self.tools.registry.named_tools(tools)?;
             }
             AutomationEffect::ContinueConversation => {}
-        };
+        }
         Ok(Automation {
             name: spec.name,
             trigger,
@@ -458,7 +458,7 @@ impl Automations {
             .effect
             .execute(&self.bus, &self.tools, &self.agent, &ctx, &event)
             .await;
-        if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
+        if result.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
             eprintln!(
                 "automation '{}' failed: {}",
                 automation.name,

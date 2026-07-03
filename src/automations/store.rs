@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Mutex, MutexGuard},
+};
 
 use rusqlite::{Connection, params};
 
@@ -36,7 +39,7 @@ impl SqliteAutomations {
         let effect_json =
             serde_json::to_string(&automation.effect).map_err(|err| err.to_string())?;
         let created_at = chrono::Utc::now().to_rfc3339();
-        let conn = self.conn.lock().expect("automations mutex poisoned");
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO automations(name, trigger_json, effect_json, created_at)
              VALUES (?1, ?2, ?3, ?4)",
@@ -55,14 +58,14 @@ impl SqliteAutomations {
     }
 
     pub fn delete(&self, name: &str) -> Result<(), String> {
-        let conn = self.conn.lock().expect("automations mutex poisoned");
+        let conn = self.conn()?;
         conn.execute("DELETE FROM automations WHERE name = ?1", params![name])
             .map(|_| ())
             .map_err(|err| err.to_string())
     }
 
     pub fn load_all(&self) -> Result<Vec<Automation>, String> {
-        let conn = self.conn.lock().expect("automations mutex poisoned");
+        let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT name, trigger_json, effect_json
@@ -86,6 +89,12 @@ impl SqliteAutomations {
             automations.push(row.into_automation()?);
         }
         Ok(automations)
+    }
+
+    fn conn(&self) -> Result<MutexGuard<'_, Connection>, String> {
+        self.conn
+            .lock()
+            .map_err(|_| "automations mutex poisoned".to_string())
     }
 }
 

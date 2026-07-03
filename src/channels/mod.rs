@@ -44,8 +44,7 @@ impl ChannelRuntime {
             .ok_or_else(|| format!("installed channel not found: {name}"))?;
         let manifest = config::inject_public_url(manifest, public_url.as_deref())
             .map_err(|err| err.to_string())?;
-        let channel =
-            bridge::load_channel(manifest, self.secrets.clone()).map_err(|err| err.to_string())?;
+        let channel = bridge::load_channel(manifest, self.secrets.clone())?;
         let config_json = channel.state.lock().await.config_json.clone();
         channel
             .wasm
@@ -99,7 +98,8 @@ impl ChannelRuntime {
             ));
             let channel = bridge::load_channel(manifest, self.secrets.clone())?;
             let config_json = channel.state.lock().await.config_json.clone();
-            if let Err(err) = channel.wasm.lock().await.on_start(&config_json) {
+            let start_result = channel.wasm.lock().await.on_start(&config_json);
+            if let Err(err) = start_result {
                 eprintln!("{} channel start failed: {err}", channel.name);
             }
             self.registry.add(channel).await;
@@ -188,18 +188,15 @@ pub async fn start_bridge(
     let files_dir = layout.files_dir();
     let bridge_registry = Arc::clone(&registry);
     let bridge_task = tokio::spawn(async move {
-        if let Err(err) = bridge::run_server(
-            listener,
+        let state = bridge::BridgeState {
             bus,
             history,
-            &bridge_addr,
-            token,
-            bridge_secrets,
-            bridge_registry,
+            token: Arc::new(token),
+            secrets: bridge_secrets,
+            registry: bridge_registry,
             files_dir,
-        )
-        .await
-        {
+        };
+        if let Err(err) = bridge::run_server(listener, &bridge_addr, state).await {
             eprintln!("channel bridge failed: {err}");
         }
     });

@@ -72,7 +72,7 @@ impl ToolResponder {
                     tool_name: tool_name.clone(),
                     result: result.clone(),
                 };
-                crate::tools::handler::persist_tool_result(history.as_ref(), context, &message);
+                crate::tools::handler::persist_tool_result(history.as_ref(), context, &message)?;
                 bus.publish(Event::ToolResult {
                     context: context.clone(),
                     tool_call_id: tool_call_id.clone(),

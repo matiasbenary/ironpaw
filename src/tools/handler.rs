@@ -50,7 +50,15 @@ impl ToolHandler {
         let bus = self.bus.clone();
         let registry = Arc::clone(&self.registry);
         let history = Arc::clone(&self.history);
-        self.persist_tool_call(&context, &tool_call);
+        if let Err(err) = self.persist_tool_call(&context, &tool_call) {
+            bus.publish(Event::ToolResult {
+                context,
+                tool_call_id: tool_call.id,
+                tool_name: tool_call.name,
+                result: serde_json::json!({ "ok": false, "error": err }),
+            });
+            return;
+        }
         tokio::spawn(async move {
             run_registered_tool_for_context(
                 bus,
@@ -70,21 +78,21 @@ impl ToolHandler {
         tool_call: ToolCall,
         args: serde_json::Value,
         ctx: &ToolContext,
-    ) -> Message {
-        self.persist_tool_call(ctx, &tool_call);
+    ) -> Result<Message, String> {
+        self.persist_tool_call(ctx, &tool_call)?;
         let result = run_registered_tool(&self.registry, &tool_call.name, args, ctx).await;
         let message = Message::ToolResult {
             tool_call_id: tool_call.id,
             tool_name: tool_call.name,
             result,
         };
-        persist_tool_result(self.history.as_ref(), ctx, &message);
-        message
+        persist_tool_result(self.history.as_ref(), ctx, &message)?;
+        Ok(message)
     }
 
-    fn persist_tool_call(&self, ctx: &ToolContext, tool_call: &ToolCall) {
+    fn persist_tool_call(&self, ctx: &ToolContext, tool_call: &ToolCall) -> Result<(), String> {
         let Some(conversation) = &ctx.conversation else {
-            return;
+            return Ok(());
         };
         self.history.append(
             conversation,
@@ -96,16 +104,20 @@ impl ToolHandler {
                 },
                 metadata: MessageMetadata::new(conversation.clone(), None),
             }],
-        );
+        )
     }
 }
 
-pub(crate) fn persist_tool_result(history: &dyn History, ctx: &ToolContext, message: &Message) {
+pub(crate) fn persist_tool_result(
+    history: &dyn History,
+    ctx: &ToolContext,
+    message: &Message,
+) -> Result<(), String> {
     let Some(conversation) = &ctx.conversation else {
-        return;
+        return Ok(());
     };
     let Message::ToolResult { .. } = message else {
-        return;
+        return Ok(());
     };
     history.append(
         conversation,
@@ -113,5 +125,5 @@ pub(crate) fn persist_tool_result(history: &dyn History, ctx: &ToolContext, mess
             message: message.clone(),
             metadata: MessageMetadata::new(conversation.clone(), None),
         }],
-    );
+    )
 }
