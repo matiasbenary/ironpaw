@@ -1,9 +1,8 @@
-use std::{borrow::Cow, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::Engine as _;
 use reqwest::Client;
-use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 use crate::{
     http::HttpError,
@@ -13,7 +12,7 @@ use crate::{
     tools::{self, InternalTool},
 };
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct RawInferenceRequest {
     #[serde(default = "models::text_model")]
     pub model: String,
@@ -38,38 +37,6 @@ pub struct RawInferenceUsage {
 pub struct RawInferenceOutput {
     pub message: Message,
     pub usage: RawInferenceUsage,
-}
-
-impl JsonSchema for RawInferenceRequest {
-    fn schema_name() -> Cow<'static, str> {
-        Cow::Borrowed("RawInferenceRequest")
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        Schema::try_from(serde_json::json!({
-            "type": "object",
-            "description": "Warden-native model inference request.",
-            "properties": {
-                "model": {
-                    "type": "string",
-                    "description": "Optional model name. If omitted, Warden uses its configured default."
-                },
-                "messages": {
-                    "type": "array",
-                    "description": "Warden message list.",
-                    "items": { "type": "object" }
-                },
-                "tools": {
-                    "type": "array",
-                    "description": "Optional Warden tool definitions."
-                },
-                "parallel_tool_calls": { "type": "boolean" }
-            },
-            "required": ["messages"],
-            "additionalProperties": false
-        }))
-        .expect("raw_inference schema should be valid")
-    }
 }
 
 #[derive(Clone)]

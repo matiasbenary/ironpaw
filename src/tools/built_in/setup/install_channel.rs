@@ -17,15 +17,15 @@ use crate::{
         setup::{
             SetupServices, delete_current_message,
             install_common::{
-                SetupConfig, SetupSecret, apply_config_values, config_prompt, config_value,
-                generate_secret, is_yes, secret_value, stored_secret_name,
+                SetupConfig, SetupSecret, config_prompt, config_statuses, config_value,
+                discover_package_dir_names, generate_secret, is_yes, locate_config_template,
+                secret_statuses, secret_value, stored_secret_name, write_package_artifacts,
             },
-            publish_tool_result, send,
+            pause_conversation, publish_tool_result, send, stop_setup_automation,
         },
     },
 };
 
-const HANDLE_CONVERSATION_AUTOMATION: &str = "handle-conversation";
 const NGROK_SECRET: &str = "WARDEN_NGROK_TOKEN";
 const BUILTIN_CHANNELS: &[&str] = &["tui"];
 
@@ -145,8 +145,8 @@ impl ListChannelsTool {
                 "installed": installed,
                 "installable": !installed,
                 "external": package.manifest.external,
-                "required_secrets": secret_statuses(&package, &self.secrets),
-                "required_config": config_statuses(&package),
+                "required_secrets": secret_statuses(required_secrets(&package, &self.secrets), &self.secrets, true),
+                "required_config": config_statuses(required_config(&package)),
             }));
         }
 
@@ -262,7 +262,7 @@ impl InstallChannelTool {
             setup_conversation: setup_conversation(ctx),
             continuation: Some(responder),
         });
-        automations.delete(HANDLE_CONVERSATION_AUTOMATION)?;
+        pause_conversation(automations)?;
         automations.add(Self::automation(name))?;
         send(
             tools,
@@ -541,10 +541,10 @@ impl InstallChannelTool {
             .await;
         remove_installed_package(&self.setup.layout, &session.package);
         *self.session.lock().expect("install channel session lock") = None;
-        automations.delete(&format!("channel_auth:{}", session.package.name))?;
-        if !automations.contains(HANDLE_CONVERSATION_AUTOMATION) {
-            automations.add(Automations::handle_conversation())?;
-        }
+        stop_setup_automation(
+            automations,
+            &format!("channel_auth:{}", session.package.name),
+        )?;
         send(
             tools,
             &format!(
@@ -571,10 +571,7 @@ impl InstallChannelTool {
         let name = session.package.name.clone();
         let continuation = session.continuation.clone();
         *self.session.lock().expect("install channel session lock") = None;
-        automations.delete(&format!("channel_auth:{name}"))?;
-        if !automations.contains(HANDLE_CONVERSATION_AUTOMATION) {
-            automations.add(Automations::handle_conversation())?;
-        }
+        stop_setup_automation(automations, &format!("channel_auth:{name}"))?;
         send(
             tools,
             "Channel installation cancelled. I will answer normally again.",
@@ -598,10 +595,7 @@ impl InstallChannelTool {
         let name = session.package.name.clone();
         let continuation = session.continuation.clone();
         *self.session.lock().expect("install channel session lock") = None;
-        automations.delete(&format!("channel_auth:{name}"))?;
-        if !automations.contains(HANDLE_CONVERSATION_AUTOMATION) {
-            automations.add(Automations::handle_conversation())?;
-        }
+        stop_setup_automation(automations, &format!("channel_auth:{name}"))?;
         send(
             tools,
             &format!("The {name} channel is installed and running."),
@@ -826,7 +820,7 @@ fn locate_channel_package(layout: &RuntimeLayout, name: &str) -> Result<ChannelP
         ));
     }
     let wasm_path = locate_wasm(&source_dir, name)?;
-    let config_template_path = locate_config_template(&source_dir, name)?;
+    let config_template_path = locate_config_template(&source_dir, name, "channel")?;
     let display_name = manifest
         .display_name
         .clone()
@@ -841,28 +835,10 @@ fn locate_channel_package(layout: &RuntimeLayout, name: &str) -> Result<ChannelP
 }
 
 fn discover_channel_packages(layout: &RuntimeLayout) -> Vec<Result<ChannelPackage, String>> {
-    let mut packages = Vec::new();
-    for source_root in channel_source_dirs(layout) {
-        let Ok(entries) = std::fs::read_dir(source_root) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            if !entry.path().join(format!("{name}.install.json")).exists() {
-                continue;
-            }
-            packages.push(locate_channel_package(layout, &name));
-        }
-    }
-    packages
+    discover_package_dir_names(channel_source_dirs(layout))
+        .into_iter()
+        .map(|name| locate_channel_package(layout, &name))
+        .collect()
 }
 
 fn installed_channel_names(layout: &RuntimeLayout) -> Result<Vec<String>, String> {
@@ -911,21 +887,6 @@ fn locate_wasm(source_dir: &Path, name: &str) -> Result<PathBuf, String> {
     ))
 }
 
-fn locate_config_template(source_dir: &Path, name: &str) -> Result<PathBuf, String> {
-    let config = source_dir.join(format!("{name}.config.json"));
-    if config.exists() {
-        return Ok(config);
-    }
-    let example = source_dir.join(format!("{name}.config.example.json"));
-    if example.exists() {
-        return Ok(example);
-    }
-    Err(format!(
-        "channel '{name}' has no config template in {}",
-        source_dir.display()
-    ))
-}
-
 fn parse_install_manifest(json: &str) -> Result<ChannelInstallManifest, String> {
     serde_json::from_str(json).map_err(|err| err.to_string())
 }
@@ -948,35 +909,6 @@ fn required_secrets(package: &ChannelPackage, secrets_store: &Secrets) -> Vec<Se
 
 fn required_config(package: &ChannelPackage) -> Vec<SetupConfig> {
     package.manifest.config.clone()
-}
-
-fn secret_statuses(package: &ChannelPackage, secrets_store: &Secrets) -> Vec<serde_json::Value> {
-    required_secrets(package, secrets_store)
-        .into_iter()
-        .map(|secret| {
-            let secret_name = stored_secret_name(&secret.name);
-            serde_json::json!({
-                "name": secret.name,
-                "secret": secret_name,
-                "configured": secrets_store.exists(&secret_name),
-                "optional": secret.optional,
-                "auto_generate": secret.auto_generate.is_some(),
-            })
-        })
-        .collect()
-}
-
-fn config_statuses(package: &ChannelPackage) -> Vec<serde_json::Value> {
-    required_config(package)
-        .into_iter()
-        .map(|config| {
-            serde_json::json!({
-                "path": config.path,
-                "type": config.value_type.as_str(),
-                "prompt": config.prompt.as_deref().unwrap_or(&config.path),
-            })
-        })
-        .collect()
 }
 
 fn secret_prompt(package: &ChannelPackage, secret: &SetupSecret) -> String {
@@ -1023,32 +955,15 @@ fn write_package(
     package: &ChannelPackage,
     config_values: &BTreeMap<String, serde_json::Value>,
 ) -> Result<(), String> {
-    let channels_dir = layout.channels_dir();
-    std::fs::create_dir_all(&channels_dir).map_err(|err| err.to_string())?;
-    let wasm_dst = channels_dir.join(format!("{}.wasm", package.name));
-    let config_dst = channels_dir.join(format!("{}.config.json", package.name));
-    let mut config: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&package.config_template_path).map_err(|err| {
-            format!(
-                "could not read {}: {err}",
-                package.config_template_path.display()
-            )
-        })?,
-    )
-    .map_err(|err| {
-        format!(
-            "could not parse {}: {err}",
-            package.config_template_path.display()
-        )
-    })?;
-    apply_config_values(&mut config, config_values)?;
-
-    std::fs::copy(&package.wasm_path, &wasm_dst).map_err(|err| err.to_string())?;
-    std::fs::write(
-        &config_dst,
-        serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?,
-    )
-    .map_err(|err| err.to_string())?;
+    write_package_artifacts(
+        "channel",
+        &layout.channels_dir(),
+        &package.name,
+        &package.wasm_path,
+        &package.config_template_path,
+        config_values,
+        false,
+    )?;
     Ok(())
 }
 

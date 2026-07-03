@@ -2,9 +2,7 @@ use std::{path::PathBuf, sync::Mutex};
 
 use rusqlite::{Connection, params};
 
-use crate::bus::Sender;
-
-use super::{Automation, AutomationEffect, Trigger, trigger::parse_datetime};
+use super::{Automation, AutomationEffect, Trigger};
 
 pub struct SqliteAutomations {
     conn: Mutex<Connection>,
@@ -33,8 +31,8 @@ impl SqliteAutomations {
     }
 
     pub fn insert(&self, automation: &Automation) -> Result<(), String> {
-        let trigger_json = serde_json::to_string(&StoredTrigger::from_trigger(&automation.trigger))
-            .map_err(|err| err.to_string())?;
+        let trigger_json =
+            serde_json::to_string(&automation.trigger).map_err(|err| err.to_string())?;
         let effect_json =
             serde_json::to_string(&automation.effect).map_err(|err| err.to_string())?;
         let created_at = chrono::Utc::now().to_rfc3339();
@@ -125,69 +123,22 @@ struct StoredAutomationRow {
 
 impl StoredAutomationRow {
     fn into_automation(self) -> Result<Automation, String> {
-        let trigger: StoredTrigger =
+        let trigger: Trigger =
             serde_json::from_str(&self.trigger_json).map_err(|err| err.to_string())?;
         let effect: AutomationEffect =
             serde_json::from_str(&self.effect_json).map_err(|err| err.to_string())?;
         Ok(Automation {
             name: self.name,
-            trigger: trigger.into_trigger()?,
+            trigger,
             effect,
         })
-    }
-}
-
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum StoredTrigger {
-    Cron {
-        expression: String,
-    },
-    At {
-        datetime: String,
-    },
-    #[serde(alias = "event")]
-    MessageIn {
-        #[serde(default)]
-        sender: Option<Sender>,
-        #[serde(default)]
-        channel: Option<String>,
-    },
-    ToolResult,
-}
-
-impl StoredTrigger {
-    fn from_trigger(trigger: &Trigger) -> Self {
-        match trigger {
-            Trigger::Cron { expression, .. } => Self::Cron {
-                expression: expression.clone(),
-            },
-            Trigger::At { datetime } => Self::At {
-                datetime: datetime.to_rfc3339(),
-            },
-            Trigger::MessageIn { sender, channel } => Self::MessageIn {
-                sender: sender.clone(),
-                channel: channel.clone(),
-            },
-            Trigger::ToolResult => Self::ToolResult,
-        }
-    }
-
-    fn into_trigger(self) -> Result<Trigger, String> {
-        match self {
-            Self::Cron { expression } => Trigger::cron(&expression),
-            Self::At { datetime } => Ok(Trigger::At {
-                datetime: parse_datetime(&datetime)?,
-            }),
-            Self::MessageIn { sender, channel } => Ok(Trigger::MessageIn { sender, channel }),
-            Self::ToolResult => Ok(Trigger::ToolResult),
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::Sender;
 
     fn temp_store() -> SqliteAutomations {
         let path = std::env::temp_dir().join(format!(

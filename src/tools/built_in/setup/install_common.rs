@@ -1,4 +1,9 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+
+use crate::secrets::Secrets;
 
 #[derive(Clone, serde::Deserialize)]
 pub struct SetupSecret {
@@ -51,6 +56,42 @@ impl ConfigValueType {
 
 pub fn config_prompt(config: &SetupConfig) -> &str {
     config.prompt.as_deref().unwrap_or(&config.path)
+}
+
+pub fn config_statuses(configs: Vec<SetupConfig>) -> Vec<serde_json::Value> {
+    configs
+        .into_iter()
+        .map(|config| {
+            serde_json::json!({
+                "path": config.path,
+                "type": config.value_type.as_str(),
+                "prompt": config_prompt(&config),
+            })
+        })
+        .collect()
+}
+
+pub fn secret_statuses(
+    secrets: Vec<SetupSecret>,
+    secrets_store: &Secrets,
+    include_auto_generate: bool,
+) -> Vec<serde_json::Value> {
+    secrets
+        .into_iter()
+        .map(|secret| {
+            let secret_name = stored_secret_name(&secret.name);
+            let mut status = serde_json::json!({
+                "name": secret.name,
+                "secret": secret_name,
+                "configured": secrets_store.exists(&secret_name),
+                "optional": secret.optional,
+            });
+            if include_auto_generate {
+                status["auto_generate"] = serde_json::Value::Bool(secret.auto_generate.is_some());
+            }
+            status
+        })
+        .collect()
 }
 
 pub fn secret_value(secret: &SetupSecret, message: &str) -> Result<String, String> {
@@ -113,6 +154,78 @@ pub fn apply_config_values(
         set_json_pointer(config, path, value.clone())?;
     }
     Ok(())
+}
+
+pub fn locate_config_template(
+    source_dir: &Path,
+    name: &str,
+    kind: &str,
+) -> Result<PathBuf, String> {
+    for file_name in [
+        format!("{name}.config.json"),
+        format!("{name}.config.example.json"),
+    ] {
+        let path = source_dir.join(file_name);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+    Err(format!(
+        "{kind} '{name}' has no config template in {}",
+        source_dir.display()
+    ))
+}
+
+pub fn write_package_artifacts(
+    kind: &str,
+    install_dir: &Path,
+    name: &str,
+    wasm_path: &Path,
+    config_template_path: &Path,
+    config_values: &BTreeMap<String, serde_json::Value>,
+    reject_existing: bool,
+) -> Result<(PathBuf, PathBuf, String), String> {
+    std::fs::create_dir_all(install_dir).map_err(|err| err.to_string())?;
+    let wasm_dst = install_dir.join(format!("{name}.wasm"));
+    let config_dst = install_dir.join(format!("{name}.config.json"));
+    if reject_existing && (wasm_dst.exists() || config_dst.exists()) {
+        return Err(format!("{kind} '{name}' is already installed"));
+    }
+    let mut config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(config_template_path)
+            .map_err(|err| format!("could not read {}: {err}", config_template_path.display()))?,
+    )
+    .map_err(|err| format!("could not parse {}: {err}", config_template_path.display()))?;
+    apply_config_values(&mut config, config_values)?;
+
+    std::fs::copy(wasm_path, &wasm_dst).map_err(|err| err.to_string())?;
+    let config_json = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
+    std::fs::write(&config_dst, &config_json).map_err(|err| err.to_string())?;
+    Ok((wasm_dst, config_dst, config_json))
+}
+
+pub fn discover_package_dir_names(source_dirs: Vec<PathBuf>) -> Vec<String> {
+    let mut names = Vec::new();
+    for source_root in source_dirs {
+        let Ok(entries) = std::fs::read_dir(source_root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if entry.path().join(format!("{name}.install.json")).exists() {
+                names.push(name);
+            }
+        }
+    }
+    names
 }
 
 pub fn set_json_pointer(

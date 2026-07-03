@@ -2,24 +2,49 @@ use std::str::FromStr;
 
 use crate::bus::{Event, Sender};
 
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Trigger {
     /// Recurring, standard cron expression, evaluated in local time.
-    Cron {
-        expression: String,
-        schedule: Box<cron::Schedule>,
-    },
+    Cron { expression: String },
     /// One-shot, fires once at the given instant.
     At {
+        #[serde(with = "datetime_serde")]
         datetime: chrono::DateTime<chrono::FixedOffset>,
     },
     /// Fires on inbound user/channel messages. `None` fields match anything.
     MessageIn {
+        #[serde(default)]
         sender: Option<Sender>,
+        #[serde(default)]
         channel: Option<String>,
     },
     /// Fires when a conversation-owned tool request has finished.
     ToolResult,
+}
+
+mod datetime_serde {
+    use super::parse_datetime;
+
+    pub fn serialize<S>(
+        datetime: &chrono::DateTime<chrono::FixedOffset>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&datetime.to_rfc3339())
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<chrono::DateTime<chrono::FixedOffset>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        parse_datetime(&text).map_err(serde::de::Error::custom)
+    }
 }
 
 impl Trigger {
@@ -30,12 +55,9 @@ impl Trigger {
             5 => format!("0 {expression}"),
             _ => expression.to_string(),
         };
-        let schedule = cron::Schedule::from_str(&expression)
+        cron::Schedule::from_str(&expression)
             .map_err(|err| format!("invalid cron expression: {err}"))?;
-        Ok(Trigger::Cron {
-            expression,
-            schedule: Box::new(schedule),
-        })
+        Ok(Trigger::Cron { expression })
     }
 
     /// Accepts RFC 3339 (`2026-06-11T09:00:00+02:00`); a timestamp without

@@ -12,6 +12,8 @@ use crate::{
     tools::{self, InternalTool, InternalTools, ToolContext, ToolResponder},
 };
 
+use super::setup::{delete_current_message, send};
+
 pub const AUTOMATION_NAME: &str = "unlock-secrets";
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -66,7 +68,7 @@ impl UnlockSecretsTool {
             session.handle(&self.layout, &params.message)?
         };
         send(&self.tools, &step.message, ctx).await?;
-        delete_current_message(&self.tools, ctx).await;
+        delete_current_message(&self.tools, ctx, "unlock_secrets").await;
         if let Some(store) = step.unlocked {
             self.secrets.unlock(store);
             self.bus.publish(Event::SecretsUnlocked);
@@ -209,31 +211,4 @@ fn initialize_or_verify_new_store(
         message: "Secret store created. Starting Warden.".to_string(),
         unlocked: Some(store),
     })
-}
-
-async fn send(tools: &InternalTools, content: &str, ctx: &ToolContext) -> Result<(), String> {
-    let result = tools::run_tool(
-        tools,
-        "send_message",
-        serde_json::json!({ "content": content }),
-        ctx,
-    )
-    .await;
-    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-        return Err(result["error"]
-            .as_str()
-            .unwrap_or("send failed")
-            .to_string());
-    }
-    Ok(())
-}
-
-async fn delete_current_message(tools: &InternalTools, ctx: &ToolContext) {
-    let result = tools::run_tool(tools, "delete_message", serde_json::json!({}), ctx).await;
-    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-        eprintln!(
-            "unlock_secrets could not delete inbound unlock message: {}",
-            result["error"].as_str().unwrap_or("unknown error")
-        );
-    }
 }

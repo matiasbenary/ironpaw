@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    automations::{Automation, AutomationEffect, Automations, Trigger},
+    automations::{Automation, AutomationEffect, Trigger},
     bus::Sender,
     config::RuntimeLayout,
     message::ToolDefinition,
@@ -17,16 +17,15 @@ use crate::{
         setup::{
             SetupServices, delete_current_message,
             install_common::{
-                SetupConfig, SetupSecret, apply_config_values, config_prompt, config_value, is_yes,
-                secret_value, stored_secret_name,
+                SetupConfig, SetupSecret, config_prompt, config_statuses, config_value,
+                discover_package_dir_names, is_yes, locate_config_template, secret_statuses,
+                secret_value, stored_secret_name, write_package_artifacts,
             },
-            publish_tool_result, send,
+            pause_conversation, publish_tool_result, send, stop_setup_automation,
         },
         wasm::{WasmTool, WasmToolConfig, WasmToolManifest},
     },
 };
-
-const HANDLE_CONVERSATION_AUTOMATION: &str = "handle-conversation";
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct InstallToolParams {
@@ -143,8 +142,8 @@ impl ListToolsTool {
                 "description": package.manifest.description,
                 "installed": installed,
                 "installable": !installed,
-                "required_secrets": secret_statuses(&package, &self.secrets),
-                "required_config": config_statuses(&package),
+                "required_secrets": secret_statuses(required_secrets(&package), &self.secrets, false),
+                "required_config": config_statuses(required_config(&package)),
             }));
         }
 
@@ -223,9 +222,7 @@ impl InstallToolTool {
             config_values: BTreeMap::new(),
             continuation: Some(responder),
         });
-        self.setup
-            .automations
-            .delete(HANDLE_CONVERSATION_AUTOMATION)?;
+        pause_conversation(&self.setup.automations)?;
         self.setup.automations.add(Self::automation(name))?;
         send(
             &self.setup.tools,
@@ -356,18 +353,7 @@ impl InstallToolTool {
         let name = session.package.name.clone();
         let continuation = session.continuation.clone();
         *self.session.lock().expect("install tool session lock") = None;
-        self.setup
-            .automations
-            .delete(&format!("tool_auth:{name}"))?;
-        if !self
-            .setup
-            .automations
-            .contains(HANDLE_CONVERSATION_AUTOMATION)
-        {
-            self.setup
-                .automations
-                .add(Automations::handle_conversation())?;
-        }
+        stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
         send(
             &self.setup.tools,
             "Tool installation cancelled. I will answer normally again.",
@@ -385,18 +371,7 @@ impl InstallToolTool {
         let name = session.package.name.clone();
         let continuation = session.continuation.clone();
         *self.session.lock().expect("install tool session lock") = None;
-        self.setup
-            .automations
-            .delete(&format!("tool_auth:{name}"))?;
-        if !self
-            .setup
-            .automations
-            .contains(HANDLE_CONVERSATION_AUTOMATION)
-        {
-            self.setup
-                .automations
-                .add(Automations::handle_conversation())?;
-        }
+        stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
         send(
             &self.setup.tools,
             &format!("The {name} tool is installed."),
@@ -516,7 +491,7 @@ fn locate_tool_package(layout: &RuntimeLayout, name: &str) -> Result<ToolPackage
         ));
     }
     let wasm_path = locate_wasm(&source_dir, &actual_dir_name)?;
-    let config_template_path = locate_config_template(&source_dir, &actual_dir_name)?;
+    let config_template_path = locate_config_template(&source_dir, &actual_dir_name, "tool")?;
     let display_name = manifest
         .display_name
         .clone()
@@ -531,33 +506,10 @@ fn locate_tool_package(layout: &RuntimeLayout, name: &str) -> Result<ToolPackage
 }
 
 fn discover_tool_packages(layout: &RuntimeLayout) -> Vec<Result<ToolPackage, String>> {
-    let mut packages = Vec::new();
-    for source_root in tool_source_dirs(layout) {
-        let Ok(entries) = std::fs::read_dir(source_root) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-            let Some(dir_name) = entry.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            if !entry
-                .path()
-                .join(format!("{dir_name}.install.json"))
-                .exists()
-            {
-                continue;
-            }
-            let name = dir_name.replace('-', "_");
-            packages.push(locate_tool_package(layout, &name));
-        }
-    }
-    packages
+    discover_package_dir_names(tool_source_dirs(layout))
+        .into_iter()
+        .map(|name| locate_tool_package(layout, &name.replace('-', "_")))
+        .collect()
 }
 
 fn installed_tool_names(layout: &RuntimeLayout) -> Result<Vec<String>, String> {
@@ -602,55 +554,12 @@ fn locate_wasm(source_dir: &Path, dir_name: &str) -> Result<PathBuf, String> {
     ))
 }
 
-fn locate_config_template(source_dir: &Path, dir_name: &str) -> Result<PathBuf, String> {
-    let config = source_dir.join(format!("{dir_name}.config.json"));
-    if config.exists() {
-        return Ok(config);
-    }
-    let example = source_dir.join(format!("{dir_name}.config.example.json"));
-    if example.exists() {
-        return Ok(example);
-    }
-    Err(format!(
-        "tool '{dir_name}' has no config template in {}",
-        source_dir.display()
-    ))
-}
-
 fn required_secrets(package: &ToolPackage) -> Vec<SetupSecret> {
     package.manifest.secrets.clone()
 }
 
 fn required_config(package: &ToolPackage) -> Vec<SetupConfig> {
     package.manifest.config.clone()
-}
-
-fn secret_statuses(package: &ToolPackage, secrets_store: &Secrets) -> Vec<serde_json::Value> {
-    required_secrets(package)
-        .into_iter()
-        .map(|secret| {
-            let secret_name = stored_secret_name(&secret.name);
-            serde_json::json!({
-                "name": secret.name,
-                "secret": secret_name,
-                "configured": secrets_store.exists(&secret_name),
-                "optional": secret.optional,
-            })
-        })
-        .collect()
-}
-
-fn config_statuses(package: &ToolPackage) -> Vec<serde_json::Value> {
-    required_config(package)
-        .into_iter()
-        .map(|config| {
-            serde_json::json!({
-                "path": config.path,
-                "type": config.value_type.as_str(),
-                "prompt": config.prompt.as_deref().unwrap_or(&config.path),
-            })
-        })
-        .collect()
 }
 
 fn secret_prompt(package: &ToolPackage, secret: &SetupSecret) -> String {
@@ -670,32 +579,15 @@ fn install_package(
     package: &ToolPackage,
     config_values: &BTreeMap<String, serde_json::Value>,
 ) -> Result<WasmToolManifest, String> {
-    let tools_dir = layout.tools_dir();
-    std::fs::create_dir_all(&tools_dir).map_err(|err| err.to_string())?;
-    let wasm_dst = tools_dir.join(format!("{}.wasm", package.name));
-    let config_dst = tools_dir.join(format!("{}.config.json", package.name));
-    if wasm_dst.exists() || config_dst.exists() {
-        return Err(format!("tool '{}' is already installed", package.name));
-    }
-    let mut config: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&package.config_template_path).map_err(|err| {
-            format!(
-                "could not read {}: {err}",
-                package.config_template_path.display()
-            )
-        })?,
-    )
-    .map_err(|err| {
-        format!(
-            "could not parse {}: {err}",
-            package.config_template_path.display()
-        )
-    })?;
-    apply_config_values(&mut config, config_values)?;
-
-    std::fs::copy(&package.wasm_path, &wasm_dst).map_err(|err| err.to_string())?;
-    let config_json = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
-    std::fs::write(&config_dst, &config_json).map_err(|err| err.to_string())?;
+    let (wasm_dst, config_dst, config_json) = write_package_artifacts(
+        "tool",
+        &layout.tools_dir(),
+        &package.name,
+        &package.wasm_path,
+        &package.config_template_path,
+        config_values,
+        true,
+    )?;
     let parsed: WasmToolConfig =
         serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
     Ok(WasmToolManifest {

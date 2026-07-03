@@ -4,14 +4,37 @@ pub mod install_tool;
 pub mod onboarding;
 mod services;
 
-use crate::tools::{self, InternalTools, ToolContext, ToolResponder};
+use std::sync::Arc;
+
+use crate::{
+    automations::Automations,
+    tools::{self, InternalTools, ToolContext, ToolResponder},
+};
 
 pub use install_channel::{InstallChannelTool, ListChannelsTool, RemoveChannelTool};
 pub use install_tool::{InstallToolTool, ListToolsTool};
 pub use onboarding::OnboardingTool;
 pub use services::SetupServices;
 
-async fn send(tools: &InternalTools, content: &str, ctx: &ToolContext) -> Result<(), String> {
+const HANDLE_CONVERSATION_AUTOMATION: &str = "handle-conversation";
+
+fn pause_conversation(automations: &Arc<Automations>) -> Result<(), String> {
+    automations.delete(HANDLE_CONVERSATION_AUTOMATION)
+}
+
+fn stop_setup_automation(automations: &Arc<Automations>, name: &str) -> Result<(), String> {
+    automations.delete(name)?;
+    if !automations.contains(HANDLE_CONVERSATION_AUTOMATION) {
+        automations.add(Automations::handle_conversation())?;
+    }
+    Ok(())
+}
+
+pub(super) async fn send(
+    tools: &InternalTools,
+    content: &str,
+    ctx: &ToolContext,
+) -> Result<(), String> {
     let result = tools::run_tool(
         tools,
         "send_message",
@@ -28,7 +51,7 @@ async fn send(tools: &InternalTools, content: &str, ctx: &ToolContext) -> Result
     Ok(())
 }
 
-async fn delete_current_message(tools: &InternalTools, ctx: &ToolContext, label: &str) {
+pub(super) async fn delete_current_message(tools: &InternalTools, ctx: &ToolContext, label: &str) {
     let result = tools::run_tool(tools, "delete_message", serde_json::json!({}), ctx).await;
     if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
         eprintln!(
