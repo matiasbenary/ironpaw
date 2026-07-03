@@ -35,7 +35,8 @@ impl AutomationEvent<'_> {
                     channel,
                     sender,
                     channel_user_id,
-                    address,
+                    conversation,
+                    message_id,
                     message,
                 } => {
                     let text = match message {
@@ -43,8 +44,8 @@ impl AutomationEvent<'_> {
                         _ => String::new(),
                     };
                     let ctx = ToolContext {
-                        destination: Some((channel.clone(), address.clone())),
-                        conversation_id: Some(address.conversation_id.clone()),
+                        conversation: Some(conversation.clone()),
+                        message_id: message_id.clone(),
                         ..ToolContext::default()
                     };
                     let event = serde_json::json!({
@@ -52,9 +53,10 @@ impl AutomationEvent<'_> {
                         "channel": channel,
                         "sender": sender_name(sender),
                         "channel_user_id": channel_user_id,
-                        "conversation_id": address.conversation_id,
-                        "thread_id": address.thread_id,
-                        "message_id": address.message_id,
+                        "conversation": conversation,
+                        "chat_id": &conversation.chat_id,
+                        "thread_id": &conversation.thread_id,
+                        "message_id": message_id,
                         "text": text,
                     });
                     (ctx, event)
@@ -64,23 +66,22 @@ impl AutomationEvent<'_> {
                         ToolOrigin::Conversation {
                             channel,
                             sender: _,
-                            address,
+                            conversation,
                         },
                     tool_call_id,
                     tool_name,
                     result,
                 } => {
                     let ctx = ToolContext {
-                        destination: Some((channel.clone(), address.clone())),
-                        conversation_id: Some(address.conversation_id.clone()),
+                        conversation: Some(conversation.clone()),
                         ..ToolContext::default()
                     };
                     let event = serde_json::json!({
                         "type": "tool_result",
                         "channel": channel,
-                        "conversation_id": address.conversation_id,
-                        "thread_id": address.thread_id,
-                        "message_id": address.message_id,
+                        "conversation": conversation,
+                        "chat_id": &conversation.chat_id,
+                        "thread_id": &conversation.thread_id,
                         "tool_call_id": tool_call_id,
                         "tool_name": tool_name,
                         "result": result,
@@ -161,9 +162,7 @@ impl Automations {
                 sender: Some(Sender::User),
                 channel: None,
             },
-            effect: AutomationEffect::ContinueConversation {
-                conversation_id: "{{event.conversation_id}}".to_string(),
-            },
+            effect: AutomationEffect::ContinueConversation,
         }
     }
 
@@ -171,9 +170,7 @@ impl Automations {
         Automation {
             name: "handle-tool-result".to_string(),
             trigger: Trigger::ToolResult,
-            effect: AutomationEffect::ContinueConversation {
-                conversation_id: "{{event.conversation_id}}".to_string(),
-            },
+            effect: AutomationEffect::ContinueConversation,
         }
     }
 
@@ -282,11 +279,7 @@ impl Automations {
                 }
                 self.tools.registry.named_tools(tools)?;
             }
-            AutomationEffect::ContinueConversation { conversation_id } => {
-                if conversation_id.trim().is_empty() {
-                    return Err("conversation_id must not be empty".to_string());
-                }
-            }
+            AutomationEffect::ContinueConversation => {}
         };
         Ok(Automation {
             name: spec.name,
@@ -380,9 +373,7 @@ impl Automations {
 
     fn persist_tool_result(&self, event: &Event) {
         let Event::ToolResult {
-            origin: ToolOrigin::Conversation {
-                channel, address, ..
-            },
+            origin: ToolOrigin::Conversation { conversation, .. },
             tool_call_id,
             tool_name,
             result,
@@ -391,19 +382,14 @@ impl Automations {
             return;
         };
         self.tools.history.append(
-            &address.conversation_id,
+            conversation,
             &[HistoryEntry {
                 message: Message::ToolResult {
                     tool_call_id: tool_call_id.clone(),
                     tool_name: tool_name.clone(),
                     result: result.clone(),
                 },
-                metadata: MessageMetadata::new(
-                    channel.clone(),
-                    address.conversation_id.clone(),
-                    address.thread_id.clone(),
-                    None,
-                ),
+                metadata: MessageMetadata::new(conversation.clone(), None),
             }],
         );
     }
@@ -549,7 +535,7 @@ mod tests {
     use super::*;
     use crate::{
         agent::Agent,
-        bus::ChannelAddress,
+        bus::ConversationKey,
         history::SqliteHistory,
         message::Message,
         tools::{InternalTools, messages::SendMessageTool, raw_inference::RawInferenceTool},
@@ -612,12 +598,12 @@ mod tests {
             channel: channel.to_string(),
             sender,
             channel_user_id: None,
-            address: ChannelAddress {
+            conversation: ConversationKey {
                 channel: channel.to_string(),
-                conversation_id: "c1".to_string(),
+                chat_id: "c1".to_string(),
                 thread_id: None,
-                message_id: None,
             },
+            message_id: None,
             message: Message::User {
                 text: "hi".to_string(),
                 attachments: Vec::new(),
@@ -630,10 +616,9 @@ mod tests {
         let (ctx, event) = AutomationEvent::Bus(&message_in("tui", Sender::User)).context();
         assert_eq!(event["type"], "message_in");
         assert_eq!(event["text"], "hi");
-        assert_eq!(event["conversation_id"], "c1");
-        assert_eq!(ctx.conversation_id.as_deref(), Some("c1"));
-        let (channel, _) = ctx.destination.expect("destination");
-        assert_eq!(channel, "tui");
+        assert_eq!(event["chat_id"], "c1");
+        assert_eq!(ctx.conversation.as_ref().unwrap().chat_id, "c1");
+        assert_eq!(ctx.conversation.as_ref().unwrap().channel, "tui");
     }
 
     #[test]

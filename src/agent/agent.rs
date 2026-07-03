@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    bus::{Bus, ChannelAction, ChannelAddress, Event, Sender, ToolOrigin},
+    bus::{Bus, ChannelAction, ConversationKey, Event, Sender, ToolOrigin},
     history::{History, HistoryEntry, MessageMetadata},
     message::{Message, ToolCall, ToolDefinition},
     models,
@@ -17,9 +17,8 @@ use crate::tools::raw_inference::{RawInferenceRequest, RawInferenceTool};
 const MAX_TOOL_ROUNDS: usize = 8;
 const COMPACT_AFTER_PROMPT_TOKENS: u64 = 12_000;
 
-/// The destination a run replies to: the channel and address the triggering
-/// event came from.
-pub type Destination<'a> = Option<(&'a str, &'a ChannelAddress)>;
+/// The conversation a run replies to.
+pub type Destination<'a> = Option<&'a ConversationKey>;
 
 /// The bounded tool loop: history + raw_inference + tool execution.
 pub struct Agent {
@@ -47,11 +46,13 @@ impl Agent {
     pub async fn handle_conversation(
         &self,
         destination: Destination<'_>,
-        conversation_id: &str,
     ) -> Result<Option<String>, String> {
+        let Some(conversation) = destination else {
+            return Err("conversation is required".to_string());
+        };
         self.run(AgentRun {
             destination,
-            conversation_id,
+            conversation: Some(conversation),
             transient_messages: Vec::new(),
             tools: self.tools.all(),
             allowed_tool_names: None,
@@ -68,7 +69,7 @@ impl Agent {
         let tools = self.tools.named_tools(&tool_names)?;
         self.run(AgentRun {
             destination: None,
-            conversation_id: "agent-task",
+            conversation: None,
             transient_messages: vec![Message::User {
                 text: prompt,
                 attachments: Vec::new(),
@@ -85,17 +86,14 @@ impl Agent {
     /// history.
     async fn run(&self, mut run: AgentRun<'_>) -> Result<Option<String>, String> {
         let ctx = ToolContext {
-            destination: run
-                .destination
-                .map(|(channel, address)| (channel.to_string(), address.clone())),
-            conversation_id: Some(run.conversation_id.to_string()),
+            conversation: run.destination.cloned(),
             ..ToolContext::default()
         };
         let mut prompt_tokens = 0;
 
         for round in 0..MAX_TOOL_ROUNDS {
-            if let Some((channel, address)) = run.destination {
-                publish_channel_action(&self.bus, channel, address, ChannelAction::Typing);
+            if let Some(conversation) = run.destination {
+                publish_channel_action(&self.bus, conversation, ChannelAction::Typing);
             }
             let available_tools = tool_definitions(&run.tools);
             let model_messages = self.model_messages(&run);
@@ -119,7 +117,7 @@ impl Agent {
                 .map_err(|err| err.to_string())?;
             prompt_tokens += output.usage.prompt_tokens;
             if run.persist_history && prompt_tokens >= COMPACT_AFTER_PROMPT_TOKENS {
-                self.compact_history(run.conversation_id).await?;
+                self.compact_history(run.conversation).await?;
                 prompt_tokens = 0;
             }
             let output = output.message;
@@ -137,12 +135,8 @@ impl Agent {
                 ));
                 if run.persist_history && text.as_deref().is_some_and(|text| !text.is_empty()) {
                     self.history.append(
-                        run.conversation_id,
-                        &[history_entry(
-                            output.clone(),
-                            run.destination,
-                            run.conversation_id,
-                        )],
+                        run.conversation.expect("persistent run has conversation"),
+                        &[history_entry(output.clone(), run.destination)],
                     );
                 }
                 return Ok(text.filter(|text| !text.is_empty()));
@@ -170,18 +164,16 @@ impl Agent {
                 run.transient_messages.extend(tool_results);
             } else if tool_requests.len() == 1
                 && run.persist_history
-                && let Some((channel, address)) = run.destination
+                && let Some(conversation) = run.destination
             {
-                self.history.append(
-                    run.conversation_id,
-                    &[history_entry(output, run.destination, run.conversation_id)],
-                );
+                self.history
+                    .append(conversation, &[history_entry(output, run.destination)]);
                 let (tool_call, args) = tool_requests.pop().expect("single tool request exists");
                 self.bus.publish(Event::ToolRequest {
                     origin: ToolOrigin::Conversation {
-                        channel: channel.to_string(),
+                        channel: conversation.channel.clone(),
                         sender: Sender::System,
-                        address: address.clone(),
+                        conversation: conversation.clone(),
                     },
                     tool_call_id: tool_call.id,
                     tool_name: tool_call.name,
@@ -189,10 +181,9 @@ impl Agent {
                 });
                 return Ok(None);
             } else if run.persist_history {
-                self.history.append(
-                    run.conversation_id,
-                    &[history_entry(output, run.destination, run.conversation_id)],
-                );
+                let conversation = run.destination.expect("persistent run has conversation");
+                self.history
+                    .append(conversation, &[history_entry(output, run.destination)]);
                 let mut direct_results = Vec::new();
                 for (tool_call, args) in tool_requests {
                     let tool_result =
@@ -200,10 +191,10 @@ impl Agent {
                     direct_results.push(tool_result.message);
                 }
                 self.history.append(
-                    run.conversation_id,
+                    conversation,
                     &direct_results
                         .into_iter()
-                        .map(|message| history_entry(message, run.destination, run.conversation_id))
+                        .map(|message| history_entry(message, run.destination))
                         .collect::<Vec<_>>(),
                 );
             } else {
@@ -218,8 +209,9 @@ impl Agent {
 
         let stopped = "stopped after too many tool calls".to_string();
         if run.persist_history {
+            let conversation = run.destination.expect("persistent run has conversation");
             self.history.append(
-                run.conversation_id,
+                conversation,
                 &[history_entry(
                     Message::Assistant {
                         text: Some(format!("[tool use] {stopped}")),
@@ -227,7 +219,6 @@ impl Agent {
                         tool_calls: Vec::new(),
                     },
                     run.destination,
-                    run.conversation_id,
                 )],
             );
         }
@@ -239,7 +230,7 @@ impl Agent {
         if run.persist_history {
             messages.extend(
                 self.history
-                    .load(run.conversation_id)
+                    .load(run.destination.expect("persistent run has conversation"))
                     .into_iter()
                     .map(|entry| entry.message),
             );
@@ -251,13 +242,16 @@ impl Agent {
     fn publish_tool_progress(&self, destination: Destination<'_>, tool_name: &str) {
         let progress_message = format!("calling {tool_name}");
         debug_log(format!("agent: {progress_message}"));
-        if let Some((channel, address)) = destination {
-            publish_progress(&self.bus, channel, address, progress_message);
+        if let Some(conversation) = destination {
+            publish_progress(&self.bus, conversation, progress_message);
         }
     }
 
-    async fn compact_history(&self, conversation_id: &str) -> Result<(), String> {
-        let history = self.history.load(conversation_id);
+    async fn compact_history(&self, conversation: Option<&ConversationKey>) -> Result<(), String> {
+        let Some(conversation) = conversation else {
+            return Ok(());
+        };
+        let history = self.history.load(conversation);
         if history.is_empty() {
             return Ok(());
         }
@@ -266,7 +260,7 @@ impl Agent {
             .map(|entry| entry.message.clone())
             .collect::<Vec<_>>();
         let summary = self.summarize_history(messages).await?;
-        self.history.compact(conversation_id, &summary);
+        self.history.compact(conversation, &summary);
         Ok(())
     }
 
@@ -305,7 +299,7 @@ impl Agent {
 
 struct AgentRun<'a> {
     destination: Destination<'a>,
-    conversation_id: &'a str,
+    conversation: Option<&'a ConversationKey>,
     transient_messages: Vec<Message>,
     tools: Vec<Arc<dyn InternalTool>>,
     allowed_tool_names: Option<Vec<String>>,
@@ -319,27 +313,20 @@ fn tool_definitions(tools: &[Arc<dyn InternalTool>]) -> Vec<ToolDefinition> {
         .collect()
 }
 
-fn history_entry(
-    message: Message,
-    destination: Destination<'_>,
-    conversation_id: &str,
-) -> HistoryEntry {
+fn history_entry(message: Message, destination: Destination<'_>) -> HistoryEntry {
     HistoryEntry {
         message,
-        metadata: history_metadata(destination, conversation_id),
+        metadata: history_metadata(destination),
     }
 }
 
-fn history_metadata(destination: Destination<'_>, conversation_id: &str) -> MessageMetadata {
-    if let Some((channel, address)) = destination {
-        return MessageMetadata::new(
-            channel,
-            address.conversation_id.clone(),
-            address.thread_id.clone(),
-            None,
-        );
-    }
-    MessageMetadata::new("internal", conversation_id.to_string(), None, None)
+fn history_metadata(destination: Destination<'_>) -> MessageMetadata {
+    MessageMetadata::new(
+        destination
+            .expect("persistent history entry has conversation")
+            .clone(),
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -547,7 +534,7 @@ mod tests {
 
         let Event::MessageOut {
             channel,
-            address,
+            conversation,
             message,
             ..
         } = event
@@ -555,7 +542,7 @@ mod tests {
             panic!("expected MessageOut");
         };
         assert_eq!(channel, "telegram");
-        assert!(address.is_none());
+        assert!(conversation.is_none());
         let Message::Assistant { text, .. } = message else {
             panic!("expected assistant message");
         };

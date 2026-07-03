@@ -19,9 +19,7 @@ pub enum AutomationEffect {
         prompt: String,
         tools: Vec<String>,
     },
-    ContinueConversation {
-        conversation_id: String,
-    },
+    ContinueConversation,
 }
 
 impl AutomationEffect {
@@ -45,17 +43,8 @@ impl AutomationEffect {
                     Err(err) => serde_json::json!({ "ok": false, "error": err }),
                 }
             }
-            Self::ContinueConversation { conversation_id } => {
-                let conversation_id = render_text(conversation_id, event);
-                match agent
-                    .handle_conversation(
-                        ctx.destination
-                            .as_ref()
-                            .map(|(channel, address)| (channel.as_str(), address)),
-                        &conversation_id,
-                    )
-                    .await
-                {
+            Self::ContinueConversation => {
+                match agent.handle_conversation(ctx.conversation.as_ref()).await {
                     Ok(result) => {
                         if let Some(text) = result {
                             send_to_destination(bus, ctx, text);
@@ -78,14 +67,14 @@ fn render_text(template: &str, event: &serde_json::Value) -> String {
 }
 
 fn send_to_destination(bus: &Bus, ctx: &ToolContext, text: String) {
-    let Some((channel, address)) = &ctx.destination else {
+    let Some(conversation) = &ctx.conversation else {
         eprintln!("automation result has no destination: {text}");
         return;
     };
     bus.publish(Event::MessageOut {
-        channel: channel.clone(),
+        channel: conversation.channel.clone(),
         recipient: Sender::User,
-        address: Some(address.clone()),
+        conversation: Some(conversation.clone()),
         message: crate::message::Message::Assistant {
             text: Some(text),
             attachments: Vec::new(),

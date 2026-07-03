@@ -2,7 +2,7 @@ mod event;
 
 pub use event::{
     AutomationAction, AutomationEffectSpec, AutomationSpec, AutomationTriggerSpec, ChannelAction,
-    ChannelAddress, Event, Sender, ToolOrigin,
+    ConversationKey, Event, MessageRef, Sender, ToolOrigin,
 };
 use tokio::sync::broadcast;
 

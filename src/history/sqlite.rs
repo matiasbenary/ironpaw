@@ -9,7 +9,7 @@ use super::{History, HistoryEntry, MessageMetadata};
 /// SQLite-backed persistent history.
 ///
 /// Schema:
-///   entries(id, conversation_id, item_json, metadata_json, search_text, active)
+///   entries(id, conversation_key, item_json, metadata_json, search_text, active)
 ///
 /// `item_json`    — full serialised `Message`
 /// `metadata_json` — full serialised `MessageMetadata`
@@ -30,13 +30,13 @@ impl SqliteHistory {
             "PRAGMA journal_mode=WAL;
              CREATE TABLE IF NOT EXISTS entries (
                  id              INTEGER PRIMARY KEY,
-                 conversation_id TEXT    NOT NULL,
+                 conversation_key TEXT    NOT NULL,
                  item_json       TEXT    NOT NULL,
                  metadata_json   TEXT    NOT NULL DEFAULT '',
                  search_text     TEXT    NOT NULL DEFAULT '',
                  active          INTEGER NOT NULL DEFAULT 1
              );
-             CREATE INDEX IF NOT EXISTS idx_conv ON entries(conversation_id, active);
+             CREATE INDEX IF NOT EXISTS idx_conv ON entries(conversation_key, active);
              CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
                  search_text, content='entries', content_rowid='id'
              );
@@ -106,16 +106,17 @@ fn entry_from_row(item_json: String, metadata_json: String) -> Option<HistoryEnt
 }
 
 impl History for SqliteHistory {
-    fn load(&self, conversation_id: &str) -> Vec<HistoryEntry> {
+    fn load(&self, conversation: &crate::bus::ConversationKey) -> Vec<HistoryEntry> {
+        let conversation_key = conversation.storage_key();
         let conn = self.conn.lock().expect("history mutex poisoned");
         let mut stmt = conn
             .prepare(
                 "SELECT item_json, metadata_json FROM entries
-                 WHERE conversation_id = ?1 AND active = 1
+                 WHERE conversation_key = ?1 AND active = 1
                  ORDER BY id ASC",
             )
             .expect("prepare load");
-        stmt.query_map(params![conversation_id], |row| {
+        stmt.query_map(params![conversation_key], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .expect("query load")
@@ -124,7 +125,8 @@ impl History for SqliteHistory {
         .collect()
     }
 
-    fn append(&self, conversation_id: &str, entries: &[HistoryEntry]) {
+    fn append(&self, conversation: &crate::bus::ConversationKey, entries: &[HistoryEntry]) {
+        let conversation_key = conversation.storage_key();
         let conn = self.conn.lock().expect("history mutex poisoned");
         for entry in entries {
             let json = serde_json::to_string(&entry.message).expect("serialize Message");
@@ -132,32 +134,31 @@ impl History for SqliteHistory {
                 serde_json::to_string(&entry.metadata).expect("serialize MessageMetadata");
             let text = extract_search_text(&entry.message);
             conn.execute(
-                "INSERT INTO entries(conversation_id, item_json, metadata_json, search_text)
+                "INSERT INTO entries(conversation_key, item_json, metadata_json, search_text)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![conversation_id, json, metadata_json, text],
+                params![conversation_key, json, metadata_json, text],
             )
             .expect("insert entry");
         }
     }
 
-    fn delete_external_message(
-        &self,
-        channel: &str,
-        channel_conversation_id: &str,
-        thread_id: Option<&str>,
-        external_id: &str,
-    ) {
+    fn delete_external_message(&self, message: &crate::bus::MessageRef) {
         let conn = self.conn.lock().expect("history mutex poisoned");
-        match thread_id {
+        match message.conversation.thread_id.as_deref() {
             Some(thread_id) => {
                 conn.execute(
                     "DELETE FROM entries
                      WHERE json_valid(metadata_json)
-                       AND json_extract(metadata_json, '$.channel') = ?1
-                       AND json_extract(metadata_json, '$.channel_conversation_id') = ?2
-                       AND json_extract(metadata_json, '$.thread_id') = ?3
+                       AND json_extract(metadata_json, '$.conversation.channel') = ?1
+                       AND json_extract(metadata_json, '$.conversation.chat_id') = ?2
+                       AND json_extract(metadata_json, '$.conversation.thread_id') = ?3
                        AND json_extract(metadata_json, '$.external_id') = ?4",
-                    params![channel, channel_conversation_id, thread_id, external_id],
+                    params![
+                        &message.conversation.channel,
+                        &message.conversation.chat_id,
+                        thread_id,
+                        &message.message_id
+                    ],
                 )
                 .expect("delete external message");
             }
@@ -165,33 +166,40 @@ impl History for SqliteHistory {
                 conn.execute(
                     "DELETE FROM entries
                      WHERE json_valid(metadata_json)
-                       AND json_extract(metadata_json, '$.channel') = ?1
-                       AND json_extract(metadata_json, '$.channel_conversation_id') = ?2
-                       AND json_type(metadata_json, '$.thread_id') IS NULL
+                       AND json_extract(metadata_json, '$.conversation.channel') = ?1
+                       AND json_extract(metadata_json, '$.conversation.chat_id') = ?2
+                       AND (
+                           json_type(metadata_json, '$.conversation.thread_id') IS NULL
+                           OR json_type(metadata_json, '$.conversation.thread_id') = 'null'
+                       )
                        AND json_extract(metadata_json, '$.external_id') = ?3",
-                    params![channel, channel_conversation_id, external_id],
+                    params![
+                        &message.conversation.channel,
+                        &message.conversation.chat_id,
+                        &message.message_id
+                    ],
                 )
                 .expect("delete external message");
             }
         }
     }
 
-    fn compact(&self, conversation_id: &str, summary: &str) {
+    fn compact(&self, conversation: &crate::bus::ConversationKey, summary: &str) {
+        let conversation_key = conversation.storage_key();
         let conn = self.conn.lock().expect("history mutex poisoned");
         conn.execute(
-            "UPDATE entries SET active = 0 WHERE conversation_id = ?1 AND active = 1",
-            params![conversation_id],
+            "UPDATE entries SET active = 0 WHERE conversation_key = ?1 AND active = 1",
+            params![conversation_key],
         )
         .expect("compact update");
         let summary_item = Message::System(format!("[conversation summary] {summary}"));
-        let summary_metadata =
-            MessageMetadata::new("warden", conversation_id.to_string(), None, None);
+        let summary_metadata = MessageMetadata::new(conversation.clone(), None);
         let json = serde_json::to_string(&summary_item).expect("serialize summary");
         let metadata_json = serde_json::to_string(&summary_metadata).expect("serialize metadata");
         conn.execute(
-            "INSERT INTO entries(conversation_id, item_json, metadata_json, search_text)
+            "INSERT INTO entries(conversation_key, item_json, metadata_json, search_text)
              VALUES (?1, ?2, ?3, ?4)",
-            params![conversation_id, json, metadata_json, summary],
+            params![conversation_key, json, metadata_json, summary],
         )
         .expect("insert summary");
     }
@@ -221,6 +229,7 @@ impl History for SqliteHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::{ConversationKey, MessageRef};
 
     fn temp_history() -> SqliteHistory {
         let path =
@@ -231,83 +240,92 @@ mod tests {
     #[test]
     fn appends_and_loads_message_metadata() {
         let history = temp_history();
+        let conversation = ConversationKey {
+            channel: "telegram".to_string(),
+            chat_id: "chat-1".to_string(),
+            thread_id: Some("thread-1".to_string()),
+        };
         let entry = HistoryEntry {
             message: Message::User {
                 text: "hello".to_string(),
                 attachments: Vec::new(),
             },
-            metadata: MessageMetadata::new(
-                "telegram",
-                "chat-1",
-                Some("thread-1".to_string()),
-                Some("provider-1".to_string()),
-            ),
+            metadata: MessageMetadata::new(conversation.clone(), Some("provider-1".to_string())),
         };
 
-        history.append("chat-1", std::slice::from_ref(&entry));
+        history.append(&conversation, std::slice::from_ref(&entry));
 
-        let loaded = history.load("chat-1");
+        let loaded = history.load(&conversation);
         assert_eq!(loaded, vec![entry]);
     }
 
     #[test]
     fn metadata_external_id_can_be_missing() {
         let history = temp_history();
+        let conversation = ConversationKey {
+            channel: "telegram".to_string(),
+            chat_id: "chat-1".to_string(),
+            thread_id: None,
+        };
         history.append(
-            "chat-1",
+            &conversation,
             &[HistoryEntry {
                 message: Message::Assistant {
                     text: Some("done".to_string()),
                     attachments: Vec::new(),
                     tool_calls: Vec::new(),
                 },
-                metadata: MessageMetadata::new("telegram", "chat-1", None, None),
+                metadata: MessageMetadata::new(conversation.clone(), None),
             }],
         );
 
-        let loaded = history.load("chat-1");
+        let loaded = history.load(&conversation);
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].metadata.channel, "telegram");
-        assert_eq!(loaded[0].metadata.channel_conversation_id, "chat-1");
+        assert_eq!(loaded[0].metadata.conversation.channel, "telegram");
+        assert_eq!(loaded[0].metadata.conversation.chat_id, "chat-1");
         assert_eq!(loaded[0].metadata.external_id, None);
     }
 
     #[test]
     fn deletes_by_channel_conversation_thread_and_external_id() {
         let history = temp_history();
+        let thread_1 = ConversationKey {
+            channel: "telegram".to_string(),
+            chat_id: "chat-1".to_string(),
+            thread_id: Some("thread-1".to_string()),
+        };
+        let thread_2 = ConversationKey {
+            channel: "telegram".to_string(),
+            chat_id: "chat-1".to_string(),
+            thread_id: Some("thread-2".to_string()),
+        };
         history.append(
-            "chat-1",
-            &[
-                HistoryEntry {
-                    message: Message::User {
-                        text: "secret".to_string(),
-                        attachments: Vec::new(),
-                    },
-                    metadata: MessageMetadata::new(
-                        "telegram",
-                        "chat-1",
-                        Some("thread-1".to_string()),
-                        Some("provider-1".to_string()),
-                    ),
+            &thread_1,
+            &[HistoryEntry {
+                message: Message::User {
+                    text: "secret".to_string(),
+                    attachments: Vec::new(),
                 },
-                HistoryEntry {
-                    message: Message::User {
-                        text: "keep".to_string(),
-                        attachments: Vec::new(),
-                    },
-                    metadata: MessageMetadata::new(
-                        "telegram",
-                        "chat-1",
-                        Some("thread-2".to_string()),
-                        Some("provider-1".to_string()),
-                    ),
+                metadata: MessageMetadata::new(thread_1.clone(), Some("provider-1".to_string())),
+            }],
+        );
+        history.append(
+            &thread_2,
+            &[HistoryEntry {
+                message: Message::User {
+                    text: "keep".to_string(),
+                    attachments: Vec::new(),
                 },
-            ],
+                metadata: MessageMetadata::new(thread_2.clone(), Some("provider-1".to_string())),
+            }],
         );
 
-        history.delete_external_message("telegram", "chat-1", Some("thread-1"), "provider-1");
+        history.delete_external_message(&MessageRef {
+            conversation: thread_1.clone(),
+            message_id: "provider-1".to_string(),
+        });
 
-        let loaded = history.load("chat-1");
+        let loaded = history.load(&thread_2);
         assert_eq!(loaded.len(), 1);
         let Message::User { text, .. } = &loaded[0].message else {
             panic!("expected user message");

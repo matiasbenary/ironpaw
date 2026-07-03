@@ -67,10 +67,10 @@ It exposes two main methods:
 
 Implemented event types are:
 
-- `MessageIn { channel, sender, address, message }`
-- `MessageOut { channel, recipient, address, message }`
-- `DeleteMessage { channel, address }`
-- `ChannelAction { channel, recipient, address, action }`
+- `MessageIn { channel, sender, conversation, message_id, message }`
+- `MessageOut { channel, recipient, conversation, message }`
+- `DeleteMessage { channel, message }`
+- `ChannelAction { channel, recipient, conversation, action }`
 - `AgentRequest { request_id, destination, request }`
 - `AgentResponse { request_id, response }`
 - `Automation { id, action }`
@@ -136,22 +136,32 @@ Channel installation is partly implemented inside the agent through `list_channe
 
 <details>
 
-<summary> Address </summary>
+<summary> Conversations And Messages </summary>
 
-Channels tend to have some concept of `address`, generally, in which chat you are talking with the user.
+Channels tend to have some concept of a chat, room, DM, or thread where the user talks with Warden. Warden calls that a conversation.
 
-To keep the core engine channel-agnostic without making the address totally untyped, bus events use `ChannelAddress`:
+Conversation identity is deliberately separate from message identity. A conversation is the chat-like place where a transcript lives:
 
 ```rust
-struct ChannelAddress {
+struct ConversationKey {
     channel: String,
-    conversation_id: String,
+    chat_id: String,
     thread_id: Option<String>,
-    message_id: Option<String>,
 }
 ```
 
-For Telegram, `conversation_id` maps to the chat id, `thread_id` maps to the optional topic/thread id, and `message_id` maps to the provider message id when Warden knows it.
+For Telegram, `channel` is `"telegram"`, `chat_id` is Telegram's chat id, and `thread_id` is the optional forum topic id. For TUI, `channel` is `"tui"` and `chat_id` is the callback/session id used to send messages back to the local client.
+
+A specific provider-owned message is represented separately:
+
+```rust
+struct MessageRef {
+    conversation: ConversationKey,
+    message_id: String,
+}
+```
+
+This keeps impossible states out of the bus. Sending a message targets a conversation. Deleting a message targets a message reference.
 
 </details>
 
@@ -170,13 +180,13 @@ The bridge has two directional halves:
 4. The WASM channel emits zero or more channel messages with the host-provided `emit_message(message_json)` import.
 5. The bridge validates ownership and channel identity.
 6. Accepted messages become `Event::MessageIn`.
-7. The bridge remembers the sender address as the channel `default_address`.
+7. The bridge remembers the sender conversation as the channel `default_conversation`.
 
 #### Outbound flow
 
 1. The bridge subscribes to the bus.
 2. It listens for `MessageOut`, `DeleteMessage`, and `ChannelAction` events addressed to the user.
-3. For `MessageOut`, it resolves the explicit address or falls back to the channel `default_address`.
+3. For `MessageOut`, it resolves the explicit conversation or falls back to the channel `default_conversation`.
 4. It serializes the event for the channel, adding base64 payloads for local attachments.
 5. It calls WASM `on_outbound_event(event_json, config_json)`.
 6. The WASM channel performs the provider-specific send/delete/action.
@@ -240,7 +250,7 @@ When `warden` starts, it installs a default automation that reacts to inbound us
 
 ```text answer-the-user
 MessageIn(User, any channel)
--> answer_the_user({ message: "{{event.text}}", conversation_id: "{{event.conversation_id}}" })
+-> continue_conversation(current ConversationKey)
 ```
 
 ---
@@ -274,13 +284,13 @@ Warden stores durable conversation history in SQLite:
 
 The history module exposes:
 
-- `load(conversation_id) -> Vec<HistoryEntry>` - load active conversation history.
-- `append(conversation_id, entries)`
-- `delete_external_message(channel, conversation_id, thread_id, external_id)`
-- `compact(conversation_id, summary)` - replace active items with a summary while retaining originals for search.
-- `search(conversation_id, query) -> Vec<HistoryEntry>`
+- `load(conversation) -> Vec<HistoryEntry>` - load active conversation history.
+- `append(conversation, entries)`
+- `delete_external_message(message_ref)`
+- `compact(conversation, summary)` - replace active items with a summary while retaining originals for search.
+- `search(query) -> Vec<HistoryEntry>`
 
-Each history entry stores a Warden message plus metadata: Warden id, channel, conversation id, optional thread id, and optional provider-owned external id.
+Each history entry stores a Warden message plus metadata: Warden id, `ConversationKey`, and optional provider-owned external message id.
 
 Inbound user messages are persisted by the automation runtime before matching automations. Assistant/tool messages are persisted by the agent or by tools such as `send_message`.
 
@@ -298,7 +308,7 @@ Internal tools are async and model-callable. Every internal tool exposes:
 - `tool_definition()`
 - `execute(args, ctx).await`
 
-Each tool receives a `ToolContext` with the current destination, conversation id, and tool-call depth. This lets tools like `send_message` and `delete_message` default to the current conversation when that is what the user asked for.
+Each tool receives a `ToolContext` with the current `ConversationKey`, the current inbound message id when available, and tool-call depth. This lets tools like `send_message` and `delete_message` default to the current conversation or current message when that is what the user asked for.
 
 Implemented internal tools include:
 
@@ -360,7 +370,7 @@ The script's last expression becomes the tool result.
 
 ## Example Flow: TUI Asks For A Telegram Message
 
-This example assumes Telegram has already received at least one valid owner message, so its `default_address` has been stored in `telegram.config.json`.
+This example assumes Telegram has already received at least one valid owner message, so its `default_conversation` has been stored in `telegram.config.json`.
 
 1. The user sends a message in the TUI:
 
@@ -383,7 +393,8 @@ This example assumes Telegram has already received at least one valid owner mess
    Event::MessageIn {
        channel: "tui",
        sender: User,
-       address: <tui address>,
+       conversation: ConversationKey { channel: "tui", chat_id: <callback>, thread_id: None },
+       message_id: None,
        message: Message::User { ... }
    }
    ```
@@ -417,18 +428,18 @@ This example assumes Telegram has already received at least one valid owner mess
    }
    ```
 
-9. The agent executes the `send_message` tool. Because no explicit Telegram `conversation_id` is provided, the tool publishes:
+9. The agent executes the `send_message` tool. Because no explicit Telegram `chat_id` is provided, the tool publishes:
 
    ```text
    Event::MessageOut {
        channel: "telegram",
        recipient: User,
-       address: None,
+       conversation: None,
        message: Message::Assistant { ... }
    }
    ```
 
-10. The channel bridge receives `MessageOut`, finds the Telegram channel, and resolves `address` from Telegram's stored `default_address`.
+10. The channel bridge receives `MessageOut`, finds the Telegram channel, and resolves `conversation` from Telegram's stored `default_conversation`.
 
 11. The bridge calls:
 
@@ -438,7 +449,7 @@ This example assumes Telegram has already received at least one valid owner mess
 
 12. The Telegram WASM channel sends the message to Telegram using its configured HTTP credential injection.
 
-13. The model loop finishes. `answer_the_user` sends the final response back to the original TUI address, usually something like:
+13. The model loop finishes. `answer_the_user` sends the final response back to the original TUI conversation, usually something like:
 
     ```text
     ok
@@ -497,22 +508,3 @@ The model seems to take well to using an `inspect_file` tool to "see" the image,
 Tried using the `/responses` API, but NEAR AI's `previous_response_id` does not load conversation history into the model.
 
 The agent therefore does not rely on `previous_response_id` or `function_call_output` for its main loop.
-
-
-----
-
-## Appendix: Tools that can take over the automation
-
-hmmm, since we have such a deep issue, lets think about this more broadly
-
-we have the agent calling an internal tool [1] that switches the automation so it can talk with the user
-
-we proposed a solution which was giving tools two types of return -> `Finished(result)` and `InteractingWithUser(message)`. So the agent can call an internal tool, and if it returns `InteractingWithUser`, the agent will stop and let the tool take over. If it returns `Finished`, the agent will continue.
-
-Now, the issue is that we want to have Tools behave similarly, but we do not want to let external tools take over the automation. Of course we could put an `if` somewhere, and if an external tool says `InteractingWIthUser` we block it, but that does sound hacky, I prefer if they simply cannot return `InteractingWithUser` at all, without having to separate their return type.
-
-Another thing is that when a tool is `InteractingWithUser` and later `Finishes`, we want the agent to continue, but for that we need to somehow make the agent resume. Apparently this is not currently possible. This created a problem, because how does the tool send a message to the AI Engine? We thought about publishing a message with `Sender::System`, but then we do not want the agent to get stuck in a loop if himself sends a `System` message. Thought maybe the agent never sends `system` messages? I honestly don't remember, we need to check.
-
-I honestly thought this was going to be simpler, the agent would call the tool, some internal tools [1] would simply change the automation and thus take over, until finished, where it would switch automation back and post the tool result. Why was this not possible? 
-
-[1] these tools will be `install_tool`, `install_channel`, `set_secret` (future)

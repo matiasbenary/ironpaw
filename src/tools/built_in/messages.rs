@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::{
-    bus::{Bus, ChannelAddress, Event, Sender},
+    bus::{Bus, ConversationKey, Event, MessageRef, Sender},
     message::{Attachment, Message},
     tools::{self, InternalTool, ToolContext},
 };
@@ -38,7 +38,7 @@ impl SendMessageTool {
             .channel
             .filter(|channel| !channel.trim().is_empty())
             .ok_or_else(|| "channel is required".to_string())?;
-        let address = message_address(&channel, input.conversation_id, input.thread_id);
+        let conversation = message_conversation(&channel, input.chat_id, input.thread_id);
         let message = Message::Assistant {
             text: Some(input.content.unwrap_or_default()),
             attachments,
@@ -47,7 +47,7 @@ impl SendMessageTool {
         self.bus.publish(Event::MessageOut {
             channel: channel.clone(),
             recipient: Sender::User,
-            address,
+            conversation,
             message,
         });
         Ok(serde_json::json!({ "ok": true, "channel": channel }))
@@ -85,7 +85,7 @@ impl InternalTool for SendMessageTool {
 pub struct SendMessageToolInput {
     #[serde(default)]
     #[schemars(
-        description = "Optional channel to send through, for example telegram or tui. If omitted, Warden replies in the current conversation. If provided without conversation_id, that channel's default destination is used."
+        description = "Optional channel to send through, for example telegram or tui. If omitted, Warden replies in the current conversation. If provided without chat_id, that channel's default destination is used."
     )]
     pub channel: Option<String>,
     #[serde(default)]
@@ -100,9 +100,9 @@ pub struct SendMessageToolInput {
     pub content: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional channel conversation id. If omitted for an explicit channel, Warden uses that channel's default destination."
+        description = "Optional chat id. If omitted for an explicit channel, Warden uses that channel's default destination."
     )]
-    pub conversation_id: Option<String>,
+    pub chat_id: Option<String>,
     #[serde(default)]
     #[schemars(description = "Optional channel thread/topic id.")]
     pub thread_id: Option<String>,
@@ -115,29 +115,28 @@ impl SendMessageToolInput {
         if self.channel.is_some() {
             return;
         }
-        let Some((channel, address)) = &ctx.destination else {
+        let Some(conversation) = &ctx.conversation else {
             return;
         };
-        self.channel = Some(channel.clone());
-        if self.conversation_id.is_none() {
-            self.conversation_id = Some(address.conversation_id.clone());
+        self.channel = Some(conversation.channel.clone());
+        if self.chat_id.is_none() {
+            self.chat_id = Some(conversation.chat_id.clone());
         }
         if self.thread_id.is_none() {
-            self.thread_id = address.thread_id.clone();
+            self.thread_id = conversation.thread_id.clone();
         }
     }
 }
 
-fn message_address(
+fn message_conversation(
     channel: &str,
-    conversation_id: Option<String>,
+    chat_id: Option<String>,
     thread_id: Option<String>,
-) -> Option<ChannelAddress> {
-    conversation_id.map(|conversation_id| ChannelAddress {
+) -> Option<ConversationKey> {
+    chat_id.map(|chat_id| ConversationKey {
         channel: channel.to_string(),
-        conversation_id,
+        chat_id,
         thread_id,
-        message_id: None,
     })
 }
 
@@ -159,10 +158,10 @@ impl DeleteMessageTool {
             .channel
             .filter(|channel| !channel.trim().is_empty())
             .ok_or_else(|| "channel is required".to_string())?;
-        let conversation_id = input
-            .conversation_id
-            .filter(|conversation_id| !conversation_id.trim().is_empty())
-            .ok_or_else(|| "conversation_id is required".to_string())?;
+        let chat_id = input
+            .chat_id
+            .filter(|chat_id| !chat_id.trim().is_empty())
+            .ok_or_else(|| "chat_id is required".to_string())?;
         let message_id = input
             .message_id
             .filter(|message_id| !message_id.trim().is_empty())
@@ -170,11 +169,13 @@ impl DeleteMessageTool {
 
         self.bus.publish(Event::DeleteMessage {
             channel: channel.clone(),
-            address: ChannelAddress {
-                channel,
-                conversation_id,
-                thread_id: input.thread_id,
-                message_id: Some(message_id),
+            message: MessageRef {
+                conversation: ConversationKey {
+                    channel,
+                    chat_id,
+                    thread_id: input.thread_id,
+                },
+                message_id,
             },
         });
         Ok(serde_json::json!({ "ok": true }))
@@ -216,9 +217,9 @@ pub struct DeleteMessageToolInput {
     pub channel: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional channel conversation id. If omitted, uses the current inbound message conversation."
+        description = "Optional chat id. If omitted, uses the current inbound message conversation."
     )]
-    pub conversation_id: Option<String>,
+    pub chat_id: Option<String>,
     #[serde(default)]
     #[schemars(
         description = "Optional message id. If omitted, uses the current inbound message id."
@@ -231,20 +232,20 @@ pub struct DeleteMessageToolInput {
 
 impl DeleteMessageToolInput {
     fn fill_current_message(&mut self, ctx: &ToolContext) {
-        let Some((channel, address)) = &ctx.destination else {
+        let Some(conversation) = &ctx.conversation else {
             return;
         };
         if self.channel.is_none() {
-            self.channel = Some(channel.clone());
+            self.channel = Some(conversation.channel.clone());
         }
-        if self.conversation_id.is_none() {
-            self.conversation_id = Some(address.conversation_id.clone());
+        if self.chat_id.is_none() {
+            self.chat_id = Some(conversation.chat_id.clone());
         }
         if self.message_id.is_none() {
-            self.message_id = address.message_id.clone();
+            self.message_id = ctx.message_id.clone();
         }
         if self.thread_id.is_none() {
-            self.thread_id = address.thread_id.clone();
+            self.thread_id = conversation.thread_id.clone();
         }
     }
 }
@@ -259,16 +260,11 @@ mod tests {
 
     fn tui_context() -> ToolContext {
         ToolContext {
-            destination: Some((
-                "telegram".to_string(),
-                ChannelAddress {
-                    channel: "telegram".to_string(),
-                    conversation_id: "123".to_string(),
-                    thread_id: Some("456".to_string()),
-                    message_id: None,
-                },
-            )),
-            conversation_id: Some("123".to_string()),
+            conversation: Some(ConversationKey {
+                channel: "telegram".to_string(),
+                chat_id: "123".to_string(),
+                thread_id: Some("456".to_string()),
+            }),
             ..ToolContext::default()
         }
     }
@@ -281,21 +277,16 @@ mod tests {
         }));
 
         input.fill_current_destination(&ToolContext {
-            destination: Some((
-                "tui".to_string(),
-                ChannelAddress {
-                    channel: "tui".to_string(),
-                    conversation_id: "http://127.0.0.1:60684".to_string(),
-                    thread_id: None,
-                    message_id: None,
-                },
-            )),
-            conversation_id: None,
+            conversation: Some(ConversationKey {
+                channel: "tui".to_string(),
+                chat_id: "http://127.0.0.1:60684".to_string(),
+                thread_id: None,
+            }),
             ..ToolContext::default()
         });
 
         assert_eq!(input.channel.as_deref(), Some("telegram"));
-        assert!(input.conversation_id.is_none());
+        assert!(input.chat_id.is_none());
         assert!(input.thread_id.is_none());
     }
 
@@ -306,7 +297,7 @@ mod tests {
         input.fill_current_destination(&tui_context());
 
         assert_eq!(input.channel.as_deref(), Some("telegram"));
-        assert_eq!(input.conversation_id.as_deref(), Some("123"));
+        assert_eq!(input.chat_id.as_deref(), Some("123"));
         assert_eq!(input.thread_id.as_deref(), Some("456"));
     }
 
@@ -317,7 +308,7 @@ mod tests {
         input.fill_current_destination(&ToolContext::default());
 
         assert!(input.channel.is_none());
-        assert!(input.conversation_id.is_none());
+        assert!(input.chat_id.is_none());
     }
 
     #[tokio::test]
@@ -330,7 +321,7 @@ mod tests {
                 channel: None,
                 file_id: None,
                 content: Some("hi".to_string()),
-                conversation_id: None,
+                chat_id: None,
                 thread_id: None,
             })
             .await;
@@ -339,7 +330,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_message_publishes_channel_delivery_request_when_address_is_known() {
+    async fn send_message_publishes_channel_delivery_request_when_conversation_is_known() {
         let bus = Bus::new(16);
         let mut events = bus.subscribe();
         let tool = SendMessageTool::new(bus, |_| Err("unexpected attachment".to_string()));
@@ -348,7 +339,7 @@ mod tests {
             channel: Some("telegram".to_string()),
             file_id: None,
             content: Some("hi".to_string()),
-            conversation_id: Some("chat-1".to_string()),
+            chat_id: Some("chat-1".to_string()),
             thread_id: Some("thread-1".to_string()),
         })
         .await
@@ -356,7 +347,7 @@ mod tests {
 
         let Event::MessageOut {
             channel,
-            address,
+            conversation,
             message,
             ..
         } = events.try_recv().unwrap()
@@ -364,9 +355,9 @@ mod tests {
             panic!("expected message out");
         };
         assert_eq!(channel, "telegram");
-        let address = address.expect("address");
-        assert_eq!(address.conversation_id, "chat-1");
-        assert_eq!(address.thread_id.as_deref(), Some("thread-1"));
+        let conversation = conversation.expect("conversation");
+        assert_eq!(conversation.chat_id, "chat-1");
+        assert_eq!(conversation.thread_id.as_deref(), Some("thread-1"));
         let Message::Assistant { text, .. } = message else {
             panic!("expected assistant message");
         };
@@ -379,26 +370,23 @@ mod tests {
         let mut events = bus.subscribe();
         let tool = Arc::new(DeleteMessageTool::new(bus));
         let ctx = ToolContext {
-            destination: Some((
-                "telegram".to_string(),
-                ChannelAddress {
-                    channel: "telegram".to_string(),
-                    conversation_id: "123".to_string(),
-                    thread_id: None,
-                    message_id: Some("456".to_string()),
-                },
-            )),
+            conversation: Some(ConversationKey {
+                channel: "telegram".to_string(),
+                chat_id: "123".to_string(),
+                thread_id: None,
+            }),
+            message_id: Some("456".to_string()),
             ..ToolContext::default()
         };
 
         tools::run_internal_tool(tool, serde_json::json!({}), &ctx).await;
 
-        let Event::DeleteMessage { channel, address } = events.try_recv().unwrap() else {
+        let Event::DeleteMessage { channel, message } = events.try_recv().unwrap() else {
             panic!("expected delete message event");
         };
         assert_eq!(channel, "telegram");
-        assert_eq!(address.conversation_id, "123");
-        assert_eq!(address.message_id.as_deref(), Some("456"));
+        assert_eq!(message.conversation.chat_id, "123");
+        assert_eq!(message.message_id, "456");
     }
 
     #[tokio::test]
@@ -409,18 +397,18 @@ mod tests {
 
         tool.execute(DeleteMessageToolInput {
             channel: Some("telegram".to_string()),
-            conversation_id: Some("chat-1".to_string()),
+            chat_id: Some("chat-1".to_string()),
             message_id: Some("provider-1".to_string()),
             thread_id: None,
         })
         .await
         .unwrap();
 
-        let Event::DeleteMessage { channel, address } = events.try_recv().unwrap() else {
+        let Event::DeleteMessage { channel, message } = events.try_recv().unwrap() else {
             panic!("expected delete message event");
         };
         assert_eq!(channel, "telegram");
-        assert_eq!(address.conversation_id, "chat-1");
-        assert_eq!(address.message_id.as_deref(), Some("provider-1"));
+        assert_eq!(message.conversation.chat_id, "chat-1");
+        assert_eq!(message.message_id, "provider-1");
     }
 }

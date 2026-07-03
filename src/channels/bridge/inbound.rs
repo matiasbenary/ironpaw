@@ -9,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    bus::{ChannelAddress, Event, Sender},
+    bus::{ConversationKey, Event, Sender},
     channels::{
         bridge::{BridgeState, LoadedChannel, auth::authorize, history::append_channel_history},
         config::{ChannelAuth, ChannelConfig},
@@ -62,7 +62,7 @@ pub(super) async fn message_channel_to_warden(
 
         let sender = sender_for_inbound(&channel_state.config, &inbound);
         if sender == Sender::User {
-            remember_default_address(&channel, &inbound.address)
+            remember_default_conversation(&channel, &inbound.conversation)
                 .await
                 .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
         }
@@ -70,9 +70,8 @@ pub(super) async fn message_channel_to_warden(
         let message = content_to_message(inbound.content, &state.files_dir);
         append_channel_history(
             state.history.as_ref(),
-            &inbound.channel,
-            &inbound.address,
-            inbound.address.message_id.clone(),
+            &inbound.conversation,
+            inbound.message_id.clone(),
             &message,
         );
 
@@ -80,7 +79,8 @@ pub(super) async fn message_channel_to_warden(
             channel: inbound.channel.clone(),
             sender,
             channel_user_id: Some(inbound.channel_user_id),
-            address: inbound.address,
+            conversation: inbound.conversation,
+            message_id: inbound.message_id,
             message,
         });
         accepted += 1;
@@ -92,22 +92,20 @@ pub(super) async fn message_channel_to_warden(
     })))
 }
 
-async fn remember_default_address(
+async fn remember_default_conversation(
     channel: &LoadedChannel,
-    address: &ChannelAddress,
+    conversation: &ConversationKey,
 ) -> Result<(), String> {
-    let mut default_address = address.clone();
-    default_address.message_id = None;
     let mut state = channel.state.lock().await;
-    if state.config.default_address.as_ref() == Some(&default_address) {
+    if state.config.default_conversation.as_ref() == Some(conversation) {
         return Ok(());
     }
 
-    state.config.default_address = Some(default_address.clone());
+    state.config.default_conversation = Some(conversation.clone());
     let mut config_json = serde_json::from_str::<serde_json::Value>(&state.config_json)
         .map_err(|err| err.to_string())?;
-    config_json["default_address"] =
-        serde_json::to_value(&default_address).map_err(|err| err.to_string())?;
+    config_json["default_conversation"] =
+        serde_json::to_value(conversation).map_err(|err| err.to_string())?;
     state.config_json =
         serde_json::to_string_pretty(&config_json).map_err(|err| err.to_string())?;
     fs::write(&channel.config_path, &state.config_json).map_err(|err| err.to_string())
@@ -129,7 +127,9 @@ fn sender_for_inbound(config: &ChannelConfig, inbound: &ChannelInbound) -> Sende
 struct ChannelInbound {
     channel: String,
     channel_user_id: String,
-    address: ChannelAddress,
+    conversation: ConversationKey,
+    #[serde(default)]
+    message_id: Option<String>,
     content: Vec<InboundContent>,
 }
 

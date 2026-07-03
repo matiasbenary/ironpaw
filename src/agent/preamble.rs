@@ -3,14 +3,14 @@ use crate::message::Message;
 
 pub(super) fn system_preamble(destination: Destination<'_>) -> Vec<Message> {
     let mut text = match destination {
-        Some((channel, address)) => {
+        Some(conversation) => {
             let mut text = format!(
                 "You are a personal assistant. \
-                The user is communicating with you through the '{channel}' channel \
-                (conversation_id: '{}'",
-                address.conversation_id,
+                The user is communicating with you through the '{}' channel \
+                (chat_id: '{}'",
+                conversation.channel, conversation.chat_id,
             );
-            if let Some(thread_id) = &address.thread_id {
+            if let Some(thread_id) = &conversation.thread_id {
                 text.push_str(&format!(", thread_id: '{thread_id}'"));
             }
             text.push(')');

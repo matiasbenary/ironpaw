@@ -5,7 +5,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::{bus::ChannelAddress, config::RuntimeLayout, http::CredentialInjection};
+use crate::{bus::ConversationKey, config::RuntimeLayout, http::CredentialInjection};
 
 #[derive(Clone, Debug)]
 pub struct ChannelManifest {
@@ -37,7 +37,7 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub owner_id: Option<String>,
     #[serde(default)]
-    pub default_address: Option<ChannelAddress>,
+    pub default_conversation: Option<ConversationKey>,
     #[serde(default)]
     pub http_credentials: Vec<ChannelHttpCredential>,
 }

@@ -27,7 +27,7 @@ pub struct CreateToolParams {
     /// JSON result. The tool's arguments are available as the global `args`,
     /// and the script must use `return` to produce the tool result. If the
     /// tool is meant to notify the user, the script must call send_message
-    /// itself, with explicit channel and conversation_id.
+    /// itself, with explicit channel and chat_id.
     /// Example: `const r = tool("web_fetch", { url: "https://example.com" });
     /// return { length: r.length };`
     pub script: String,

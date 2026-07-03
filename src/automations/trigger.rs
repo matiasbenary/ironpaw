@@ -94,7 +94,7 @@ pub(crate) fn parse_datetime(text: &str) -> Result<chrono::DateTime<chrono::Fixe
 mod tests {
     use super::*;
     use crate::{
-        bus::{ChannelAddress, Event},
+        bus::{ConversationKey, Event},
         message::Message,
     };
 
@@ -103,12 +103,12 @@ mod tests {
             channel: channel.to_string(),
             sender,
             channel_user_id: None,
-            address: ChannelAddress {
+            conversation: ConversationKey {
                 channel: channel.to_string(),
-                conversation_id: "c1".to_string(),
+                chat_id: "c1".to_string(),
                 thread_id: None,
-                message_id: None,
             },
+            message_id: None,
             message: Message::User {
                 text: "hi".to_string(),
                 attachments: Vec::new(),

@@ -80,12 +80,12 @@ impl Guest for TelegramChannel {
         let event = serde_json::json!({
             "channel": "telegram",
             "channel_user_id": from.id.to_string(),
-            "address": {
+            "conversation": {
                 "channel": "telegram",
-                "conversation_id": message.chat.id.to_string(),
-                "thread_id": message.message_thread_id.map(|id| id.to_string()),
-                "message_id": message.message_id.to_string()
+                "chat_id": message.chat.id.to_string(),
+                "thread_id": message.message_thread_id.map(|id| id.to_string())
             },
+            "message_id": message.message_id.to_string(),
             "content": content,
         })
         .to_string();
@@ -101,25 +101,28 @@ impl Guest for TelegramChannel {
         let bot_token_placeholder = secret_placeholder(&telegram.bot_token_secret);
         let event: OutboundEvent =
             serde_json::from_str(&event_json).map_err(|err| err.to_string())?;
-        let (address, message) = match event {
-            OutboundEvent::MessageOut { address, message } => {
-                let Some(address) = address else {
-                    return Err("telegram message out did not include address".to_string());
+        let (conversation, message) = match event {
+            OutboundEvent::MessageOut {
+                conversation,
+                message,
+            } => {
+                let Some(conversation) = conversation else {
+                    return Err("telegram message out did not include conversation".to_string());
                 };
                 let WardenMessage::Assistant(message) = message else {
                     return Ok(false);
                 };
-                (address, message)
+                (conversation, message)
             }
-            OutboundEvent::DeleteMessage { address } => {
-                let Some(message_id) = address.message_id.as_deref() else {
-                    return Err("telegram delete message did not include message_id".to_string());
-                };
-                delete_message(&bot_token_placeholder, &address, message_id)?;
+            OutboundEvent::DeleteMessage { message } => {
+                delete_message(&bot_token_placeholder, &message)?;
                 return Ok(true);
             }
-            OutboundEvent::ChannelAction { address, action } => {
-                send_chat_action(&bot_token_placeholder, &address, action)?;
+            OutboundEvent::ChannelAction {
+                conversation,
+                action,
+            } => {
+                send_chat_action(&bot_token_placeholder, &conversation, action)?;
                 return Ok(true);
             }
         };
@@ -128,7 +131,7 @@ impl Guest for TelegramChannel {
         if let Some(image) = message.image_attachment() {
             send_image(
                 &bot_token_placeholder,
-                &address,
+                &conversation,
                 image,
                 if text == "<empty assistant message>" {
                     None
@@ -140,10 +143,10 @@ impl Guest for TelegramChannel {
         }
 
         let mut body = serde_json::json!({
-            "chat_id": address.conversation_id,
+            "chat_id": conversation.chat_id,
             "text": text,
         });
-        if let Some(thread_id) = address.thread_id {
+        if let Some(thread_id) = conversation.thread_id {
             let message_thread_id = thread_id.parse::<i64>().map_err(|err| err.to_string())?;
             body["message_thread_id"] = serde_json::json!(message_thread_id);
         }
@@ -160,14 +163,14 @@ impl Guest for TelegramChannel {
 #[derive(Deserialize)]
 enum OutboundEvent {
     MessageOut {
-        address: Option<ChannelAddress>,
+        conversation: Option<ConversationKey>,
         message: WardenMessage,
     },
     DeleteMessage {
-        address: ChannelAddress,
+        message: MessageRef,
     },
     ChannelAction {
-        address: ChannelAddress,
+        conversation: ConversationKey,
         action: ChannelAction,
     },
 }
@@ -241,12 +244,16 @@ struct AssistantAttachment {
 }
 
 #[derive(Deserialize)]
-struct ChannelAddress {
-    conversation_id: String,
+struct ConversationKey {
+    chat_id: String,
     #[serde(default)]
     thread_id: Option<String>,
-    #[serde(default)]
-    message_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MessageRef {
+    conversation: ConversationKey,
+    message_id: String,
 }
 
 #[derive(Deserialize)]
@@ -353,19 +360,19 @@ fn secret_placeholder(secret: &str) -> String {
 
 fn send_image(
     bot_token_placeholder: &str,
-    address: &ChannelAddress,
+    conversation: &ConversationKey,
     image: &AssistantAttachment,
     caption: Option<&str>,
 ) -> Result<(), String> {
     if let Some(url) = &image.url {
         let mut body = serde_json::json!({
-            "chat_id": address.conversation_id,
+            "chat_id": conversation.chat_id,
             "photo": url,
         });
         if let Some(caption) = caption {
             body["caption"] = serde_json::json!(caption);
         }
-        if let Some(thread_id) = &address.thread_id {
+        if let Some(thread_id) = &conversation.thread_id {
             let message_thread_id = thread_id.parse::<i64>().map_err(|err| err.to_string())?;
             body["message_thread_id"] = serde_json::json!(message_thread_id);
         }
@@ -381,12 +388,12 @@ fn send_image(
         return Err("image attachment did not include url or data_base64".to_string());
     };
     let mut fields = serde_json::json!({
-        "chat_id": address.conversation_id,
+        "chat_id": conversation.chat_id,
     });
     if let Some(caption) = caption {
         fields["caption"] = serde_json::json!(caption);
     }
-    if let Some(thread_id) = &address.thread_id {
+    if let Some(thread_id) = &conversation.thread_id {
         let message_thread_id = thread_id.parse::<i64>().map_err(|err| err.to_string())?;
         fields["message_thread_id"] = serde_json::json!(message_thread_id);
     }
@@ -405,12 +412,11 @@ fn send_image(
 
 fn delete_message(
     bot_token_placeholder: &str,
-    address: &ChannelAddress,
-    message_id: &str,
+    message: &MessageRef,
 ) -> Result<(), String> {
-    let message_id = message_id.parse::<i64>().map_err(|err| err.to_string())?;
+    let message_id = message.message_id.parse::<i64>().map_err(|err| err.to_string())?;
     let body = serde_json::json!({
-        "chat_id": address.conversation_id,
+        "chat_id": message.conversation.chat_id,
         "message_id": message_id,
     });
     channel_host::http_request(
@@ -423,17 +429,17 @@ fn delete_message(
 
 fn send_chat_action(
     bot_token_placeholder: &str,
-    address: &ChannelAddress,
+    conversation: &ConversationKey,
     action: ChannelAction,
 ) -> Result<(), String> {
     let action = match action {
         ChannelAction::Typing => "typing",
     };
     let mut body = serde_json::json!({
-        "chat_id": address.conversation_id,
+        "chat_id": conversation.chat_id,
         "action": action,
     });
-    if let Some(thread_id) = &address.thread_id {
+    if let Some(thread_id) = &conversation.thread_id {
         let message_thread_id = thread_id.parse::<i64>().map_err(|err| err.to_string())?;
         body["message_thread_id"] = serde_json::json!(message_thread_id);
     }

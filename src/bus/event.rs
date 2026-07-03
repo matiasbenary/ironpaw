@@ -9,13 +9,26 @@ pub enum Sender {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChannelAddress {
+pub struct ConversationKey {
     pub channel: String,
-    pub conversation_id: String,
+    pub chat_id: String,
     #[serde(default)]
     pub thread_id: Option<String>,
-    #[serde(default)]
-    pub message_id: Option<String>,
+}
+
+impl ConversationKey {
+    pub fn storage_key(&self) -> String {
+        match &self.thread_id {
+            Some(thread_id) => format!("{}/{}/{}", self.channel, self.chat_id, thread_id),
+            None => format!("{}/{}", self.channel, self.chat_id),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageRef {
+    pub conversation: ConversationKey,
+    pub message_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,24 +78,26 @@ pub enum Event {
         sender: Sender,
         #[serde(default)]
         channel_user_id: Option<String>,
-        address: ChannelAddress,
+        conversation: ConversationKey,
+        #[serde(default)]
+        message_id: Option<String>,
         message: Message,
     },
     MessageOut {
         channel: String,
         recipient: Sender,
         #[serde(default)]
-        address: Option<ChannelAddress>,
+        conversation: Option<ConversationKey>,
         message: Message,
     },
     DeleteMessage {
         channel: String,
-        address: ChannelAddress,
+        message: MessageRef,
     },
     ChannelAction {
         channel: String,
         recipient: Sender,
-        address: ChannelAddress,
+        conversation: ConversationKey,
         action: ChannelAction,
     },
     Automation {
@@ -114,7 +129,7 @@ pub enum ToolOrigin {
     Conversation {
         channel: String,
         sender: Sender,
-        address: ChannelAddress,
+        conversation: ConversationKey,
     },
     Automation {
         automation_id: String,

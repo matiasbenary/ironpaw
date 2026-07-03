@@ -3,16 +3,16 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use crate::bus::{Bus, ChannelAddress, Event, ToolOrigin};
+use crate::bus::{Bus, ConversationKey, Event, ToolOrigin};
 
 /// Context every tool receives alongside its arguments. Tools use what they
 /// need and ignore the rest.
 #[derive(Clone, Default)]
 pub struct ToolContext {
-    /// Channel + address of the event that triggered the current run, if any.
-    pub destination: Option<(String, ChannelAddress)>,
-    /// Conversation the current agent run belongs to.
-    pub conversation_id: Option<String>,
+    /// Conversation the current tool run belongs to.
+    pub conversation: Option<ConversationKey>,
+    /// Provider-owned id for the inbound message that triggered the run.
+    pub message_id: Option<String>,
     /// Tool call-chain depth, incremented by `run_tool`.
     pub depth: usize,
     /// Original bus request metadata when a tool may finish asynchronously.
@@ -54,13 +54,8 @@ impl ToolContext {
         tool_call_id: String,
         tool_name: String,
     ) -> Self {
-        let (destination, conversation_id) = match &origin {
-            ToolOrigin::Conversation {
-                channel, address, ..
-            } => (
-                Some((channel.clone(), address.clone())),
-                Some(address.conversation_id.clone()),
-            ),
+        let (conversation, message_id) = match &origin {
+            ToolOrigin::Conversation { conversation, .. } => (Some(conversation.clone()), None),
             ToolOrigin::Automation { .. } => (None, None),
         };
         let tool_call = ToolCallContext {
@@ -69,8 +64,8 @@ impl ToolContext {
             tool_name,
         };
         ToolContext {
-            destination,
-            conversation_id,
+            conversation,
+            message_id,
             depth: 0,
             responder: Some(ToolResponder::bus(bus, tool_call.clone())),
             tool_call: Some(tool_call),

@@ -25,9 +25,9 @@ impl Guest for TuiChannel {
         let event = serde_json::json!({
             "channel": "tui",
             "channel_user_id": "local",
-            "address": {
+            "conversation": {
                 "channel": "tui",
-                "conversation_id": incoming.callback_url,
+                "chat_id": incoming.callback_url,
                 "thread_id": null
             },
             "content": [
@@ -45,16 +45,19 @@ impl Guest for TuiChannel {
         let event: OutboundEvent =
             serde_json::from_str(&event_json).map_err(|err| err.to_string())?;
         match event {
-            OutboundEvent::MessageOut { address, message } => {
-                let Some(address) = address else {
-                    return Err("tui message out did not include address".to_string());
+            OutboundEvent::MessageOut {
+                conversation,
+                message,
+            } => {
+                let Some(conversation) = conversation else {
+                    return Err("tui message out did not include conversation".to_string());
                 };
                 let WardenMessage::Assistant(message) = message else {
                     return Ok(false);
                 };
                 channel_host::http_request(
                     "POST",
-                    &address.conversation_id,
+                    &conversation.chat_id,
                     &serde_json::to_string(&message).map_err(|err| err.to_string())?,
                 )?;
                 Ok(true)
@@ -68,14 +71,14 @@ impl Guest for TuiChannel {
 #[allow(dead_code)]
 enum OutboundEvent {
     MessageOut {
-        address: Option<ChannelAddress>,
+        conversation: Option<ConversationKey>,
         message: WardenMessage,
     },
     DeleteMessage {
-        address: ChannelAddress,
+        message: MessageRef,
     },
     ChannelAction {
-        address: ChannelAddress,
+        conversation: ConversationKey,
         action: String,
     },
 }
@@ -107,8 +110,14 @@ struct IncomingMessage {
 }
 
 #[derive(Deserialize)]
-struct ChannelAddress {
-    conversation_id: String,
+struct ConversationKey {
+    chat_id: String,
+}
+
+#[derive(Deserialize)]
+struct MessageRef {
+    conversation: ConversationKey,
+    message_id: String,
 }
 
 fn serialize_content<S>(content: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>

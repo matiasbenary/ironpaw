@@ -73,7 +73,7 @@ struct InstallSession {
 #[derive(Clone)]
 struct SetupConversation {
     channel: String,
-    conversation_id: String,
+    chat_id: String,
     thread_id: Option<String>,
 }
 
@@ -618,11 +618,11 @@ impl InstallChannelTool {
 }
 
 fn setup_conversation(ctx: &ToolContext) -> Option<SetupConversation> {
-    let (channel, address) = ctx.destination.as_ref()?;
+    let conversation = ctx.conversation.as_ref()?;
     Some(SetupConversation {
-        channel: channel.clone(),
-        conversation_id: address.conversation_id.clone(),
-        thread_id: address.thread_id.clone(),
+        channel: conversation.channel.clone(),
+        chat_id: conversation.chat_id.clone(),
+        thread_id: conversation.thread_id.clone(),
     })
 }
 
@@ -630,12 +630,12 @@ fn is_setup_conversation(session: &InstallSession, ctx: &ToolContext) -> bool {
     let Some(expected) = &session.setup_conversation else {
         return true;
     };
-    let Some((channel, address)) = &ctx.destination else {
+    let Some(conversation) = &ctx.conversation else {
         return false;
     };
-    expected.channel == *channel
-        && expected.conversation_id == address.conversation_id
-        && expected.thread_id == address.thread_id
+    expected.channel == conversation.channel
+        && expected.chat_id == conversation.chat_id
+        && expected.thread_id == conversation.thread_id
 }
 
 impl RemoveChannelTool {

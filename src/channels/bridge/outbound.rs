@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use serde::Serialize;
 
 use crate::{
-    bus::{Bus, ChannelAction, ChannelAddress, Event, Sender},
+    bus::{Bus, ChannelAction, ConversationKey, Event, MessageRef, Sender},
     channels::bridge::{ChannelRegistry, LoadedChannel, history::append_channel_history},
     history::History,
     message::{Attachment, Message, ToolCall},
@@ -20,7 +20,7 @@ pub(super) async fn message_warden_to_channel(
             Ok(Event::MessageOut {
                 channel,
                 recipient: Sender::User,
-                address,
+                conversation,
                 message,
             }) => {
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
@@ -28,51 +28,45 @@ pub(super) async fn message_warden_to_channel(
                     continue;
                 };
                 let channel_state = channel_runtime.state.lock().await.clone();
-                let Some(address) = address.or(channel_state.config.default_address) else {
-                    eprintln!("{channel} message out has no address and no default_address");
+                let Some(conversation) = conversation.or(channel_state.config.default_conversation)
+                else {
+                    eprintln!(
+                        "{channel} message out has no conversation and no default_conversation"
+                    );
                     continue;
                 };
                 if !matches!(message, Message::Assistant { .. }) {
                     eprintln!("{channel} message out was not deliverable to a channel");
                     continue;
                 }
-                append_channel_history(history.as_ref(), &channel, &address, None, &message);
+                append_channel_history(history.as_ref(), &conversation, None, &message);
                 (
                     channel_runtime,
                     channel.clone(),
                     Event::MessageOut {
                         channel,
                         recipient: Sender::User,
-                        address: Some(address),
+                        conversation: Some(conversation),
                         message,
                     },
                 )
             }
-            Ok(Event::DeleteMessage { channel, address }) => {
+            Ok(Event::DeleteMessage { channel, message }) => {
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
                     eprintln!("bridge: no loaded channel named {channel} for delete message");
                     continue;
                 };
-                let Some(message_id) = address.message_id.as_deref() else {
-                    eprintln!("{channel} delete message has no message_id");
-                    continue;
-                };
-                history.delete_external_message(
-                    &channel,
-                    &address.conversation_id,
-                    address.thread_id.as_deref(),
-                    message_id,
-                );
+                history.delete_external_message(&message);
                 (
                     channel_runtime,
                     channel.clone(),
-                    Event::DeleteMessage { channel, address },
+                    Event::DeleteMessage { channel, message },
                 )
             }
             Ok(Event::ChannelAction {
                 channel,
                 recipient: Sender::User,
-                address,
+                conversation,
                 action,
             }) => {
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
@@ -85,7 +79,7 @@ pub(super) async fn message_warden_to_channel(
                     Event::ChannelAction {
                         channel,
                         recipient: Sender::User,
-                        address,
+                        conversation,
                         action,
                     },
                 )
@@ -110,17 +104,17 @@ enum ChannelOutboundEvent {
     MessageOut {
         channel: String,
         recipient: Sender,
-        address: Option<ChannelAddress>,
+        conversation: Option<ConversationKey>,
         message: ChannelOutboundMessage,
     },
     DeleteMessage {
         channel: String,
-        address: ChannelAddress,
+        message: MessageRef,
     },
     ChannelAction {
         channel: String,
         recipient: Sender,
-        address: ChannelAddress,
+        conversation: ConversationKey,
         action: ChannelAction,
     },
 }
@@ -203,7 +197,7 @@ fn channel_outbound_event_json(event: &Event) -> Result<String, String> {
         Event::MessageOut {
             channel,
             recipient,
-            address,
+            conversation,
             message:
                 Message::Assistant {
                     text,
@@ -213,7 +207,7 @@ fn channel_outbound_event_json(event: &Event) -> Result<String, String> {
         } => ChannelOutboundEvent::MessageOut {
             channel: channel.clone(),
             recipient: recipient.clone(),
-            address: address.clone(),
+            conversation: conversation.clone(),
             message: ChannelOutboundMessage::Assistant {
                 text: text.clone(),
                 attachments: attachments
@@ -226,19 +220,19 @@ fn channel_outbound_event_json(event: &Event) -> Result<String, String> {
         Event::MessageOut { .. } => {
             return Err("message is not deliverable to a channel".to_string());
         }
-        Event::DeleteMessage { channel, address } => ChannelOutboundEvent::DeleteMessage {
+        Event::DeleteMessage { channel, message } => ChannelOutboundEvent::DeleteMessage {
             channel: channel.clone(),
-            address: address.clone(),
+            message: message.clone(),
         },
         Event::ChannelAction {
             channel,
             recipient,
-            address,
+            conversation,
             action,
         } => ChannelOutboundEvent::ChannelAction {
             channel: channel.clone(),
             recipient: recipient.clone(),
-            address: address.clone(),
+            conversation: conversation.clone(),
             action: action.clone(),
         },
         _ => return Err("event is not deliverable to a channel".to_string()),
@@ -261,11 +255,10 @@ mod tests {
         let event = Event::MessageOut {
             channel: "telegram".to_string(),
             recipient: Sender::User,
-            address: Some(ChannelAddress {
+            conversation: Some(ConversationKey {
                 channel: "telegram".to_string(),
-                conversation_id: "chat".to_string(),
+                chat_id: "chat".to_string(),
                 thread_id: None,
-                message_id: None,
             }),
             message: Message::Assistant {
                 text: Some("hi".to_string()),
@@ -297,11 +290,13 @@ mod tests {
     fn delete_message_serializes_as_delete_event_not_fake_message() {
         let event = Event::DeleteMessage {
             channel: "telegram".to_string(),
-            address: ChannelAddress {
-                channel: "telegram".to_string(),
-                conversation_id: "chat".to_string(),
-                thread_id: None,
-                message_id: Some("42".to_string()),
+            message: MessageRef {
+                conversation: ConversationKey {
+                    channel: "telegram".to_string(),
+                    chat_id: "chat".to_string(),
+                    thread_id: None,
+                },
+                message_id: "42".to_string(),
             },
         };
 
@@ -317,11 +312,10 @@ mod tests {
         let event = Event::ChannelAction {
             channel: "telegram".to_string(),
             recipient: Sender::User,
-            address: ChannelAddress {
+            conversation: ConversationKey {
                 channel: "telegram".to_string(),
-                conversation_id: "chat".to_string(),
+                chat_id: "chat".to_string(),
                 thread_id: Some("7".to_string()),
-                message_id: None,
             },
             action: ChannelAction::Typing,
         };
@@ -329,11 +323,8 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&channel_outbound_event_json(&event).unwrap()).unwrap();
 
-        assert_eq!(
-            payload["ChannelAction"]["address"]["conversation_id"],
-            "chat"
-        );
-        assert_eq!(payload["ChannelAction"]["address"]["thread_id"], "7");
+        assert_eq!(payload["ChannelAction"]["conversation"]["chat_id"], "chat");
+        assert_eq!(payload["ChannelAction"]["conversation"]["thread_id"], "7");
         assert_eq!(payload["ChannelAction"]["action"], "typing");
     }
 

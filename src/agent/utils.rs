@@ -1,18 +1,13 @@
 use crate::{
-    bus::{Bus, ChannelAction, ChannelAddress, Event, Sender},
+    bus::{Bus, ChannelAction, ConversationKey, Event, Sender},
     message::Message,
 };
 
-pub(super) fn publish_progress(
-    bus: &Bus,
-    channel: &str,
-    address: &ChannelAddress,
-    content: String,
-) {
+pub(super) fn publish_progress(bus: &Bus, conversation: &ConversationKey, content: String) {
     bus.publish(Event::MessageOut {
-        channel: channel.to_string(),
+        channel: conversation.channel.clone(),
         recipient: Sender::User,
-        address: Some(address.clone()),
+        conversation: Some(conversation.clone()),
         message: Message::Assistant {
             text: Some(content),
             attachments: Vec::new(),
@@ -23,14 +18,13 @@ pub(super) fn publish_progress(
 
 pub(super) fn publish_channel_action(
     bus: &Bus,
-    channel: &str,
-    address: &ChannelAddress,
+    conversation: &ConversationKey,
     action: ChannelAction,
 ) {
     bus.publish(Event::ChannelAction {
-        channel: channel.to_string(),
+        channel: conversation.channel.clone(),
         recipient: Sender::User,
-        address: address.clone(),
+        conversation: conversation.clone(),
         action,
     });
 }

@@ -5,7 +5,7 @@ use tokio::time::timeout;
 use warden::{
     agent::Agent,
     automations::{Automations, SqliteAutomations},
-    bus::{Bus, ChannelAddress, Event, Sender},
+    bus::{Bus, ConversationKey, Event, Sender},
     history::{History, HistoryEntry, MessageMetadata, SqliteHistory},
     message::{Attachment, Message},
     tools::{
@@ -124,26 +124,22 @@ fn temp_history() -> Arc<dyn History> {
 fn publish_user_message(
     bus: &Bus,
     history: &dyn History,
-    address: ChannelAddress,
+    conversation: ConversationKey,
     message: Message,
 ) {
     history.append(
-        &address.conversation_id,
+        &conversation,
         &[HistoryEntry {
             message: message.clone(),
-            metadata: MessageMetadata::new(
-                address.channel.clone(),
-                address.conversation_id.clone(),
-                address.thread_id.clone(),
-                address.message_id.clone(),
-            ),
+            metadata: MessageMetadata::new(conversation.clone(), None),
         }],
     );
     bus.publish(Event::MessageIn {
-        channel: address.channel.clone(),
+        channel: conversation.channel.clone(),
         sender: Sender::User,
         channel_user_id: None,
-        address,
+        conversation,
+        message_id: None,
         message,
     });
 }
@@ -176,11 +172,10 @@ async fn agent_replies_to_hi() {
     publish_user_message(
         &bus,
         history.as_ref(),
-        ChannelAddress {
+        ConversationKey {
             channel: "tui".to_string(),
-            conversation_id: "live-test-hi".to_string(),
+            chat_id: "live-test-hi".to_string(),
             thread_id: None,
-            message_id: None,
         },
         message,
     );
@@ -228,16 +223,15 @@ async fn send_message_routes_to_telegram() {
     let mut events = bus.subscribe();
     let (_task, history) = start_warden(&bus, files_dir);
 
-    let address = ChannelAddress {
+    let conversation = ConversationKey {
         channel: "tui".to_string(),
-        conversation_id: "live-test-conversation".to_string(),
+        chat_id: "live-test-conversation".to_string(),
         thread_id: None,
-        message_id: None,
     };
 
     let message = user_message("Please send me a message on telegram saying hello.");
 
-    publish_user_message(&bus, history.as_ref(), address, message);
+    publish_user_message(&bus, history.as_ref(), conversation, message);
 
     let deadline = Duration::from_secs(30);
     let result = timeout(deadline, async {
@@ -278,16 +272,15 @@ async fn image_generation_routes_to_telegram() {
     let mut events = bus.subscribe();
     let (_task, history) = start_warden(&bus, files_dir);
 
-    let address = ChannelAddress {
+    let conversation = ConversationKey {
         channel: "tui".to_string(),
-        conversation_id: "live-test-conversation".to_string(),
+        chat_id: "live-test-conversation".to_string(),
         thread_id: None,
-        message_id: None,
     };
 
     let message = user_message("Create an image of a dog and send it to me in telegram.");
 
-    publish_user_message(&bus, history.as_ref(), address, message);
+    publish_user_message(&bus, history.as_ref(), conversation, message);
 
     // Collect MessageOut events for up to 30 s, looking for a telegram delivery with attachment.
     let deadline = Duration::from_secs(30);
@@ -336,11 +329,10 @@ async fn agent_reads_pdf_content() {
     let mut events = bus.subscribe();
     let (_task, history) = start_warden(&bus, files_dir.clone());
 
-    let address = ChannelAddress {
+    let conversation = ConversationKey {
         channel: "tui".to_string(),
-        conversation_id: "live-test-pdf".to_string(),
+        chat_id: "live-test-pdf".to_string(),
         thread_id: None,
-        message_id: None,
     };
 
     // Mimic what the bridge does: store the file to disk, then tell the model about it.
@@ -367,7 +359,7 @@ async fn agent_reads_pdf_content() {
         }],
     };
 
-    publish_user_message(&bus, history.as_ref(), address, message);
+    publish_user_message(&bus, history.as_ref(), conversation, message);
 
     let deadline = Duration::from_secs(10);
     let result = timeout(deadline, async {
@@ -440,11 +432,10 @@ async fn agent_identifies_dog_image() {
     publish_user_message(
         &bus,
         history.as_ref(),
-        ChannelAddress {
+        ConversationKey {
             channel: "tui".to_string(),
-            conversation_id: "live-test-image".to_string(),
+            chat_id: "live-test-image".to_string(),
             thread_id: None,
-            message_id: None,
         },
         message,
     );
@@ -500,11 +491,10 @@ async fn agent_uses_web_search_for_wikipedia() {
     publish_user_message(
         &bus,
         history.as_ref(),
-        ChannelAddress {
+        ConversationKey {
             channel: "tui".to_string(),
-            conversation_id: "live-test-web-search".to_string(),
+            chat_id: "live-test-web-search".to_string(),
             thread_id: None,
-            message_id: None,
         },
         message,
     );
@@ -566,11 +556,10 @@ async fn delayed_message_automation() {
     publish_user_message(
         &bus,
         history.as_ref(),
-        ChannelAddress {
+        ConversationKey {
             channel: "tui".to_string(),
-            conversation_id: "live-test-automation".to_string(),
+            chat_id: "live-test-automation".to_string(),
             thread_id: None,
-            message_id: None,
         },
         message,
     );
@@ -629,11 +618,10 @@ async fn scheduled_message_at_wall_clock_time() {
     publish_user_message(
         &bus,
         history.as_ref(),
-        ChannelAddress {
+        ConversationKey {
             channel: "tui".to_string(),
-            conversation_id: "live-test-at".to_string(),
+            chat_id: "live-test-at".to_string(),
             thread_id: None,
-            message_id: None,
         },
         message,
     );
@@ -693,11 +681,10 @@ async fn hacker_news_automation() {
     publish_user_message(
         &bus,
         history.as_ref(),
-        ChannelAddress {
+        ConversationKey {
             channel: "tui".to_string(),
-            conversation_id: "live-test-hn".to_string(),
+            chat_id: "live-test-hn".to_string(),
             thread_id: None,
-            message_id: None,
         },
         message,
     );
