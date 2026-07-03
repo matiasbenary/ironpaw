@@ -206,6 +206,7 @@ impl InstallChannelTool {
         &self,
         params: InstallChannelParams,
         ctx: &ToolContext,
+        responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
         let name = normalize_channel_name(&params.name)?;
         let channel = params.channel.as_deref();
@@ -215,7 +216,7 @@ impl InstallChannelTool {
                 self.continue_setup(&name, channel, channel_user_id, &message, ctx)
                     .await
             }
-            _ => self.start(&name, ctx).await,
+            _ => self.start(&name, ctx, responder).await,
         }
     }
 
@@ -227,7 +228,12 @@ impl InstallChannelTool {
             .map(|session| session.package.name.clone())
     }
 
-    async fn start(&self, name: &str, ctx: &ToolContext) -> Result<serde_json::Value, String> {
+    async fn start(
+        &self,
+        name: &str,
+        ctx: &ToolContext,
+        responder: ToolResponder,
+    ) -> Result<serde_json::Value, String> {
         let tools = Arc::as_ref(&self.setup.tools);
         let automations = &self.setup.automations;
         let layout = &self.setup.layout;
@@ -254,7 +260,7 @@ impl InstallChannelTool {
             stage: InstallStage::Confirm,
             config_values: BTreeMap::new(),
             setup_conversation: setup_conversation(ctx),
-            continuation: ctx.responder.clone(),
+            continuation: Some(responder),
         });
         automations.delete(HANDLE_CONVERSATION_AUTOMATION)?;
         automations.add(Self::automation(name))?;
@@ -702,9 +708,14 @@ impl InternalTool for ListChannelsTool {
         )
     }
 
-    async fn execute(&self, _args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ToolContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
         let output = ListChannelsTool::execute(self).await?;
-        ctx.respond(output)?;
+        responder.respond(output)?;
         Ok(())
     }
 }
@@ -723,12 +734,17 @@ impl InternalTool for RemoveChannelTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
         let output = tools::execute_typed(args, |params| async {
             RemoveChannelTool::execute(self, params, ctx).await
         })
         .await?;
-        ctx.respond(output)?;
+        responder.respond(output)?;
         Ok(())
     }
 }
@@ -749,11 +765,16 @@ impl InternalTool for InstallChannelTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
         let params: InstallChannelParams =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         let starts_setup = params.message.is_none() || self.active_session_name().is_none();
-        let result = InstallChannelTool::execute(self, params, ctx).await?;
+        let result = InstallChannelTool::execute(self, params, ctx, responder.clone()).await?;
         if starts_setup
             && result.get("ok").and_then(|ok| ok.as_bool()) == Some(true)
             && result
@@ -763,7 +784,7 @@ impl InternalTool for InstallChannelTool {
         {
             return Ok(());
         }
-        ctx.respond(result)?;
+        responder.respond(result)?;
         Ok(())
     }
 }

@@ -95,7 +95,8 @@ impl InternalTool for ImageGenerationTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &crate::tools::ToolContext,
+        _ctx: &crate::tools::ToolContext,
+        responder: crate::tools::ToolResponder,
     ) -> Result<(), String> {
         let params: ImageGenerationParams =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
@@ -108,7 +109,7 @@ impl InternalTool for ImageGenerationTool {
         let path = self.files_dir.join(format!("{file_id}.png"));
         let bytes = base64_decode(&data_base64)?;
         std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-        ctx.respond(serde_json::json!({
+        responder.respond(serde_json::json!({
             "status": "ok",
             "file_id": file_id,
         }))?;

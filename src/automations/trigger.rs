@@ -65,13 +65,9 @@ impl Trigger {
                         .as_ref()
                         .is_none_or(|channel| channel == event_channel)
             }
-            (
-                Trigger::ToolResult,
-                Event::ToolResult {
-                    origin: crate::bus::ToolOrigin::Conversation { .. },
-                    ..
-                },
-            ) => true,
+            (Trigger::ToolResult, Event::ToolResult { context, .. }) => {
+                context.conversation.is_some()
+            }
             _ => false,
         }
     }

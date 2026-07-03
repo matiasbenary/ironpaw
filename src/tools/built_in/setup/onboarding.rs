@@ -7,7 +7,7 @@ use crate::{
     bus::Sender,
     message::ToolDefinition,
     tools::{
-        self, InternalTool, ToolContext,
+        self, InternalTool, ToolContext, ToolResponder,
         setup::{SetupServices, delete_current_message, send},
     },
 };
@@ -172,12 +172,17 @@ impl InternalTool for OnboardingTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
         let output = tools::execute_typed(args, |params: OnboardingParams| async {
             OnboardingTool::execute(self, params, ctx).await
         })
         .await?;
-        ctx.respond(output)?;
+        responder.respond(output)?;
         Ok(())
     }
 }

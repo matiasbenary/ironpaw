@@ -75,8 +75,8 @@ Implemented event types are:
 - `AgentResponse { request_id, response }`
 - `Automation { id, action }`
 - `AutomationResult { id, result }`
-- `ToolRequest { origin, tool_call_id, tool_name, args }`
-- `ToolResult { origin, tool_call_id, tool_name, result }`
+- `ToolRequest { context, tool_call, args }`
+- `ToolResult { context, tool_call_id, tool_name, result }`
 
 ### Message Types
 
@@ -265,7 +265,7 @@ For each run:
 2. Attach schemas for all registered tools, internal and dynamic.
 3. Use `raw_inference.execute(request)` to call the model.
 4. If the model returns no tool calls, append the assistant message to history and return the final text.
-5. If the model returns tool calls, append the assistant tool-call message, execute tools, append tool-result messages, and ask the model again.
+5. If the model returns tool calls, hand them to the tool handler, then ask the model again after the tool transcript has been written to history.
 6. Stop after `MAX_TOOL_ROUNDS`.
 
 When a run has a destination, the agent also publishes typing and progress events back to that channel.
@@ -292,7 +292,7 @@ The history module exposes:
 
 Each history entry stores a Warden message plus metadata: Warden id, `ConversationKey`, and optional provider-owned external message id.
 
-Inbound user messages are persisted by the automation runtime before matching automations. Assistant/tool messages are persisted by the agent or by tools such as `send_message`.
+Inbound user messages and outbound channel messages are persisted by the bridge. Tool transcript entries, meaning assistant tool calls and tool results, are persisted by the tool handler. Final assistant text is persisted by the agent when it returns directly to the current conversation.
 
 ---
 
@@ -308,7 +308,7 @@ Internal tools are async and model-callable. Every internal tool exposes:
 - `tool_definition()`
 - `execute(args, ctx).await`
 
-Each tool receives a `ToolContext` with the current `ConversationKey`, the current inbound message id when available, and tool-call depth. This lets tools like `send_message` and `delete_message` default to the current conversation or current message when that is what the user asked for.
+Each tool receives a `ToolContext` with the current `ConversationKey` and tool-call depth. Result delivery is separate: tools receive a `ToolResponder` alongside the context. This keeps execution context separate from output plumbing. Tools like `send_message` can default to the current conversation, while tools that operate on a specific message, such as `delete_message`, require an explicit `message_id`.
 
 Implemented internal tools include:
 

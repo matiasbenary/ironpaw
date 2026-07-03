@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::{
-    bus::{Bus, ChannelAction, ConversationKey, Event, Sender, ToolOrigin},
+    bus::{Bus, ChannelAction, ConversationKey, Event},
     history::{History, HistoryEntry, MessageMetadata},
     message::{Message, ToolCall, ToolDefinition},
     models,
-    tools::{self, InternalTool, ToolContext, ToolRegistry},
+    tools::{self, InternalTool, ToolContext, ToolHandler, ToolRegistry},
 };
 
 use super::{
@@ -24,6 +24,7 @@ pub type Destination<'a> = Option<&'a ConversationKey>;
 pub struct Agent {
     bus: Bus,
     tools: Arc<ToolRegistry>,
+    tool_handler: Arc<ToolHandler>,
     history: Arc<dyn History>,
     raw_inference: RawInferenceTool,
 }
@@ -32,12 +33,14 @@ impl Agent {
     pub fn new(
         bus: Bus,
         tools: Arc<ToolRegistry>,
+        tool_handler: Arc<ToolHandler>,
         history: Arc<dyn History>,
         raw_inference: RawInferenceTool,
     ) -> Self {
         Self {
             bus,
             tools,
+            tool_handler,
             history,
             raw_inference,
         }
@@ -162,41 +165,20 @@ impl Agent {
                 run.transient_messages
                     .push(assistant_message_for_history(output));
                 run.transient_messages.extend(tool_results);
-            } else if tool_requests.len() == 1
-                && run.persist_history
-                && let Some(conversation) = run.destination
-            {
-                self.history
-                    .append(conversation, &[history_entry(output, run.destination)]);
+            } else if tool_requests.len() == 1 && run.persist_history && run.destination.is_some() {
                 let (tool_call, args) = tool_requests.pop().expect("single tool request exists");
                 self.bus.publish(Event::ToolRequest {
-                    origin: ToolOrigin::Conversation {
-                        channel: conversation.channel.clone(),
-                        sender: Sender::System,
-                        conversation: conversation.clone(),
-                    },
-                    tool_call_id: tool_call.id,
-                    tool_name: tool_call.name,
+                    context: ctx.clone(),
+                    tool_call,
                     args,
                 });
                 return Ok(None);
             } else if run.persist_history {
-                let conversation = run.destination.expect("persistent run has conversation");
-                self.history
-                    .append(conversation, &[history_entry(output, run.destination)]);
-                let mut direct_results = Vec::new();
                 for (tool_call, args) in tool_requests {
-                    let tool_result =
-                        execute_prepared_tool_call(&self.tools, tool_call, args, &ctx).await;
-                    direct_results.push(tool_result.message);
+                    self.tool_handler
+                        .execute_tool_call(tool_call, args, &ctx)
+                        .await;
                 }
-                self.history.append(
-                    conversation,
-                    &direct_results
-                        .into_iter()
-                        .map(|message| history_entry(message, run.destination))
-                        .collect::<Vec<_>>(),
-                );
             } else {
                 run.transient_messages.push(output);
                 for (tool_call, args) in tool_requests {

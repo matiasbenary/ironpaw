@@ -2,11 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::{
     agent::Agent,
-    bus::{
-        AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, Sender, ToolOrigin,
-    },
-    history::{HistoryEntry, MessageMetadata},
-    message::Message,
+    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, Sender},
     tools::{InternalTools, ToolContext},
 };
 
@@ -45,7 +41,6 @@ impl AutomationEvent<'_> {
                     };
                     let ctx = ToolContext {
                         conversation: Some(conversation.clone()),
-                        message_id: message_id.clone(),
                         ..ToolContext::default()
                     };
                     let event = serde_json::json!({
@@ -62,26 +57,19 @@ impl AutomationEvent<'_> {
                     (ctx, event)
                 }
                 Event::ToolResult {
-                    origin:
-                        ToolOrigin::Conversation {
-                            channel,
-                            sender: _,
-                            conversation,
-                        },
+                    context,
                     tool_call_id,
                     tool_name,
                     result,
                 } => {
-                    let ctx = ToolContext {
-                        conversation: Some(conversation.clone()),
-                        ..ToolContext::default()
-                    };
+                    let ctx = context.clone();
+                    let conversation = context.conversation.as_ref();
                     let event = serde_json::json!({
                         "type": "tool_result",
-                        "channel": channel,
+                        "channel": conversation.map(|conversation| &conversation.channel),
                         "conversation": conversation,
-                        "chat_id": &conversation.chat_id,
-                        "thread_id": &conversation.thread_id,
+                        "chat_id": conversation.map(|conversation| &conversation.chat_id),
+                        "thread_id": conversation.and_then(|conversation| conversation.thread_id.as_ref()),
                         "tool_call_id": tool_call_id,
                         "tool_name": tool_name,
                         "result": result,
@@ -356,8 +344,6 @@ impl Automations {
             return;
         }
 
-        self.persist_tool_result(event);
-
         let matching: Vec<_> = self
             .automations
             .read()
@@ -369,29 +355,6 @@ impl Automations {
         for automation in matching {
             self.execute(&automation, AutomationEvent::Bus(event)).await;
         }
-    }
-
-    fn persist_tool_result(&self, event: &Event) {
-        let Event::ToolResult {
-            origin: ToolOrigin::Conversation { conversation, .. },
-            tool_call_id,
-            tool_name,
-            result,
-        } = event
-        else {
-            return;
-        };
-        self.tools.history.append(
-            conversation,
-            &[HistoryEntry {
-                message: Message::ToolResult {
-                    tool_call_id: tool_call_id.clone(),
-                    tool_name: tool_name.clone(),
-                    result: result.clone(),
-                },
-                metadata: MessageMetadata::new(conversation.clone(), None),
-            }],
-        );
     }
 
     fn handle_action(
@@ -574,9 +537,15 @@ mod tests {
     }
 
     fn test_agent(bus: &Bus, tools: &Arc<InternalTools>) -> Arc<Agent> {
+        let tool_handler = Arc::new(crate::tools::ToolHandler::new(
+            bus.clone(),
+            Arc::clone(&tools.registry),
+            Arc::clone(&tools.history),
+        ));
         Arc::new(Agent::new(
             bus.clone(),
             Arc::clone(&tools.registry),
+            tool_handler,
             Arc::clone(&tools.history),
             tools.raw_inference.clone(),
         ))

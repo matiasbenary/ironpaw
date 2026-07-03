@@ -65,9 +65,15 @@ async fn main() -> io::Result<()> {
         Arc::clone(&history),
         secrets.clone(),
     ));
+    let tool_handler = Arc::new(ToolHandler::new(
+        bus.clone(),
+        Arc::clone(&tools.registry),
+        Arc::clone(&history),
+    ));
     let agent = Arc::new(Agent::new(
         bus.clone(),
         Arc::clone(&tools.registry),
+        Arc::clone(&tool_handler),
         Arc::clone(&history),
         tools.raw_inference.clone(),
     ));
@@ -81,7 +87,6 @@ async fn main() -> io::Result<()> {
         Arc::clone(&agent),
         automation_store,
     ));
-    let tool_handler = Arc::new(ToolHandler::new(bus.clone(), Arc::clone(&tools.registry)));
     let boot_events = bus.subscribe();
     tools
         .registry

@@ -14,11 +14,12 @@ use crate::{
     scripts::ScriptRuntime, secrets::Secrets,
 };
 
+pub use crate::bus::ToolContext;
 pub use built_in::{
     automation, image_generation, inspect_file, messages, raw_inference, search_history, setup,
     todo, unlock, web,
 };
-pub use context::{ToolCallContext, ToolContext, ToolResponder};
+pub use context::ToolResponder;
 pub use handler::ToolHandler;
 pub(crate) use runner::run_registered_tool_for_context;
 pub use runner::{run_internal_tool, run_registered_tool, run_tool};
@@ -172,7 +173,12 @@ pub trait InternalTool: Send + Sync {
 
     fn tool_definition(&self) -> ToolDefinition;
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String>;
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+        responder: ToolResponder,
+    ) -> Result<(), String>;
 }
 
 pub async fn execute_typed<P, O, F>(
@@ -334,7 +340,9 @@ fn validate_object(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{Event, ToolOrigin};
+    use crate::bus::{ConversationKey, Event};
+    use crate::history::{History, SqliteHistory};
+    use crate::message::{Message, ToolCall};
 
     struct FakeTool(&'static str);
 
@@ -354,8 +362,13 @@ mod tests {
             }
         }
 
-        async fn execute(&self, _args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
-            ctx.respond(serde_json::json!({ "depth": ctx.depth }))?;
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            ctx: &ToolContext,
+            responder: ToolResponder,
+        ) -> Result<(), String> {
+            responder.respond(serde_json::json!({ "depth": ctx.depth }))?;
             Ok(())
         }
     }
@@ -381,8 +394,13 @@ mod tests {
             }
         }
 
-        async fn execute(&self, _args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
-            ctx.respond(serde_json::json!({}))?;
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ToolContext,
+            responder: ToolResponder,
+        ) -> Result<(), String> {
+            responder.respond(serde_json::json!({}))?;
             Ok(())
         }
     }
@@ -410,6 +428,23 @@ mod tests {
             Arc::new(crate::history::SqliteHistory::new(history).unwrap()),
             secrets,
         )
+    }
+
+    fn temp_history(prefix: &str) -> Arc<SqliteHistory> {
+        Arc::new(
+            SqliteHistory::new(
+                std::env::temp_dir().join(format!("{prefix}-{}.db", uuid::Uuid::new_v4())),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn test_conversation() -> ConversationKey {
+        ConversationKey {
+            channel: "tui".to_string(),
+            chat_id: "chat-1".to_string(),
+            thread_id: None,
+        }
     }
 
     #[test]
@@ -497,16 +532,18 @@ mod tests {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());
         registry.add(Arc::new(FakeTool("fake"))).expect("add");
-        let handler = Arc::new(ToolHandler::new(bus.clone(), registry));
+        let history = temp_history("warden-tool-handler-test");
+        let handler = Arc::new(ToolHandler::new(bus.clone(), registry, history));
         let task = handler.start();
         let mut events = bus.subscribe();
 
         bus.publish(Event::ToolRequest {
-            origin: ToolOrigin::Automation {
-                automation_id: "automation-1".to_string(),
+            context: ToolContext::default(),
+            tool_call: ToolCall {
+                id: "call-1".to_string(),
+                name: "fake".to_string(),
+                arguments: "{}".to_string(),
             },
-            tool_call_id: "call-1".to_string(),
-            tool_name: "fake".to_string(),
             args: serde_json::json!({}),
         });
 
@@ -530,5 +567,77 @@ mod tests {
         assert_eq!(result.0, "call-1");
         assert_eq!(result.1, "fake");
         assert_eq!(result.2["depth"], 1);
+    }
+
+    #[tokio::test]
+    async fn tool_handler_persists_direct_tool_transcript() {
+        let bus = Bus::new(16);
+        let registry = Arc::new(ToolRegistry::new());
+        registry.add(Arc::new(FakeTool("fake"))).expect("add");
+        let history = temp_history("warden-tool-handler-direct-history");
+        let handler = ToolHandler::new(bus, registry, history.clone());
+        let conversation = test_conversation();
+        let tool_call = ToolCall {
+            id: "call-1".to_string(),
+            name: "fake".to_string(),
+            arguments: "{}".to_string(),
+        };
+        let ctx = ToolContext {
+            conversation: Some(conversation.clone()),
+            ..ToolContext::default()
+        };
+
+        handler
+            .execute_tool_call(tool_call, serde_json::json!({}), &ctx)
+            .await;
+
+        let entries = history.load(&conversation);
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(entries[0].message, Message::Assistant { .. }));
+        assert!(matches!(entries[1].message, Message::ToolResult { .. }));
+    }
+
+    #[tokio::test]
+    async fn tool_handler_persists_bus_tool_transcript() {
+        let bus = Bus::new(16);
+        let registry = Arc::new(ToolRegistry::new());
+        registry.add(Arc::new(FakeTool("fake"))).expect("add");
+        let history = temp_history("warden-tool-handler-bus-history");
+        let handler = Arc::new(ToolHandler::new(bus.clone(), registry, history.clone()));
+        let task = handler.start();
+        let mut events = bus.subscribe();
+        let conversation = test_conversation();
+
+        bus.publish(Event::ToolRequest {
+            context: ToolContext {
+                conversation: Some(conversation.clone()),
+                ..ToolContext::default()
+            },
+            tool_call: ToolCall {
+                id: "call-1".to_string(),
+                name: "fake".to_string(),
+                arguments: "{}".to_string(),
+            },
+            args: serde_json::json!({}),
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if matches!(
+                    events.recv().await.expect("event"),
+                    Event::ToolResult { .. }
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("tool result");
+        task.abort();
+
+        let entries = history.load(&conversation);
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(entries[0].message, Message::Assistant { .. }));
+        assert!(matches!(entries[1].message, Message::ToolResult { .. }));
     }
 }

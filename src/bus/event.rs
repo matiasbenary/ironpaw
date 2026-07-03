@@ -1,4 +1,4 @@
-use crate::message::Message;
+use crate::message::{Message, ToolCall};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +29,22 @@ impl ConversationKey {
 pub struct MessageRef {
     pub conversation: ConversationKey,
     pub message_id: String,
+}
+
+/// Ambient context a tool executes in. This is separate from the responder
+/// that decides where the tool result goes.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ToolContext {
+    pub conversation: Option<ConversationKey>,
+    pub depth: usize,
+}
+
+impl ToolContext {
+    pub(crate) fn deeper(&self) -> Self {
+        let mut ctx = self.clone();
+        ctx.depth += 1;
+        ctx
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,29 +125,16 @@ pub enum Event {
         result: Result<serde_json::Value, String>,
     },
     ToolRequest {
-        origin: ToolOrigin,
-        tool_call_id: String,
-        tool_name: String,
+        context: ToolContext,
+        tool_call: ToolCall,
         args: serde_json::Value,
     },
     ToolResult {
-        origin: ToolOrigin,
+        context: ToolContext,
         tool_call_id: String,
         tool_name: String,
         result: serde_json::Value,
     },
     #[serde(skip)]
     SecretsUnlocked,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum ToolOrigin {
-    Conversation {
-        channel: String,
-        sender: Sender,
-        conversation: ConversationKey,
-    },
-    Automation {
-        automation_id: String,
-    },
 }

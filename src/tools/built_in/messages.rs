@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::{
     bus::{Bus, ConversationKey, Event, MessageRef, Sender},
     message::{Attachment, Message},
-    tools::{self, InternalTool, ToolContext},
+    tools::{self, InternalTool, ToolContext, ToolResponder},
 };
 
 type AttachmentResolver = Arc<dyn Fn(u32) -> Result<Attachment, String> + Send + Sync>;
@@ -70,12 +70,17 @@ impl InternalTool for SendMessageTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
         let mut input: SendMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_destination(ctx);
         let output = SendMessageTool::execute(self, input).await?;
-        ctx.respond(output)?;
+        responder.respond(output)?;
         Ok(())
     }
 }
@@ -197,12 +202,17 @@ impl InternalTool for DeleteMessageTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
         let mut input: DeleteMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         input.fill_current_message(ctx);
         let output = DeleteMessageTool::execute(self, input).await?;
-        ctx.respond(output)?;
+        responder.respond(output)?;
         Ok(())
     }
 }
@@ -221,9 +231,7 @@ pub struct DeleteMessageToolInput {
     )]
     pub chat_id: Option<String>,
     #[serde(default)]
-    #[schemars(
-        description = "Optional message id. If omitted, uses the current inbound message id."
-    )]
+    #[schemars(description = "Provider message id to delete.")]
     pub message_id: Option<String>,
     #[serde(default)]
     #[schemars(description = "Optional channel thread/topic id.")]
@@ -240,9 +248,6 @@ impl DeleteMessageToolInput {
         }
         if self.chat_id.is_none() {
             self.chat_id = Some(conversation.chat_id.clone());
-        }
-        if self.message_id.is_none() {
-            self.message_id = ctx.message_id.clone();
         }
         if self.thread_id.is_none() {
             self.thread_id = conversation.thread_id.clone();
@@ -365,7 +370,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_message_defaults_to_current_message() {
+    async fn delete_message_defaults_conversation_but_requires_message_id() {
         let bus = Bus::new(16);
         let mut events = bus.subscribe();
         let tool = Arc::new(DeleteMessageTool::new(bus));
@@ -375,11 +380,10 @@ mod tests {
                 chat_id: "123".to_string(),
                 thread_id: None,
             }),
-            message_id: Some("456".to_string()),
             ..ToolContext::default()
         };
 
-        tools::run_internal_tool(tool, serde_json::json!({}), &ctx).await;
+        tools::run_internal_tool(tool, serde_json::json!({ "message_id": "456" }), &ctx).await;
 
         let Event::DeleteMessage { channel, message } = events.try_recv().unwrap() else {
             panic!("expected delete message event");

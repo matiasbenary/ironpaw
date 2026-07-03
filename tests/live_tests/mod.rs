@@ -9,7 +9,7 @@ use warden::{
     history::{History, HistoryEntry, MessageMetadata, SqliteHistory},
     message::{Attachment, Message},
     tools::{
-        InternalTools,
+        InternalTools, ToolHandler,
         messages::{DeleteMessageTool, SendMessageTool},
         raw_inference::RawInferenceTool,
         setup::{OnboardingTool, SetupServices},
@@ -40,9 +40,15 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
         secrets.clone(),
     );
     let tools = Arc::new(tools);
+    let tool_handler = Arc::new(ToolHandler::new(
+        bus.clone(),
+        Arc::clone(&tools.registry),
+        Arc::clone(&history),
+    ));
     let agent = Arc::new(Agent::new(
         bus.clone(),
         Arc::clone(&tools.registry),
+        tool_handler,
         Arc::clone(&history),
         tools.raw_inference.clone(),
     ));

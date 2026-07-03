@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use crate::tools::{InternalTool, InternalTools, ToolContext, ToolRegistry, ToolResponder};
+use crate::{
+    bus::Bus,
+    history::History,
+    tools::{InternalTool, InternalTools, ToolContext, ToolRegistry, ToolResponder},
+};
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can
 /// call tools, which can call them again).
@@ -46,8 +50,8 @@ pub async fn run_internal_tool(
         });
     }
     let (responder, captured) = ToolResponder::capture();
-    let ctx = ctx.deeper().with_responder(responder);
-    match tool.execute(args, &ctx).await {
+    let ctx = ctx.deeper();
+    match tool.execute(args, &ctx, responder).await {
         Ok(()) => captured
             .lock()
             .expect("tool response lock")
@@ -60,39 +64,37 @@ pub async fn run_internal_tool(
 }
 
 pub(crate) async fn run_registered_tool_for_context(
+    bus: Bus,
+    history: std::sync::Arc<dyn History>,
     registry: &ToolRegistry,
     ctx: &ToolContext,
+    tool_call_id: String,
+    tool_name: String,
     args: serde_json::Value,
 ) {
-    let Some(tool_call) = ctx.tool_call.as_ref() else {
-        return;
-    };
-    let tool_name = tool_call.tool_name.clone();
     let tool = registry
         .all()
         .iter()
         .find(|tool| tool.name() == tool_name)
         .cloned();
+    let responder = ToolResponder::bus(bus, history, ctx.clone(), tool_call_id, tool_name.clone());
     let Some(tool) = tool else {
-        let _ = ctx.respond(serde_json::json!({
+        let _ = responder.respond(serde_json::json!({
             "ok": false,
             "error": format!("unknown tool: {tool_name}"),
         }));
         return;
     };
-    let responder = ctx.responder.clone();
     let result = if ctx.depth >= MAX_TOOL_DEPTH {
         Err(format!(
             "tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"
         ))
     } else {
-        tool.execute(args, &ctx.deeper()).await
+        tool.execute(args, &ctx.deeper(), responder.clone()).await
     };
     if let Err(err) = result
-        && responder
-            .as_ref()
-            .is_none_or(|responder| !responder.has_responded())
+        && !responder.has_responded()
     {
-        let _ = ctx.respond(serde_json::json!({ "ok": false, "error": err }));
+        let _ = responder.respond(serde_json::json!({ "ok": false, "error": err }));
     }
 }

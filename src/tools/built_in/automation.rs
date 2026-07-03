@@ -4,7 +4,7 @@ use crate::{
     automations::AutomationEffect,
     bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event},
     message::ToolDefinition,
-    tools::{self, InternalTool, ToolContext},
+    tools::{self, InternalTool, ToolContext, ToolResponder},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -170,7 +170,12 @@ impl InternalTool for AutomationTool {
         }
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
         let output = match self.kind {
             AutomationToolKind::Create => {
                 tools::execute_typed(args, |params| self.create_automation(params)).await
@@ -196,7 +201,7 @@ impl InternalTool for AutomationTool {
                 .await
             }
         }?;
-        ctx.respond(output)?;
+        responder.respond(output)?;
         Ok(())
     }
 }

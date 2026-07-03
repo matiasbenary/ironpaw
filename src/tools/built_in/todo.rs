@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::tools::{self, InternalTool, ToolContext};
+use crate::tools::{self, InternalTool, ToolContext, ToolResponder};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -64,7 +64,12 @@ impl InternalTool for TodoTool {
         )
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
         let input: TodoInput = serde_json::from_value(args).map_err(|e| e.to_string())?;
         let key = ctx
             .conversation
@@ -109,7 +114,7 @@ impl InternalTool for TodoTool {
             lines.push("All tasks completed.".to_string());
         }
 
-        ctx.respond(serde_json::json!({
+        responder.respond(serde_json::json!({
             "ok": true,
             "old_todos": old_todos,
             "new_todos": input.todos,

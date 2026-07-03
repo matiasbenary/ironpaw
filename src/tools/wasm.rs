@@ -19,7 +19,7 @@ use crate::{
     http::{CredentialInjection, HttpTool},
     message::ToolDefinition,
     secrets::ToolSecrets,
-    tools::{InternalTool, ToolContext},
+    tools::{InternalTool, ToolContext, ToolResponder},
 };
 
 wasmtime::component::bindgen!({
@@ -82,7 +82,12 @@ impl InternalTool for WasmTool {
         }
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<(), String> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
         let args_json = serde_json::to_string(&args).map_err(|err| err.to_string())?;
         let wasm_path = self.wasm_path.clone();
         let secrets = self.secrets.clone();
@@ -96,7 +101,7 @@ impl InternalTool for WasmTool {
         .map_err(|err| err.to_string())??;
         let output = serde_json::from_str(&output)
             .map_err(|err| format!("invalid WASM tool output: {err}"))?;
-        ctx.respond(output)?;
+        responder.respond(output)?;
         Ok(())
     }
 }

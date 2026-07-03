@@ -52,7 +52,8 @@ impl InternalTool for InspectFileTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &crate::tools::ToolContext,
+        _ctx: &crate::tools::ToolContext,
+        responder: crate::tools::ToolResponder,
     ) -> Result<(), String> {
         let params: InspectFileParams = serde_json::from_value(args).map_err(|e| e.to_string())?;
 
@@ -71,7 +72,7 @@ impl InternalTool for InspectFileTool {
 
         if attachment.mime_type.starts_with("image/") {
             let answer = self.inspect_image(attachment, query).await?;
-            ctx.respond(inspection_output(params.file_id, query, answer))?;
+            responder.respond(inspection_output(params.file_id, query, answer))?;
             return Ok(());
         }
 
@@ -88,7 +89,7 @@ impl InternalTool for InspectFileTool {
         };
 
         let answer = self.inspect_text(&text, query).await?;
-        ctx.respond(inspection_output(params.file_id, query, answer))?;
+        responder.respond(inspection_output(params.file_id, query, answer))?;
         Ok(())
     }
 }
