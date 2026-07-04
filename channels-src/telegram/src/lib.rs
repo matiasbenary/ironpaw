@@ -92,11 +92,11 @@ impl Guest for TelegramChannel {
         channel_host::emit_message(&event)
     }
 
-    fn on_outbound_event(event_json: String, config_json: String) -> Result<bool, String> {
+    fn on_outbound_event(event_json: String, config_json: String) -> Result<Option<String>, String> {
         let config: RuntimeConfig =
             serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
         let Some(telegram) = config.telegram else {
-            return Ok(false);
+            return Ok(None);
         };
         let bot_token_placeholder = secret_placeholder(&telegram.bot_token_secret);
         let event: OutboundEvent =
@@ -110,26 +110,26 @@ impl Guest for TelegramChannel {
                     return Err("telegram message out did not include conversation".to_string());
                 };
                 let WardenMessage::Assistant(message) = message else {
-                    return Ok(false);
+                    return Ok(None);
                 };
                 (conversation, message)
             }
             OutboundEvent::DeleteMessage { message } => {
                 delete_message(&bot_token_placeholder, &message)?;
-                return Ok(true);
+                return Ok(Some(String::new()));
             }
             OutboundEvent::ChannelAction {
                 conversation,
                 action,
             } => {
                 send_chat_action(&bot_token_placeholder, &conversation, action)?;
-                return Ok(true);
+                return Ok(Some(String::new()));
             }
         };
         let text = display_message(&message);
 
         if let Some(image) = message.image_attachment() {
-            send_image(
+            let message_id = send_image(
                 &bot_token_placeholder,
                 &conversation,
                 image,
@@ -139,7 +139,7 @@ impl Guest for TelegramChannel {
                     Some(text.as_str())
                 },
             )?;
-            return Ok(true);
+            return Ok(Some(message_id.unwrap_or_default()));
         }
 
         let mut body = serde_json::json!({
@@ -151,12 +151,12 @@ impl Guest for TelegramChannel {
             body["message_thread_id"] = serde_json::json!(message_thread_id);
         }
 
-        channel_host::http_request(
+        let response = channel_host::http_request(
             "POST",
             &format!("https://api.telegram.org/bot{bot_token_placeholder}/sendMessage"),
             &body.to_string(),
         )?;
-        Ok(true)
+        Ok(Some(extract_message_id(&response).unwrap_or_default()))
     }
 }
 
@@ -358,12 +358,19 @@ fn secret_placeholder(secret: &str) -> String {
     format!("{{{secret}}}")
 }
 
+fn extract_message_id(response: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(response).ok()?;
+    value["result"]["message_id"]
+        .as_i64()
+        .map(|id| id.to_string())
+}
+
 fn send_image(
     bot_token_placeholder: &str,
     conversation: &ConversationKey,
     image: &AssistantAttachment,
     caption: Option<&str>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     if let Some(url) = &image.url {
         let mut body = serde_json::json!({
             "chat_id": conversation.chat_id,
@@ -376,12 +383,12 @@ fn send_image(
             let message_thread_id = thread_id.parse::<i64>().map_err(|err| err.to_string())?;
             body["message_thread_id"] = serde_json::json!(message_thread_id);
         }
-        channel_host::http_request(
+        let response = channel_host::http_request(
             "POST",
             &format!("https://api.telegram.org/bot{bot_token_placeholder}/sendPhoto"),
             &body.to_string(),
         )?;
-        return Ok(());
+        return Ok(extract_message_id(&response));
     }
 
     let Some(data_base64) = &image.data_base64 else {
@@ -398,7 +405,7 @@ fn send_image(
         fields["message_thread_id"] = serde_json::json!(message_thread_id);
     }
 
-    channel_host::http_multipart_base64(
+    let response = channel_host::http_multipart_base64(
         "POST",
         &format!("https://api.telegram.org/bot{bot_token_placeholder}/sendPhoto"),
         &fields.to_string(),
@@ -407,7 +414,7 @@ fn send_image(
         &image.mime_type,
         data_base64,
     )?;
-    Ok(())
+    Ok(extract_message_id(&response))
 }
 
 fn delete_message(

@@ -12,5 +12,5 @@ world channel {
 
     export on-start: func(config-json: string) -> result<_, string>;
     export handle-http: func(path: string, body-json: string, config-json: string) -> result<_, string>;
-    export on-outbound-event: func(event-json: string, config-json: string) -> result<bool, string>;
+    export on-outbound-event: func(event-json: string, config-json: string) -> result<option<string>, string>;
 }

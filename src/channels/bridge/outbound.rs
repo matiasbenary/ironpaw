@@ -16,7 +16,7 @@ pub(super) async fn message_warden_to_channel(
 ) -> Result<(), String> {
     let mut events = bus.subscribe();
     loop {
-        let (channel_runtime, channel, event) = match events.recv().await {
+        match events.recv().await {
             Ok(Event::MessageOut {
                 channel,
                 recipient: Sender::User,
@@ -39,29 +39,46 @@ pub(super) async fn message_warden_to_channel(
                     eprintln!("{channel} message out was not deliverable to a channel");
                     continue;
                 }
-                append_channel_history(history.as_ref(), &conversation, None, &message)?;
-                (
-                    channel_runtime,
-                    channel.clone(),
-                    Event::MessageOut {
-                        channel,
-                        recipient: Sender::User,
-                        conversation: Some(conversation),
-                        message,
-                    },
+                let event = Event::MessageOut {
+                    channel: channel.clone(),
+                    recipient: Sender::User,
+                    conversation: Some(conversation.clone()),
+                    message: message.clone(),
+                };
+                let result = dispatch_channel_event(
+                    &channel_runtime,
+                    &channel,
+                    &channel_state.config_json,
+                    &event,
                 )
+                .await;
+                let external_id = result.ok().flatten().filter(|id| !id.is_empty());
+                if let Err(err) =
+                    append_channel_history(history.as_ref(), &conversation, external_id, &message)
+                {
+                    eprintln!("failed to persist {channel} outbound history: {err}");
+                }
             }
             Ok(Event::DeleteMessage { channel, message }) => {
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
                     eprintln!("bridge: no loaded channel named {channel} for delete message");
                     continue;
                 };
-                history.delete_external_message(&message)?;
-                (
-                    channel_runtime,
-                    channel.clone(),
-                    Event::DeleteMessage { channel, message },
+                if let Err(err) = history.delete_external_message(&message) {
+                    eprintln!("failed to delete {channel} history entry: {err}");
+                }
+                let channel_state = channel_runtime.state.lock().await.clone();
+                let event = Event::DeleteMessage {
+                    channel: channel.clone(),
+                    message,
+                };
+                let _ = dispatch_channel_event(
+                    &channel_runtime,
+                    &channel,
+                    &channel_state.config_json,
+                    &event,
                 )
+                .await;
             }
             Ok(Event::ChannelAction {
                 channel,
@@ -73,28 +90,24 @@ pub(super) async fn message_warden_to_channel(
                     eprintln!("bridge: no loaded channel named {channel} for channel action");
                     continue;
                 };
-                (
-                    channel_runtime,
-                    channel.clone(),
-                    Event::ChannelAction {
-                        channel,
-                        recipient: Sender::User,
-                        conversation,
-                        action,
-                    },
+                let channel_state = channel_runtime.state.lock().await.clone();
+                let event = Event::ChannelAction {
+                    channel: channel.clone(),
+                    recipient: Sender::User,
+                    conversation,
+                    action,
+                };
+                let _ = dispatch_channel_event(
+                    &channel_runtime,
+                    &channel,
+                    &channel_state.config_json,
+                    &event,
                 )
+                .await;
             }
             Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-        };
-        let channel_state = channel_runtime.state.lock().await.clone();
-        dispatch_channel_event(
-            &channel_runtime,
-            &channel,
-            &channel_state.config_json,
-            &event,
-        )
-        .await;
+        }
     }
     Ok(())
 }
@@ -171,12 +184,12 @@ async fn dispatch_channel_event(
     channel: &str,
     config_json: &str,
     event: &Event,
-) {
+) -> Result<Option<String>, String> {
     let event_json = match channel_outbound_event_json(event) {
         Ok(event_json) => event_json,
         Err(err) => {
             eprintln!("failed to serialize {channel} outbound event: {err}");
-            return;
+            return Err(err);
         }
     };
 
@@ -186,9 +199,18 @@ async fn dispatch_channel_event(
         .await
         .on_outbound_event(&event_json, config_json);
     match handled {
-        Ok(true) => eprintln!("bridge: {channel} channel handled outbound event"),
-        Ok(false) => eprintln!("{channel} channel did not handle outbound event"),
-        Err(err) => eprintln!("{channel} outbound event failed: {err}"),
+        Ok(Some(id)) => {
+            eprintln!("bridge: {channel} channel handled outbound event");
+            Ok(Some(id))
+        }
+        Ok(None) => {
+            eprintln!("{channel} channel did not handle outbound event");
+            Ok(None)
+        }
+        Err(err) => {
+            eprintln!("{channel} outbound event failed: {err}");
+            Err(err.to_string())
+        }
     }
 }
 

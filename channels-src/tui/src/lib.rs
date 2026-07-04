@@ -41,7 +41,7 @@ impl Guest for TuiChannel {
         channel_host::emit_message(&event)
     }
 
-    fn on_outbound_event(event_json: String, _config_json: String) -> Result<bool, String> {
+    fn on_outbound_event(event_json: String, _config_json: String) -> Result<Option<String>, String> {
         let event: OutboundEvent =
             serde_json::from_str(&event_json).map_err(|err| err.to_string())?;
         match event {
@@ -53,16 +53,16 @@ impl Guest for TuiChannel {
                     return Err("tui message out did not include conversation".to_string());
                 };
                 let WardenMessage::Assistant(message) = message else {
-                    return Ok(false);
+                    return Ok(None);
                 };
                 channel_host::http_request(
                     "POST",
                     &conversation.chat_id,
                     &serde_json::to_string(&message).map_err(|err| err.to_string())?,
                 )?;
-                Ok(true)
+                Ok(Some(String::new()))
             }
-            OutboundEvent::DeleteMessage { .. } | OutboundEvent::ChannelAction { .. } => Ok(false),
+            OutboundEvent::DeleteMessage { .. } | OutboundEvent::ChannelAction { .. } => Ok(None),
         }
     }
 }

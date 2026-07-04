@@ -78,7 +78,7 @@ impl WasmChannel {
         &mut self,
         event_json: &str,
         config_json: &str,
-    ) -> Result<bool, WasmChannelError> {
+    ) -> Result<Option<String>, WasmChannelError> {
         self.bindings
             .call_on_outbound_event(&mut self.store, event_json, config_json)
             .map_err(|err| WasmChannelError::Call(err.to_string()))?
