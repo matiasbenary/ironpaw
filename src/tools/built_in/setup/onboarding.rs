@@ -23,9 +23,8 @@ pub struct OnboardingParams {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
-    Greeting,
-    NeedNear,
-    Complete,
+    WaitingForHello,
+    WaitingForNearKey,
 }
 
 pub struct OnboardingTool {
@@ -36,7 +35,7 @@ pub struct OnboardingTool {
 impl OnboardingTool {
     pub fn new(setup: Arc<SetupServices>) -> Self {
         Self {
-            stage: Mutex::new(Stage::Greeting),
+            stage: Mutex::new(Stage::WaitingForHello),
             setup,
         }
     }
@@ -65,8 +64,8 @@ impl OnboardingTool {
     ) -> Result<serde_json::Value, String> {
         let stage = *self.stage.lock().expect("onboarding stage lock");
         match stage {
-            Stage::Greeting => {
-                *self.stage.lock().expect("onboarding stage lock") = Stage::NeedNear;
+            Stage::WaitingForHello => {
+                self.set_stage(Stage::WaitingForNearKey);
                 send(
                     &self.setup.tools,
                     "Welcome to Warden. Let's set up the API key I need. Paste your NEAR API key.",
@@ -74,7 +73,7 @@ impl OnboardingTool {
                 )
                 .await?;
             }
-            Stage::NeedNear => {
+            Stage::WaitingForNearKey => {
                 let key = clean_key(&params.message)?;
                 send(
                     &self.setup.tools,
@@ -98,7 +97,6 @@ impl OnboardingTool {
                 .await?;
                 if let Err(err) = self.test_near(ctx).await {
                     self.setup.secrets.remove("NEAR_API_KEY")?;
-                    *self.stage.lock().expect("onboarding stage lock") = Stage::NeedNear;
                     send(
                         &self.setup.tools,
                         &format!(
@@ -110,9 +108,6 @@ impl OnboardingTool {
                     return Ok(serde_json::json!({ "ok": false, "error": err }));
                 }
                 self.finish(ctx).await?;
-            }
-            Stage::Complete => {
-                send(&self.setup.tools, "Warden is already set up.", ctx).await?;
             }
         }
         Ok(serde_json::json!({ "ok": true }))
@@ -130,11 +125,17 @@ impl OnboardingTool {
             ctx,
         )
         .await;
-        tool_result_ok(result)
+        if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
+            Err(result["error"]
+                .as_str()
+                .unwrap_or("tool failed")
+                .to_string())
+        } else {
+            Ok(())
+        }
     }
 
     async fn finish(&self, ctx: &ExecutionContext) -> Result<(), String> {
-        *self.stage.lock().expect("onboarding stage lock") = Stage::Complete;
         self.setup.automations.delete("onboarding")?;
         self.setup
             .automations
@@ -146,16 +147,9 @@ impl OnboardingTool {
         )
         .await
     }
-}
 
-fn tool_result_ok(result: serde_json::Value) -> Result<(), String> {
-    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-        Err(result["error"]
-            .as_str()
-            .unwrap_or("tool failed")
-            .to_string())
-    } else {
-        Ok(())
+    fn set_stage(&self, stage: Stage) {
+        *self.stage.lock().expect("onboarding stage lock") = stage;
     }
 }
 
