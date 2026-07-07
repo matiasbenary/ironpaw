@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::{
-    bus::{Bus, ConversationKey, Event, InvocationScope, MessageRef, Sender},
+    bus::{Bus, ConversationKey, Event, InvocationScope, MessageRef},
     message::{Attachment, Message},
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
@@ -38,7 +38,6 @@ impl SendMessageTool {
             .channel
             .filter(|channel| !channel.trim().is_empty())
             .ok_or_else(|| "channel is required".to_string())?;
-        let conversation = message_conversation(&channel, input.chat_id, input.thread_id);
         let message = Message::Assistant {
             text: Some(input.content.unwrap_or_default()),
             attachments,
@@ -46,8 +45,8 @@ impl SendMessageTool {
         };
         self.bus.publish(Event::MessageOut {
             channel: channel.clone(),
-            recipient: Sender::User,
-            conversation,
+            chat_id: input.chat_id,
+            thread_id: input.thread_id,
             message,
         });
         Ok(serde_json::json!({ "ok": true, "channel": channel }))
@@ -134,18 +133,6 @@ impl SendMessageToolInput {
     }
 }
 
-fn message_conversation(
-    channel: &str,
-    chat_id: Option<String>,
-    thread_id: Option<String>,
-) -> Option<ConversationKey> {
-    chat_id.map(|chat_id| ConversationKey {
-        channel: channel.to_string(),
-        chat_id,
-        thread_id,
-    })
-}
-
 #[derive(Clone)]
 pub struct DeleteMessageTool {
     bus: Bus,
@@ -171,7 +158,6 @@ impl DeleteMessageTool {
             .ok_or_else(|| "message_id is required".to_string())?;
 
         self.bus.publish(Event::DeleteMessage {
-            channel: channel.clone(),
             message: MessageRef {
                 conversation: ConversationKey {
                     channel,
@@ -353,7 +339,8 @@ mod tests {
 
         let Event::MessageOut {
             channel,
-            conversation,
+            chat_id,
+            thread_id,
             message,
             ..
         } = events.try_recv().unwrap()
@@ -361,9 +348,8 @@ mod tests {
             panic!("expected message out");
         };
         assert_eq!(channel, "telegram");
-        let conversation = conversation.expect("conversation");
-        assert_eq!(conversation.chat_id, "chat-1");
-        assert_eq!(conversation.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(chat_id.as_deref(), Some("chat-1"));
+        assert_eq!(thread_id.as_deref(), Some("thread-1"));
         let Message::Assistant { text, .. } = message else {
             panic!("expected assistant message");
         };
@@ -386,10 +372,10 @@ mod tests {
 
         tools::run_internal_tool(tool, serde_json::json!({ "message_id": "456" }), &ctx).await;
 
-        let Event::DeleteMessage { channel, message } = events.try_recv().unwrap() else {
+        let Event::DeleteMessage { message } = events.try_recv().unwrap() else {
             panic!("expected delete message event");
         };
-        assert_eq!(channel, "telegram");
+        assert_eq!(message.conversation.channel, "telegram");
         assert_eq!(message.conversation.chat_id, "123");
         assert_eq!(message.message_id, "456");
     }
@@ -408,10 +394,10 @@ mod tests {
         })
         .unwrap();
 
-        let Event::DeleteMessage { channel, message } = events.try_recv().unwrap() else {
+        let Event::DeleteMessage { message } = events.try_recv().unwrap() else {
             panic!("expected delete message event");
         };
-        assert_eq!(channel, "telegram");
+        assert_eq!(message.conversation.channel, "telegram");
         assert_eq!(message.conversation.chat_id, "chat-1");
         assert_eq!(message.message_id, "provider-1");
     }

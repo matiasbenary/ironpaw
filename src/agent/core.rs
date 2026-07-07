@@ -542,7 +542,8 @@ mod tests {
 
         let Event::MessageOut {
             channel,
-            conversation,
+            chat_id,
+            thread_id,
             message,
             ..
         } = event
@@ -550,7 +551,8 @@ mod tests {
             panic!("expected MessageOut");
         };
         assert_eq!(channel, "telegram");
-        assert!(conversation.is_none());
+        assert!(chat_id.is_none());
+        assert!(thread_id.is_none());
         let Message::Assistant { text, .. } = message else {
             panic!("expected assistant message");
         };

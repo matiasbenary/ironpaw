@@ -12,7 +12,7 @@ mod install_channel_setup;
 
 use crate::{
     automations::{Automation, AutomationEffect, Trigger},
-    bus::InvocationScope,
+    bus::{InvocationScope, SenderKind},
     config::RuntimeLayout,
     message::ToolDefinition,
     secrets::Secrets,
@@ -135,7 +135,7 @@ impl InstallChannelTool {
         Automation {
             name: format!("channel_auth:{channel_name}"),
             trigger: Trigger::MessageIn {
-                sender: None,
+                sender: SenderKind::Guest,
                 conversation: None,
             },
             effect: AutomationEffect::Tool {

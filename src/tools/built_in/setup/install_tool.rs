@@ -10,7 +10,7 @@ mod install_tool_package;
 
 use crate::{
     automations::{Automation, AutomationEffect, Trigger},
-    bus::{ConversationKey, InvocationScope, Sender},
+    bus::{ConversationKey, InvocationScope, SenderKind},
     config::RuntimeLayout,
     message::ToolDefinition,
     secrets::Secrets,
@@ -114,7 +114,7 @@ impl InstallToolTool {
         Automation {
             name: format!("tool_auth:{tool_name}"),
             trigger: Trigger::MessageIn {
-                sender: Some(Sender::User),
+                sender: SenderKind::User,
                 conversation: Some(conversation.clone()),
             },
             effect: AutomationEffect::Tool {
@@ -478,7 +478,7 @@ mod tests {
         else {
             panic!("expected message_in trigger");
         };
-        assert_eq!(sender, Some(Sender::User));
+        assert_eq!(sender, SenderKind::User);
         assert_eq!(trigger_conversation, Some(conversation));
         let AutomationEffect::Tool { tool, args } = automation.effect else {
             panic!("expected tool effect");

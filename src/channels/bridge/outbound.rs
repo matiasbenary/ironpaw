@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use serde::Serialize;
 
 use crate::{
-    bus::{Bus, ChannelAction, ConversationKey, Event, MessageRef, Sender},
+    bus::{Bus, ChannelAction, ConversationKey, Event, MessageRef},
     channels::bridge::{ChannelRegistry, LoadedChannel, history::append_channel_history},
     history::History,
     message::{Attachment, Message, ToolCall},
@@ -19,8 +19,8 @@ pub(super) async fn message_warden_to_channel(
         match events.recv().await {
             Ok(Event::MessageOut {
                 channel,
-                recipient: Sender::User,
-                conversation,
+                chat_id,
+                thread_id,
                 message,
             }) => {
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
@@ -28,8 +28,12 @@ pub(super) async fn message_warden_to_channel(
                     continue;
                 };
                 let channel_state = channel_runtime.state.lock().await.clone();
-                let Some(conversation) = conversation.or(channel_state.config.default_conversation)
-                else {
+                let Some(conversation) = message_out_conversation(
+                    &channel,
+                    chat_id,
+                    thread_id,
+                    channel_state.config.default_conversation,
+                ) else {
                     eprintln!(
                         "{channel} message out has no conversation and no default_conversation"
                     );
@@ -41,8 +45,8 @@ pub(super) async fn message_warden_to_channel(
                 }
                 let event = Event::MessageOut {
                     channel: channel.clone(),
-                    recipient: Sender::User,
-                    conversation: Some(conversation.clone()),
+                    chat_id: Some(conversation.chat_id.clone()),
+                    thread_id: conversation.thread_id.clone(),
                     message: message.clone(),
                 };
                 let result = dispatch_channel_event(
@@ -59,7 +63,8 @@ pub(super) async fn message_warden_to_channel(
                     eprintln!("failed to persist {channel} outbound history: {err}");
                 }
             }
-            Ok(Event::DeleteMessage { channel, message }) => {
+            Ok(Event::DeleteMessage { message }) => {
+                let channel = message.conversation.channel.clone();
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
                     eprintln!("bridge: no loaded channel named {channel} for delete message");
                     continue;
@@ -68,10 +73,7 @@ pub(super) async fn message_warden_to_channel(
                     eprintln!("failed to delete {channel} history entry: {err}");
                 }
                 let channel_state = channel_runtime.state.lock().await.clone();
-                let event = Event::DeleteMessage {
-                    channel: channel.clone(),
-                    message,
-                };
+                let event = Event::DeleteMessage { message };
                 let _ = dispatch_channel_event(
                     &channel_runtime,
                     &channel,
@@ -81,19 +83,16 @@ pub(super) async fn message_warden_to_channel(
                 .await;
             }
             Ok(Event::ChannelAction {
-                channel,
-                recipient: Sender::User,
                 conversation,
                 action,
             }) => {
+                let channel = conversation.channel.clone();
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
                     eprintln!("bridge: no loaded channel named {channel} for channel action");
                     continue;
                 };
                 let channel_state = channel_runtime.state.lock().await.clone();
                 let event = Event::ChannelAction {
-                    channel: channel.clone(),
-                    recipient: Sender::User,
                     conversation,
                     action,
                 };
@@ -116,7 +115,6 @@ pub(super) async fn message_warden_to_channel(
 enum ChannelOutboundEvent {
     MessageOut {
         channel: String,
-        recipient: Sender,
         conversation: Option<ConversationKey>,
         message: ChannelOutboundMessage,
     },
@@ -126,7 +124,6 @@ enum ChannelOutboundEvent {
     },
     ChannelAction {
         channel: String,
-        recipient: Sender,
         conversation: ConversationKey,
         action: ChannelAction,
     },
@@ -218,8 +215,8 @@ fn channel_outbound_event_json(event: &Event) -> Result<String, String> {
     let event = match event {
         Event::MessageOut {
             channel,
-            recipient,
-            conversation,
+            chat_id,
+            thread_id,
             message:
                 Message::Assistant {
                     text,
@@ -228,8 +225,11 @@ fn channel_outbound_event_json(event: &Event) -> Result<String, String> {
                 },
         } => ChannelOutboundEvent::MessageOut {
             channel: channel.clone(),
-            recipient: recipient.clone(),
-            conversation: conversation.clone(),
+            conversation: chat_id.as_ref().map(|chat_id| ConversationKey {
+                channel: channel.clone(),
+                chat_id: chat_id.clone(),
+                thread_id: thread_id.clone(),
+            }),
             message: ChannelOutboundMessage::Assistant {
                 text: text.clone(),
                 attachments: attachments
@@ -242,24 +242,36 @@ fn channel_outbound_event_json(event: &Event) -> Result<String, String> {
         Event::MessageOut { .. } => {
             return Err("message is not deliverable to a channel".to_string());
         }
-        Event::DeleteMessage { channel, message } => ChannelOutboundEvent::DeleteMessage {
-            channel: channel.clone(),
+        Event::DeleteMessage { message } => ChannelOutboundEvent::DeleteMessage {
+            channel: message.conversation.channel.clone(),
             message: message.clone(),
         },
         Event::ChannelAction {
-            channel,
-            recipient,
             conversation,
             action,
         } => ChannelOutboundEvent::ChannelAction {
-            channel: channel.clone(),
-            recipient: recipient.clone(),
+            channel: conversation.channel.clone(),
             conversation: conversation.clone(),
             action: action.clone(),
         },
         _ => return Err("event is not deliverable to a channel".to_string()),
     };
     serde_json::to_string(&event).map_err(|err| err.to_string())
+}
+
+fn message_out_conversation(
+    channel: &str,
+    chat_id: Option<String>,
+    thread_id: Option<String>,
+    default_conversation: Option<ConversationKey>,
+) -> Option<ConversationKey> {
+    chat_id
+        .map(|chat_id| ConversationKey {
+            channel: channel.to_string(),
+            chat_id,
+            thread_id,
+        })
+        .or(default_conversation)
 }
 
 #[cfg(test)]
@@ -276,12 +288,8 @@ mod tests {
         fs::write(&source, b"image").unwrap();
         let event = Event::MessageOut {
             channel: "telegram".to_string(),
-            recipient: Sender::User,
-            conversation: Some(ConversationKey {
-                channel: "telegram".to_string(),
-                chat_id: "chat".to_string(),
-                thread_id: None,
-            }),
+            chat_id: Some("chat".to_string()),
+            thread_id: None,
             message: Message::Assistant {
                 text: Some("hi".to_string()),
                 attachments: vec![Attachment {
@@ -311,7 +319,6 @@ mod tests {
     #[test]
     fn delete_message_serializes_as_delete_event_not_fake_message() {
         let event = Event::DeleteMessage {
-            channel: "telegram".to_string(),
             message: MessageRef {
                 conversation: ConversationKey {
                     channel: "telegram".to_string(),
@@ -332,8 +339,6 @@ mod tests {
     #[test]
     fn channel_action_serializes_for_outbound_channel() {
         let event = Event::ChannelAction {
-            channel: "telegram".to_string(),
-            recipient: Sender::User,
             conversation: ConversationKey {
                 channel: "telegram".to_string(),
                 chat_id: "chat".to_string(),

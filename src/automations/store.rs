@@ -147,7 +147,7 @@ impl StoredAutomationRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{ConversationKey, Sender};
+    use crate::bus::{ConversationKey, SenderKind};
 
     fn temp_store() -> SqliteAutomations {
         let path = std::env::temp_dir().join(format!(
@@ -188,7 +188,7 @@ mod tests {
             .insert(&send_message_automation(
                 "telegram-in",
                 Trigger::MessageIn {
-                    sender: Some(Sender::User),
+                    sender: SenderKind::User,
                     conversation: Some(ConversationKey {
                         channel: "telegram".to_string(),
                         chat_id: "c1".to_string(),
@@ -228,7 +228,7 @@ mod tests {
         else {
             panic!("expected message_in");
         };
-        assert_eq!(sender, &Some(Sender::User));
+        assert_eq!(sender, &SenderKind::User);
         assert_eq!(conversation.as_ref().unwrap().channel, "telegram");
         assert_eq!(conversation.as_ref().unwrap().chat_id, "c1");
     }

@@ -61,7 +61,7 @@ pub(super) async fn message_channel_to_warden(
         }
 
         let sender = sender_for_inbound(&channel_state.config, &inbound);
-        if sender == Sender::User {
+        if sender.kind() == crate::bus::SenderKind::User {
             remember_default_conversation(&channel, &inbound.conversation)
                 .await
                 .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
@@ -77,9 +77,7 @@ pub(super) async fn message_channel_to_warden(
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
 
         state.bus.publish(Event::MessageIn {
-            channel: inbound.channel.clone(),
             sender,
-            channel_user_id: Some(inbound.channel_user_id),
             conversation: inbound.conversation,
             message_id: inbound.message_id,
             message,
@@ -114,13 +112,13 @@ async fn remember_default_conversation(
 
 fn sender_for_inbound(config: &ChannelConfig, inbound: &ChannelInbound) -> Sender {
     if matches!(config.auth, ChannelAuth::Bearer) {
-        return Sender::User;
+        return Sender::User(inbound.channel_user_id.clone());
     }
 
     if config.owner_id.as_deref() == Some(inbound.channel_user_id.as_str()) {
-        Sender::User
+        Sender::User(inbound.channel_user_id.clone())
     } else {
-        Sender::Guest
+        Sender::Guest(inbound.channel_user_id.clone())
     }
 }
 

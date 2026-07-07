@@ -3,6 +3,30 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Sender {
+    User(String),
+    Guest(String),
+    System,
+}
+
+impl Sender {
+    pub fn kind(&self) -> SenderKind {
+        match self {
+            Sender::User(_) => SenderKind::User,
+            Sender::Guest(_) => SenderKind::Guest,
+            Sender::System => SenderKind::System,
+        }
+    }
+
+    pub fn channel_user_id(&self) -> Option<&str> {
+        match self {
+            Sender::User(channel_user_id) | Sender::Guest(channel_user_id) => Some(channel_user_id),
+            Sender::System => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SenderKind {
     User,
     Guest,
     System,
@@ -67,8 +91,7 @@ pub enum AutomationTriggerSpec {
         expression: String,
     },
     MessageIn {
-        #[serde(default)]
-        sender: Option<Sender>,
+        sender: SenderKind,
         #[serde(default)]
         conversation: Option<ConversationKey>,
     },
@@ -86,10 +109,7 @@ pub enum AutomationAction {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Event {
     MessageIn {
-        channel: String,
         sender: Sender,
-        #[serde(default)]
-        channel_user_id: Option<String>,
         conversation: ConversationKey,
         #[serde(default)]
         message_id: Option<String>,
@@ -97,18 +117,16 @@ pub enum Event {
     },
     MessageOut {
         channel: String,
-        recipient: Sender,
         #[serde(default)]
-        conversation: Option<ConversationKey>,
+        chat_id: Option<String>,
+        #[serde(default)]
+        thread_id: Option<String>,
         message: Message,
     },
     DeleteMessage {
-        channel: String,
         message: MessageRef,
     },
     ChannelAction {
-        channel: String,
-        recipient: Sender,
         conversation: ConversationKey,
         action: ChannelAction,
     },

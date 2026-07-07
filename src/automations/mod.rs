@@ -4,7 +4,7 @@ use crate::{
     agent::Agent,
     bus::{
         AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, InvocationScope,
-        Sender,
+        Sender, SenderKind,
     },
     tools::{ExecutionContext, InternalTools},
 };
@@ -31,9 +31,7 @@ impl AutomationEvent<'_> {
         match self {
             AutomationEvent::Bus(event) => match event {
                 Event::MessageIn {
-                    channel,
                     sender,
-                    channel_user_id,
                     conversation,
                     message_id,
                     message,
@@ -48,9 +46,9 @@ impl AutomationEvent<'_> {
                     };
                     let event = serde_json::json!({
                         "type": "message_in",
-                        "channel": channel,
+                        "channel": &conversation.channel,
                         "sender": sender_name(sender),
-                        "channel_user_id": channel_user_id,
+                        "channel_user_id": sender.channel_user_id(),
                         "conversation": conversation,
                         "chat_id": &conversation.chat_id,
                         "thread_id": &conversation.thread_id,
@@ -110,8 +108,8 @@ impl AutomationEvent<'_> {
 
 fn sender_name(sender: &Sender) -> &'static str {
     match sender {
-        Sender::User => "user",
-        Sender::Guest => "guest",
+        Sender::User(_) => "user",
+        Sender::Guest(_) => "guest",
         Sender::System => "system",
     }
 }
@@ -163,7 +161,7 @@ impl Automations {
         Automation {
             name: "handle-conversation".to_string(),
             trigger: Trigger::MessageIn {
-                sender: Some(Sender::User),
+                sender: SenderKind::User,
                 conversation: None,
             },
             effect: AutomationEffect::ContinueConversation,
@@ -594,9 +592,7 @@ mod tests {
 
     fn message_in(channel: &str, sender: Sender) -> Event {
         Event::MessageIn {
-            channel: channel.to_string(),
             sender,
-            channel_user_id: None,
             conversation: ConversationKey {
                 channel: channel.to_string(),
                 chat_id: "c1".to_string(),
@@ -612,7 +608,8 @@ mod tests {
 
     #[test]
     fn message_in_event_is_flattened_for_execution() {
-        let (ctx, event) = AutomationEvent::Bus(&message_in("tui", Sender::User)).context();
+        let (ctx, event) =
+            AutomationEvent::Bus(&message_in("tui", Sender::User("local".to_string()))).context();
         assert_eq!(event["type"], "message_in");
         assert_eq!(event["text"], "hi");
         assert_eq!(event["chat_id"], "c1");
@@ -638,7 +635,7 @@ mod tests {
             .add(send_message_automation(
                 "daily-news",
                 Trigger::MessageIn {
-                    sender: Some(Sender::User),
+                    sender: SenderKind::User,
                     conversation: None,
                 },
             ))

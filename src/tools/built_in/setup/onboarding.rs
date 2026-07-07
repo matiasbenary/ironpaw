@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::{
     automations::{Automation, AutomationEffect, Automations, Trigger},
-    bus::Sender,
+    bus::SenderKind,
     message::ToolDefinition,
     tools::{
         self, ExecutionContext, InternalTool, ToolResponder,
@@ -44,7 +44,7 @@ impl OnboardingTool {
         Automation {
             name: "onboarding".to_string(),
             trigger: Trigger::MessageIn {
-                sender: Some(Sender::User),
+                sender: SenderKind::User,
                 conversation: None,
             },
             effect: AutomationEffect::Tool {

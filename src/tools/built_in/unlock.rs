@@ -5,7 +5,7 @@ use rand::seq::SliceRandom;
 
 use crate::{
     automations::{Automation, AutomationEffect, Trigger},
-    bus::{Bus, Event, Sender},
+    bus::{Bus, Event, SenderKind},
     config::RuntimeLayout,
     message::ToolDefinition,
     secrets::{EncryptedSecretStore, Secrets, generate_phrase, phrase_is_valid, phrase_words},
@@ -53,7 +53,7 @@ impl UnlockSecretsTool {
         Automation {
             name: AUTOMATION_NAME.to_string(),
             trigger: Trigger::MessageIn {
-                sender: Some(Sender::User),
+                sender: SenderKind::User,
                 conversation: None,
             },
             effect: AutomationEffect::Tool {

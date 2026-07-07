@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crate::bus::{ConversationKey, Event, InvocationScope, Sender};
+use crate::bus::{ConversationKey, Event, InvocationScope, SenderKind};
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -12,10 +12,9 @@ pub enum Trigger {
         #[serde(with = "datetime_serde")]
         datetime: chrono::DateTime<chrono::FixedOffset>,
     },
-    /// Fires on inbound user/channel messages. `None` fields match anything.
+    /// Fires on inbound user/channel messages. `conversation: None` matches any conversation.
     MessageIn {
-        #[serde(default)]
-        sender: Option<Sender>,
+        sender: SenderKind,
         #[serde(default)]
         conversation: Option<ConversationKey>,
     },
@@ -85,7 +84,7 @@ impl Trigger {
                     ..
                 },
             ) => {
-                sender.as_ref().is_none_or(|sender| sender == event_sender)
+                *sender == event_sender.kind()
                     && conversation
                         .as_ref()
                         .is_none_or(|conversation| conversation == event_conversation)
@@ -115,7 +114,7 @@ pub(crate) fn parse_datetime(text: &str) -> Result<chrono::DateTime<chrono::Fixe
 mod tests {
     use super::*;
     use crate::{
-        bus::{ConversationKey, Event},
+        bus::{ConversationKey, Event, Sender},
         message::Message,
     };
 
@@ -132,9 +131,7 @@ mod tests {
 
     fn message_in_conversation(conversation: ConversationKey, sender: Sender) -> Event {
         Event::MessageIn {
-            channel: conversation.channel.clone(),
             sender,
-            channel_user_id: None,
             conversation,
             message_id: None,
             message: Message::User {
@@ -147,13 +144,13 @@ mod tests {
     #[test]
     fn default_message_in_trigger_matches_user_messages_from_any_channel() {
         let trigger = Trigger::MessageIn {
-            sender: Some(Sender::User),
+            sender: SenderKind::User,
             conversation: None,
         };
 
-        assert!(trigger.matches(&message_in("tui", Sender::User)));
-        assert!(trigger.matches(&message_in("telegram", Sender::User)));
-        assert!(!trigger.matches(&message_in("telegram", Sender::Guest)));
+        assert!(trigger.matches(&message_in("tui", Sender::User("local".to_string()))));
+        assert!(trigger.matches(&message_in("telegram", Sender::User("123".to_string()))));
+        assert!(!trigger.matches(&message_in("telegram", Sender::Guest("123".to_string()))));
     }
 
     #[test]
@@ -164,19 +161,19 @@ mod tests {
             thread_id: None,
         };
         let trigger = Trigger::MessageIn {
-            sender: None,
+            sender: SenderKind::Guest,
             conversation: Some(conversation),
         };
-        assert!(trigger.matches(&message_in("telegram", Sender::Guest)));
+        assert!(trigger.matches(&message_in("telegram", Sender::Guest("123".to_string()))));
         assert!(!trigger.matches(&message_in_conversation(
             ConversationKey {
                 channel: "telegram".to_string(),
                 chat_id: "c2".to_string(),
                 thread_id: None,
             },
-            Sender::Guest,
+            Sender::Guest("123".to_string()),
         )));
-        assert!(!trigger.matches(&message_in("tui", Sender::User)));
+        assert!(!trigger.matches(&message_in("tui", Sender::User("local".to_string()))));
     }
 
     #[test]

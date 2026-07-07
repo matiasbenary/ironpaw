@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     agent::Agent,
-    bus::{Bus, Event, InvocationScope, Sender},
+    bus::{Bus, Event, InvocationScope},
     tools::{self, ExecutionContext, InternalTools},
 };
 
@@ -75,8 +75,8 @@ fn render_text(template: &str, event: &serde_json::Value) -> String {
 fn send_to_destination(bus: &Bus, conversation: &crate::bus::ConversationKey, text: String) {
     bus.publish(Event::MessageOut {
         channel: conversation.channel.clone(),
-        recipient: Sender::User,
-        conversation: Some(conversation.clone()),
+        chat_id: Some(conversation.chat_id.clone()),
+        thread_id: conversation.thread_id.clone(),
         message: crate::message::Message::Assistant {
             text: Some(text),
             attachments: Vec::new(),
