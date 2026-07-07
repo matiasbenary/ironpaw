@@ -249,6 +249,9 @@ impl DeleteMessageToolInput {
         if self.thread_id.is_none() {
             self.thread_id = conversation.thread_id.clone();
         }
+        if self.message_id.is_none() {
+            self.message_id = ctx.message_id.clone();
+        }
     }
 }
 

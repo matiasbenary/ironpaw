@@ -206,12 +206,27 @@ impl Agent {
     fn model_messages(&self, run: &AgentRun<'_>) -> Result<Vec<Message>, String> {
         let mut messages = system_preamble(run.destination);
         if run.persist_history {
-            messages.extend(
-                self.history
-                    .load(run.destination.expect("persistent run has conversation"))?
-                    .into_iter()
-                    .map(|entry| entry.message),
-            );
+            for entry in self
+                .history
+                .load(run.destination.expect("persistent run has conversation"))?
+            {
+                let mut message = entry.message;
+                if let Some(external_id) = entry.metadata.external_id {
+                    match &mut message {
+                        Message::User { text, .. } => {
+                            *text = format!("[message_id:{external_id}] {text}")
+                        }
+                        Message::Assistant { text, .. } => {
+                            *text = Some(format!(
+                                "[message_id:{external_id}] {}",
+                                text.clone().unwrap_or_default()
+                            ))
+                        }
+                        _ => {}
+                    }
+                }
+                messages.push(message);
+            }
         }
         messages.extend(run.transient_messages.clone());
         Ok(messages)

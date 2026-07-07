@@ -36,6 +36,8 @@ pub struct MessageRef {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ToolContext {
     pub conversation: Option<ConversationKey>,
+    #[serde(default)]
+    pub message_id: Option<String>,
     pub depth: usize,
 }
 

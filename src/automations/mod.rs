@@ -41,6 +41,7 @@ impl AutomationEvent<'_> {
                     };
                     let ctx = ToolContext {
                         conversation: Some(conversation.clone()),
+                        message_id: message_id.clone(),
                         ..ToolContext::default()
                     };
                     let event = serde_json::json!({

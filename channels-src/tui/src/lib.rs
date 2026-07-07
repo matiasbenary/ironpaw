@@ -3,9 +3,26 @@ wit_bindgen::generate!({
     path: "../../wit/channel.wit",
 });
 
+use std::cell::Cell;
+
 use serde::Deserialize;
 
 use crate::warden::channel::channel_host;
+
+thread_local! {
+    /// Sequential id assigned to each outbound assistant message so it can
+    /// later be targeted by a `DeleteMessage` event. WASM components run
+    /// single-threaded, so a plain `Cell` is enough.
+    static NEXT_MESSAGE_ID: Cell<u32> = const { Cell::new(0) };
+}
+
+fn next_message_id() -> u32 {
+    NEXT_MESSAGE_ID.with(|next| {
+        let id = next.get() + 1;
+        next.set(id);
+        id
+    })
+}
 
 struct TuiChannel;
 
@@ -30,6 +47,7 @@ impl Guest for TuiChannel {
                 "chat_id": incoming.callback_url,
                 "thread_id": null
             },
+            "message_id": incoming.message_id,
             "content": [
                 {
                     "type": "text",
@@ -55,14 +73,27 @@ impl Guest for TuiChannel {
                 let WardenMessage::Assistant(message) = message else {
                     return Ok(None);
                 };
+                let id = next_message_id().to_string();
+                let mut envelope =
+                    serde_json::to_value(&message).map_err(|err| err.to_string())?;
+                envelope["kind"] = serde_json::json!("message");
+                envelope["id"] = serde_json::json!(id);
+                channel_host::http_request("POST", &conversation.chat_id, &envelope.to_string())?;
+                Ok(Some(id))
+            }
+            OutboundEvent::DeleteMessage { message } => {
+                let envelope = serde_json::json!({
+                    "kind": "delete",
+                    "message_id": message.message_id,
+                });
                 channel_host::http_request(
                     "POST",
-                    &conversation.chat_id,
-                    &serde_json::to_string(&message).map_err(|err| err.to_string())?,
+                    &message.conversation.chat_id,
+                    &envelope.to_string(),
                 )?;
                 Ok(Some(String::new()))
             }
-            OutboundEvent::DeleteMessage { .. } | OutboundEvent::ChannelAction { .. } => Ok(None),
+            OutboundEvent::ChannelAction { .. } => Ok(None),
         }
     }
 }
@@ -107,6 +138,8 @@ struct AssistantMessage {
 struct IncomingMessage {
     content: String,
     callback_url: String,
+    #[serde(default)]
+    message_id: Option<String>,
 }
 
 #[derive(Deserialize)]

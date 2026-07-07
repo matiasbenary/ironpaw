@@ -196,7 +196,10 @@ fn initialize_or_verify_new_store(
 
     let position = positions[*next_check - 1];
     if message.trim().to_ascii_lowercase() != words[position] {
-        return Err("unlock phrase verification failed".to_string());
+        return Ok(UnlockStep {
+            message: format!("That did not match word #{}. Try again.", position + 1),
+            unlocked: None,
+        });
     }
     if let Some(position) = positions.get(*next_check) {
         *next_check += 1;

@@ -326,6 +326,11 @@ Implemented internal tools include:
 - `onboarding`: collects required setup secrets and installs the normal answer automation.
 - `todo`: a small scratchpad-style tool.
 
+### Shell Tools
+
+We want `warden` to be able to run shell commands as tools, but we do not want to expose a tool for arbitrary shell execution, instead we want to have different tools, and each tool will have a specific set of commands that it can run.
+
+
 ### External WASM Tools
 
 External WASM tools are provider integrations packaged as WASM components. They are request/response tools, not channels: the agent calls them with JSON arguments, and they return JSON output.
@@ -462,13 +467,10 @@ This flow is the intended uniform shape: TUI and Telegram are both channels, and
 ## Appendix: ToDo
 
 - make sure code does not panic instead we need to return errors for the agent to handle or tell the user
-- Change the channel outbound ABI so successful sends can return the provider message id; then `send_message` can persist history with `external_id` instead of `None`.
-- Teach the TUI channel to delete messages. Sensitive setup flows, especially unlock and secret entry, should be able to request deletion through the normal `DeleteMessage` event and have TUI remove the message from its frontend state.
 - Decide whether dynamic tools should have a richer manifest: version, description, parameter schema, allowed tool calls, and allowed outbound HTTPS endpoints.
 - Decide whether runtime reload/file watching is needed.
 - Decide whether some internal tools should eventually move to packaged WASM tools with declared capabilities and secret requirements.
 - Add durable tool execution audit logs.
-- Add channel-level message deletion/redaction coverage for all setup flows.
 - I asked warden to install a channel, and it said "ok, I need your token to do that" instead of starting the install flow!
 
 ### Better Config UX
