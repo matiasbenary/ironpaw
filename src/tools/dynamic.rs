@@ -22,13 +22,13 @@ pub struct CreateToolParams {
     #[serde(default)]
     pub version: Option<String>,
     /// JavaScript source implementing the tool. The sandbox has no network
-    /// or filesystem; the only way to act is the synchronous function
-    /// `tool(name, args)`, which calls any existing tool and returns its
-    /// JSON result. The tool's arguments are available as the global `args`,
-    /// and the script must use `return` to produce the tool result. If the
-    /// tool is meant to notify the user, the script must call send_message
-    /// itself, with explicit channel and chat_id.
-    /// Example: `const r = tool("web_fetch", { url: "https://example.com" });
+    /// or filesystem; existing tools are exposed as synchronous global
+    /// functions named after the tool, e.g. `web_fetch({ url })` or
+    /// `send_message({ content })`. The tool's arguments are available as the
+    /// global `args`, and the script must use `return` to produce the tool
+    /// result. If the tool is meant to notify the user from a scheduled
+    /// automation, call `send_message` with explicit channel and chat_id.
+    /// Example: `const r = web_fetch({ url: "https://example.com" });
     /// return { length: r.length };`
     pub script: String,
 }
@@ -92,10 +92,10 @@ impl InternalTool for CreateToolTool {
         tools::tool_definition::<CreateToolParams>(
             self.name(),
             "Create a new tool implemented as a JavaScript script that can \
-             call the existing tools. Use this when a task needs logic no \
-             current tool covers (fetching and transforming data, multi-step \
-             flows); the new tool can then be called directly or from an \
-             automation.",
+             call existing tools as global functions named after the tool. \
+             Use this when a task needs logic no current tool covers \
+             (fetching and transforming data, multi-step flows); the new \
+             tool can then be called directly or from an automation.",
         )
     }
 

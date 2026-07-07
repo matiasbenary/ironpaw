@@ -151,9 +151,7 @@ fn publish_user_message(
         )
         .expect("persist live test user message");
     bus.publish(Event::MessageIn {
-        channel: conversation.channel.clone(),
-        sender: Sender::User,
-        channel_user_id: None,
+        sender: Sender::User("live-test".to_string()),
         conversation,
         message_id: None,
         message,
@@ -352,10 +350,7 @@ async fn agent_reads_pdf_content() {
     };
 
     // Mimic what the bridge does: store the file to disk, then tell the model about it.
-    let pdf_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/live_tests/files/test.pdf"
-    );
+    let pdf_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests_live/files/test.pdf");
     let pdf_bytes = std::fs::read(pdf_path).expect("test PDF should be readable");
     let file_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -423,10 +418,7 @@ async fn agent_identifies_dog_image() {
     let mut events = bus.subscribe();
     let (_task, history) = start_warden(&bus, files_dir.clone());
 
-    let image_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/live_tests/files/test.jpg"
-    );
+    let image_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests_live/files/test.jpg");
     let file_id = 123456789u32;
     let source = files_dir.join(format!("{file_id}.jpg"));
     std::fs::write(

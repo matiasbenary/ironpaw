@@ -32,4 +32,4 @@ wasmtime-wasi = "43"
 
 [[test]]
 name = "live_tests"
-path = "tests/live_tests/mod.rs"
+path = "tests_live/mod.rs"

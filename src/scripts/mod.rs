@@ -10,10 +10,9 @@ const SCRIPT_TIMEOUT: Duration = Duration::from_secs(120);
 const SCRIPT_MEMORY_LIMIT: usize = 32 * 1024 * 1024;
 
 /// Runs dynamic-tool scripts in a QuickJS sandbox. Scripts have no ambient
-/// capabilities: the only way to act is the host-provided `tool(name, args)`
-/// function, which is defined fresh per execution with the caller's tool
-/// context. The tool's arguments are exposed as the global `args`, and the
-/// script returns the tool result with an explicit `return`.
+/// capabilities: the only way to act is by calling registered tools exposed
+/// as global functions. The tool's arguments are exposed as the global `args`,
+/// and the script returns the tool result with an explicit `return`.
 pub struct ScriptRuntime {
     registry: Arc<ToolRegistry>,
 }
@@ -73,8 +72,11 @@ fn execute_script(
             .set("args", args_value)
             .map_err(|err| err.to_string())?;
 
-        // The host boundary is string-typed; the prelude below wraps it
-        // into the `tool(name, args)` the scripts actually use.
+        let tool_names = registry
+            .all()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
         let tool_json = Func::from(move |name: String, args: String| -> String {
             let args: serde_json::Value =
                 serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
@@ -89,10 +91,17 @@ fn execute_script(
         let log = Func::from(|message: String| eprintln!("script: {message}"));
         globals.set("__log", log).map_err(|err| err.to_string())?;
 
+        let tool_names = serde_json::to_string(&tool_names).map_err(|err| err.to_string())?;
+        globals
+            .set("__tool_names", tool_names)
+            .map_err(|err| err.to_string())?;
+
         const PRELUDE: &str = r#"
-            globalThis.tool = (name, args) => {
-                return JSON.parse(__tool_json(name, JSON.stringify(args === undefined ? {} : args)));
-            };
+            for (const name of JSON.parse(__tool_names)) {
+                globalThis[name] = (args) => {
+                    return JSON.parse(__tool_json(name, JSON.stringify(args === undefined ? {} : args)));
+                };
+            }
             globalThis.console = { log: (...a) => __log(a.map(String).join(" ")) };
         "#;
         js.eval::<(), _>(PRELUDE)
@@ -183,7 +192,7 @@ mod tests {
         runtime
             .run(
                 r#"
-                const r = tool("send_message", { channel: "telegram", content: "hi from script" });
+                const r = send_message({ channel: "telegram", content: "hi from script" });
                 if (!r.ok) { throw new Error("send failed"); }
                 "#
                 .to_string(),
@@ -286,7 +295,7 @@ mod tests {
             .run(
                 format!(
                     r#"
-	                const r = tool("web_fetch", {{ url: "{url}" }});
+	                const r = web_fetch({{ url: "{url}" }});
 	                return {{ first: JSON.parse(r)[0], third: JSON.parse(r)[2] }};
 	                "#
                 ),

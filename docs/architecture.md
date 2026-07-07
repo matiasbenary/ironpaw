@@ -368,7 +368,7 @@ At startup, Warden discovers `.js` files in the tools directory and registers th
 Scripts have no ambient filesystem or network access. They receive:
 
 - `args`: the tool call arguments.
-- `tool(name, args)`: a host function for calling existing tools.
+- registered tools as global functions named after the tool, e.g. `web_fetch({ url })`.
 - `console.log(...)`: debug logging.
 
 The script's last expression becomes the tool result.
