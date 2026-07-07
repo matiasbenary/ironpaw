@@ -42,7 +42,7 @@ impl UnlockSecretsTool {
     ) -> Self {
         Self {
             bus,
-            session: Mutex::new(UnlockSession::new(&layout)),
+            session: Mutex::new(UnlockSession::Locked),
             layout,
             secrets,
             tools,
@@ -71,11 +71,11 @@ impl UnlockSecretsTool {
         params: UnlockSecretsParams,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
-        let step = {
+        let (message, unlocked) = {
             let mut session = self.session.lock().expect("unlock session lock");
             session.handle(&self.layout, &params.message)?
         };
-        send(&self.tools, &step.message, ctx).await?;
+        send(&self.tools, &message, ctx).await?;
         delete_current_message(
             &self.tools,
             ctx,
@@ -83,7 +83,7 @@ impl UnlockSecretsTool {
             "unlock_secrets",
         )
         .await;
-        if let Some(store) = step.unlocked {
+        if let Some(store) = unlocked {
             self.secrets.unlock(store);
             self.bus.publish(Event::SecretsUnlocked);
         }
@@ -121,111 +121,100 @@ impl InternalTool for UnlockSecretsTool {
 }
 
 enum UnlockSession {
-    Existing,
-    New {
+    Locked,
+    Creating {
         phrase: String,
-        words: Vec<String>,
-        positions: Vec<usize>,
-        next_check: usize,
+        checks: Vec<usize>,
+        confirmed: usize,
     },
 }
 
 impl UnlockSession {
-    fn new(layout: &RuntimeLayout) -> Self {
-        if EncryptedSecretStore::exists(layout) {
-            Self::Existing
-        } else {
-            let phrase = generate_phrase();
-            let words = phrase_words(&phrase);
-            let mut positions = (0..words.len()).collect::<Vec<_>>();
-            positions.shuffle(&mut rand::thread_rng());
-            positions.truncate(3);
-            positions.sort_unstable();
-            Self::New {
-                phrase,
-                words,
-                positions,
-                next_check: 0,
-            }
-        }
-    }
-
     fn handle(&mut self, layout: &RuntimeLayout, message: &str) -> Result<UnlockStep, String> {
+        if EncryptedSecretStore::exists(layout) {
+            return unlock_existing(layout, message);
+        }
+
         match self {
-            Self::Existing => unlock_existing(layout, message),
-            Self::New {
+            Self::Locked => {
+                let phrase = generate_phrase();
+                let checks = phrase_checks(&phrase);
+                let prompt = phrase_prompt(&phrase, checks[0]);
+                *self = Self::Creating {
+                    phrase,
+                    checks,
+                    confirmed: 0,
+                };
+                Ok(waiting(prompt))
+            }
+            Self::Creating {
                 phrase,
-                words,
-                positions,
-                next_check,
-            } => initialize_or_verify_new_store(
-                layout, phrase, words, positions, next_check, message,
-            ),
+                checks,
+                confirmed,
+            } => verify_new_store(layout, phrase, checks, confirmed, message),
         }
     }
 }
 
-struct UnlockStep {
-    message: String,
-    unlocked: Option<Arc<EncryptedSecretStore>>,
-}
+type UnlockStep = (String, Option<Arc<EncryptedSecretStore>>);
 
 fn unlock_existing(layout: &RuntimeLayout, message: &str) -> Result<UnlockStep, String> {
     if !phrase_is_valid(message) {
-        return Ok(UnlockStep {
-            message: "Enter Warden's 6-word unlock phrase.".to_string(),
-            unlocked: None,
-        });
+        return Ok(waiting(
+            "Warden is locked. Enter Warden's 6-word unlock phrase.",
+        ));
     }
     match EncryptedSecretStore::unlock(layout, message) {
-        Ok(store) => Ok(UnlockStep {
-            message: "Secrets unlocked. Starting Warden.".to_string(),
-            unlocked: Some(store),
-        }),
-        Err(_) => Ok(UnlockStep {
-            message: "That unlock phrase did not work. Try again.".to_string(),
-            unlocked: None,
-        }),
+        Ok(store) => Ok(unlocked("Secrets unlocked. Starting Warden.", store)),
+        Err(_) => Ok(waiting(
+            "Warden is locked. Enter Warden's 6-word unlock phrase.",
+        )),
     }
 }
 
-fn initialize_or_verify_new_store(
+fn verify_new_store(
     layout: &RuntimeLayout,
     phrase: &str,
-    words: &[String],
-    positions: &[usize],
-    next_check: &mut usize,
+    checks: &[usize],
+    confirmed: &mut usize,
     message: &str,
 ) -> Result<UnlockStep, String> {
-    if *next_check == 0 {
-        *next_check = 1;
-        return Ok(UnlockStep {
-            message: format!(
-                "Warden needs to create an encrypted secret store.\n\nWrite down this 6-word unlock phrase. It will not be stored:\n\n{phrase}\n\nReply with word #{}.",
-                positions[0] + 1
-            ),
-            unlocked: None,
-        });
-    }
-
-    let position = positions[*next_check - 1];
+    let words = phrase_words(phrase);
+    let position = checks[*confirmed];
     if message.trim().to_ascii_lowercase() != words[position] {
-        return Ok(UnlockStep {
-            message: format!("That did not match word #{}. Try again.", position + 1),
-            unlocked: None,
-        });
+        return Ok(waiting(format!(
+            "That did not match word #{}. Try again.",
+            position + 1
+        )));
     }
-    if let Some(position) = positions.get(*next_check) {
-        *next_check += 1;
-        return Ok(UnlockStep {
-            message: format!("Word #{}.", position + 1),
-            unlocked: None,
-        });
+    *confirmed += 1;
+    if let Some(position) = checks.get(*confirmed) {
+        return Ok(waiting(format!("Word #{}.", position + 1)));
     }
 
     let store = EncryptedSecretStore::create(layout, phrase)?;
-    Ok(UnlockStep {
-        message: "Secret store created. Starting Warden.".to_string(),
-        unlocked: Some(store),
-    })
+    Ok(unlocked("Secret store created. Starting Warden.", store))
+}
+
+fn phrase_checks(phrase: &str) -> Vec<usize> {
+    let mut checks = (0..phrase_words(phrase).len()).collect::<Vec<_>>();
+    checks.shuffle(&mut rand::thread_rng());
+    checks.truncate(3);
+    checks.sort_unstable();
+    checks
+}
+
+fn phrase_prompt(phrase: &str, first_check: usize) -> String {
+    format!(
+        "Warden needs to create an encrypted secret store.\n\nWrite down this 6-word unlock phrase. It will not be stored:\n\n{phrase}\n\nReply with word #{}.",
+        first_check + 1
+    )
+}
+
+fn waiting(message: impl Into<String>) -> UnlockStep {
+    (message.into(), None)
+}
+
+fn unlocked(message: impl Into<String>, store: Arc<EncryptedSecretStore>) -> UnlockStep {
+    (message.into(), Some(store))
 }
