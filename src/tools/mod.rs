@@ -14,7 +14,7 @@ use crate::{
     scripts::ScriptRuntime, secrets::Secrets,
 };
 
-pub use crate::bus::ToolContext;
+pub use crate::bus::{ExecutionContext, InvocationScope};
 pub use built_in::{
     automation, image_generation, inspect_file, messages, raw_inference, search_history, setup,
     todo, unlock, web,
@@ -184,7 +184,7 @@ pub trait InternalTool: Send + Sync {
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String>;
 }
@@ -373,7 +373,7 @@ mod tests {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            ctx: &ToolContext,
+            ctx: &ExecutionContext,
             responder: ToolResponder,
         ) -> Result<(), String> {
             responder.respond(serde_json::json!({ "depth": ctx.depth }))?;
@@ -405,7 +405,7 @@ mod tests {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ToolContext,
+            _ctx: &ExecutionContext,
             responder: ToolResponder,
         ) -> Result<(), String> {
             responder.respond(serde_json::json!({}))?;
@@ -518,9 +518,11 @@ mod tests {
         let tools = test_tools();
         tools.registry.add(Arc::new(FakeTool("fake"))).expect("add");
 
-        let deep = ToolContext {
+        let deep = ExecutionContext {
+            invoked_by: InvocationScope::ScheduledAutomation {
+                automation_id: "test".to_string(),
+            },
             depth: runner::MAX_TOOL_DEPTH,
-            ..ToolContext::default()
         };
         let result = run_tool(&tools, "fake", serde_json::json!({}), &deep).await;
         assert_eq!(result["ok"], false);
@@ -529,7 +531,12 @@ mod tests {
             &tools,
             "fake",
             serde_json::json!({}),
-            &ToolContext::default(),
+            &ExecutionContext {
+                invoked_by: InvocationScope::ScheduledAutomation {
+                    automation_id: "test".to_string(),
+                },
+                depth: 0,
+            },
         )
         .await;
         assert_eq!(ok["depth"], 1);
@@ -546,7 +553,12 @@ mod tests {
         let mut events = bus.subscribe();
 
         bus.publish(Event::ToolRequest {
-            context: ToolContext::default(),
+            context: ExecutionContext {
+                invoked_by: InvocationScope::ScheduledAutomation {
+                    automation_id: "test".to_string(),
+                },
+                depth: 0,
+            },
             tool_call: ToolCall {
                 id: "call-1".to_string(),
                 name: "fake".to_string(),
@@ -590,9 +602,9 @@ mod tests {
             name: "fake".to_string(),
             arguments: "{}".to_string(),
         };
-        let ctx = ToolContext {
-            conversation: Some(conversation.clone()),
-            ..ToolContext::default()
+        let ctx = ExecutionContext {
+            invoked_by: InvocationScope::Conversation(conversation.clone()),
+            depth: 0,
         };
 
         handler
@@ -618,9 +630,9 @@ mod tests {
         let conversation = test_conversation();
 
         bus.publish(Event::ToolRequest {
-            context: ToolContext {
-                conversation: Some(conversation.clone()),
-                ..ToolContext::default()
+            context: ExecutionContext {
+                invoked_by: InvocationScope::Conversation(conversation.clone()),
+                depth: 0,
             },
             tool_call: ToolCall {
                 id: "call-1".to_string(),

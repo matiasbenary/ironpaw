@@ -3,9 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::{
-    bus::{Bus, ConversationKey, Event, MessageRef, Sender},
+    bus::{Bus, ConversationKey, Event, InvocationScope, MessageRef, Sender},
     message::{Attachment, Message},
-    tools::{self, InternalTool, ToolContext, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
 type AttachmentResolver = Arc<dyn Fn(u32) -> Result<Attachment, String> + Send + Sync>;
@@ -73,7 +73,7 @@ impl InternalTool for SendMessageTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
         let mut input: SendMessageToolInput =
@@ -116,12 +116,13 @@ pub struct SendMessageToolInput {
 impl SendMessageToolInput {
     /// When the model names no channel, reply in the conversation the
     /// current run was triggered from.
-    fn fill_current_destination(&mut self, ctx: &ToolContext) {
+    fn fill_current_destination(&mut self, ctx: &ExecutionContext) {
         if self.channel.is_some() {
             return;
         }
-        let Some(conversation) = &ctx.conversation else {
-            return;
+        let conversation = match &ctx.invoked_by {
+            InvocationScope::Conversation(conversation) => conversation,
+            InvocationScope::ScheduledAutomation { .. } => return,
         };
         self.channel = Some(conversation.channel.clone());
         if self.chat_id.is_none() {
@@ -194,15 +195,15 @@ impl InternalTool for DeleteMessageTool {
         tools::tool_definition::<DeleteMessageToolInput>(
             self.name(),
             "Delete a message from a channel when the channel supports it. \
-             If called while handling an inbound message, omit arguments to \
-             delete that triggering message.",
+             Defaults to the current conversation only when called from a \
+             conversation-scoped execution.",
         )
     }
 
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
         let mut input: DeleteMessageToolInput =
@@ -236,9 +237,10 @@ pub struct DeleteMessageToolInput {
 }
 
 impl DeleteMessageToolInput {
-    fn fill_current_message(&mut self, ctx: &ToolContext) {
-        let Some(conversation) = &ctx.conversation else {
-            return;
+    fn fill_current_message(&mut self, ctx: &ExecutionContext) {
+        let conversation = match &ctx.invoked_by {
+            InvocationScope::Conversation(conversation) => conversation,
+            InvocationScope::ScheduledAutomation { .. } => return,
         };
         if self.channel.is_none() {
             self.channel = Some(conversation.channel.clone());
@@ -248,9 +250,6 @@ impl DeleteMessageToolInput {
         }
         if self.thread_id.is_none() {
             self.thread_id = conversation.thread_id.clone();
-        }
-        if self.message_id.is_none() {
-            self.message_id = ctx.message_id.clone();
         }
     }
 }
@@ -263,14 +262,14 @@ mod tests {
         serde_json::from_value(args).expect("valid input")
     }
 
-    fn tui_context() -> ToolContext {
-        ToolContext {
-            conversation: Some(ConversationKey {
+    fn tui_context() -> ExecutionContext {
+        ExecutionContext {
+            invoked_by: InvocationScope::Conversation(ConversationKey {
                 channel: "telegram".to_string(),
                 chat_id: "123".to_string(),
                 thread_id: Some("456".to_string()),
             }),
-            ..ToolContext::default()
+            depth: 0,
         }
     }
 
@@ -281,13 +280,13 @@ mod tests {
             "content": "hi"
         }));
 
-        input.fill_current_destination(&ToolContext {
-            conversation: Some(ConversationKey {
+        input.fill_current_destination(&ExecutionContext {
+            invoked_by: InvocationScope::Conversation(ConversationKey {
                 channel: "tui".to_string(),
                 chat_id: "http://127.0.0.1:60684".to_string(),
                 thread_id: None,
             }),
-            ..ToolContext::default()
+            depth: 0,
         });
 
         assert_eq!(input.channel.as_deref(), Some("telegram"));
@@ -307,10 +306,15 @@ mod tests {
     }
 
     #[test]
-    fn detached_context_fills_nothing() {
+    fn scheduled_automation_context_fills_nothing() {
         let mut input = input(serde_json::json!({ "content": "hi" }));
 
-        input.fill_current_destination(&ToolContext::default());
+        input.fill_current_destination(&ExecutionContext {
+            invoked_by: InvocationScope::ScheduledAutomation {
+                automation_id: "test".to_string(),
+            },
+            depth: 0,
+        });
 
         assert!(input.channel.is_none());
         assert!(input.chat_id.is_none());
@@ -371,13 +375,13 @@ mod tests {
         let bus = Bus::new(16);
         let mut events = bus.subscribe();
         let tool = Arc::new(DeleteMessageTool::new(bus));
-        let ctx = ToolContext {
-            conversation: Some(ConversationKey {
+        let ctx = ExecutionContext {
+            invoked_by: InvocationScope::Conversation(ConversationKey {
                 channel: "telegram".to_string(),
                 chat_id: "123".to_string(),
                 thread_id: None,
             }),
-            ..ToolContext::default()
+            depth: 0,
         };
 
         tools::run_internal_tool(tool, serde_json::json!({ "message_id": "456" }), &ctx).await;

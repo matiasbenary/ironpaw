@@ -52,7 +52,7 @@ impl InternalTool for InspectFileTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &crate::tools::ToolContext,
+        _ctx: &crate::tools::ExecutionContext,
         responder: crate::tools::ToolResponder,
     ) -> Result<(), String> {
         let params: InspectFileParams = serde_json::from_value(args).map_err(|e| e.to_string())?;

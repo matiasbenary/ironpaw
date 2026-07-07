@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::{
     message::ToolDefinition,
-    tools::{self, InternalTool, ToolContext, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
 /// Responses are truncated to keep tool results model-sized.
@@ -171,7 +171,7 @@ impl InternalTool for WebFetchTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &ToolContext,
+        _ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
         let output = tools::execute_typed(args, |params: WebFetchParams| async {

@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use rquickjs::{CatchResultExt, Context, Ctx, Runtime, Value, function::Func};
 
-use crate::tools::{self, ToolContext, ToolRegistry};
+use crate::tools::{self, ExecutionContext, ToolRegistry};
 
 /// Wall-clock budget for one script execution: a runaway loop gets
 /// interrupted instead of wedging the executor.
@@ -26,7 +26,7 @@ impl ScriptRuntime {
     pub async fn run(
         &self,
         source: String,
-        ctx: ToolContext,
+        ctx: ExecutionContext,
         args: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let registry = Arc::clone(&self.registry);
@@ -56,7 +56,7 @@ fn execute_script(
     registry: Arc<ToolRegistry>,
     handle: tokio::runtime::Handle,
     source: String,
-    ctx: ToolContext,
+    ctx: ExecutionContext,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let runtime = Runtime::new().map_err(|err| err.to_string())?;
@@ -139,7 +139,10 @@ mod tests {
         bus::{Bus, Event},
         history::SqliteHistory,
         message::Message,
-        tools::{InternalTools, messages::SendMessageTool, raw_inference::RawInferenceTool},
+        tools::{
+            InternalTools, InvocationScope, messages::SendMessageTool,
+            raw_inference::RawInferenceTool,
+        },
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
@@ -184,7 +187,12 @@ mod tests {
                 if (!r.ok) { throw new Error("send failed"); }
                 "#
                 .to_string(),
-                ToolContext::default(),
+                ExecutionContext {
+                    invoked_by: InvocationScope::ScheduledAutomation {
+                        automation_id: "script-test".to_string(),
+                    },
+                    depth: 0,
+                },
                 serde_json::json!({}),
             )
             .await
@@ -216,7 +224,12 @@ mod tests {
                 return { doubled };
                 "#
                 .to_string(),
-                ToolContext::default(),
+                ExecutionContext {
+                    invoked_by: InvocationScope::ScheduledAutomation {
+                        automation_id: "script-test".to_string(),
+                    },
+                    depth: 0,
+                },
                 serde_json::json!({ "value": 21 }),
             )
             .await
@@ -236,7 +249,12 @@ mod tests {
                 return { ok: true, value: args.value };
                 "#
                 .to_string(),
-                ToolContext::default(),
+                ExecutionContext {
+                    invoked_by: InvocationScope::ScheduledAutomation {
+                        automation_id: "script-test".to_string(),
+                    },
+                    depth: 0,
+                },
                 serde_json::json!({ "value": "kiwi" }),
             )
             .await
@@ -272,7 +290,12 @@ mod tests {
 	                return {{ first: JSON.parse(r)[0], third: JSON.parse(r)[2] }};
 	                "#
                 ),
-                ToolContext::default(),
+                ExecutionContext {
+                    invoked_by: InvocationScope::ScheduledAutomation {
+                        automation_id: "script-test".to_string(),
+                    },
+                    depth: 0,
+                },
                 serde_json::json!({}),
             )
             .await
@@ -289,7 +312,12 @@ mod tests {
         let result = runtime
             .run(
                 "this is not valid javascript {".to_string(),
-                ToolContext::default(),
+                ExecutionContext {
+                    invoked_by: InvocationScope::ScheduledAutomation {
+                        automation_id: "script-test".to_string(),
+                    },
+                    depth: 0,
+                },
                 serde_json::json!({}),
             )
             .await;

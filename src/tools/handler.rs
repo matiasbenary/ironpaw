@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::{
-    bus::{Bus, Event},
+    bus::{Bus, Event, InvocationScope},
     history::{History, HistoryEntry, MessageMetadata},
     message::{Message, ToolCall},
-    tools::{ToolContext, ToolRegistry, run_registered_tool, run_registered_tool_for_context},
+    tools::{ExecutionContext, ToolRegistry, run_registered_tool, run_registered_tool_for_context},
 };
 
 pub struct ToolHandler {
@@ -43,7 +43,7 @@ impl ToolHandler {
 
     fn spawn_tool_request(
         &self,
-        context: ToolContext,
+        context: ExecutionContext,
         tool_call: ToolCall,
         args: serde_json::Value,
     ) {
@@ -77,7 +77,7 @@ impl ToolHandler {
         &self,
         tool_call: ToolCall,
         args: serde_json::Value,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
     ) -> Result<Message, String> {
         self.persist_tool_call(ctx, &tool_call)?;
         let result = run_registered_tool(&self.registry, &tool_call.name, args, ctx).await;
@@ -90,9 +90,14 @@ impl ToolHandler {
         Ok(message)
     }
 
-    fn persist_tool_call(&self, ctx: &ToolContext, tool_call: &ToolCall) -> Result<(), String> {
-        let Some(conversation) = &ctx.conversation else {
-            return Ok(());
+    fn persist_tool_call(
+        &self,
+        ctx: &ExecutionContext,
+        tool_call: &ToolCall,
+    ) -> Result<(), String> {
+        let conversation = match &ctx.invoked_by {
+            InvocationScope::Conversation(conversation) => conversation,
+            InvocationScope::ScheduledAutomation { .. } => return Ok(()),
         };
         self.history.append(
             conversation,
@@ -110,11 +115,12 @@ impl ToolHandler {
 
 pub(crate) fn persist_tool_result(
     history: &dyn History,
-    ctx: &ToolContext,
+    ctx: &ExecutionContext,
     message: &Message,
 ) -> Result<(), String> {
-    let Some(conversation) = &ctx.conversation else {
-        return Ok(());
+    let conversation = match &ctx.invoked_by {
+        InvocationScope::Conversation(conversation) => conversation,
+        InvocationScope::ScheduledAutomation { .. } => return Ok(()),
     };
     let Message::ToolResult { .. } = message else {
         return Ok(());

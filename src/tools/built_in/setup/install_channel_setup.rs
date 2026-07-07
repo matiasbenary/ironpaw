@@ -1,0 +1,384 @@
+use std::sync::Arc;
+
+use crate::{
+    automations::Automations,
+    config::RuntimeLayout,
+    tools::{
+        ExecutionContext, InternalTools,
+        setup::{
+            delete_current_message,
+            install_common::{
+                config_prompt, config_value, is_yes, secret_value, stored_secret_name,
+            },
+            publish_tool_result, send, stop_setup_automation,
+        },
+    },
+};
+
+use super::{
+    ChannelPackage, InstallSession, InstallStage, SetupChannelTool,
+    install_channel_package::{
+        remove_installed_package, required_config, secret_prompt, set_channel_owner_id,
+        verification_code, write_package,
+    },
+    is_setup_conversation,
+};
+
+impl SetupChannelTool {
+    pub(super) async fn continue_setup(
+        &self,
+        name: &str,
+        channel: Option<&str>,
+        channel_user_id: Option<&str>,
+        message: &str,
+        message_id: Option<&str>,
+        ctx: &ExecutionContext,
+    ) -> Result<serde_json::Value, String> {
+        let tools = Arc::as_ref(&self.setup.tools);
+        let automations = &self.setup.automations;
+        let layout = &self.setup.layout;
+        let session = self
+            .state
+            .session
+            .lock()
+            .expect("install channel session lock")
+            .clone()
+            .ok_or_else(|| {
+                "channel setup is not active; ask to install the channel again".to_string()
+            })?;
+        if session.package.name != name {
+            return Err(format!(
+                "channel setup is active for '{}', not '{name}'",
+                session.package.name
+            ));
+        }
+
+        match session.stage {
+            InstallStage::Confirm => {
+                if !is_yes(message) {
+                    self.cancel(session, tools, automations, ctx).await?;
+                    return Ok(serde_json::json!({ "ok": true, "cancelled": true }));
+                }
+                let mut session = session;
+                if session.secrets.is_empty() {
+                    self.prompt_config_or_finish(session, layout, tools, ctx)
+                        .await?;
+                    return Ok(serde_json::json!({ "ok": true }));
+                }
+                session.stage = InstallStage::Secret { index: 0 };
+                self.save_session(session.clone());
+                send(
+                    tools,
+                    &secret_prompt(&session.package, &session.secrets[0]),
+                    ctx,
+                )
+                .await?;
+            }
+            InstallStage::Secret { index } => {
+                let mut session = session;
+                let secret = &session.secrets[index];
+                let value = secret_value(secret, message)?;
+                self.setup
+                    .secrets
+                    .set(&stored_secret_name(&secret.name), &value)?;
+                delete_current_message(tools, ctx, message_id, "install_channel").await;
+
+                let next = index + 1;
+                if let Some(secret) = session.secrets.get(next) {
+                    session.stage = InstallStage::Secret { index: next };
+                    self.save_session(session.clone());
+                    send(tools, &secret_prompt(&session.package, secret), ctx).await?;
+                } else {
+                    self.prompt_config_or_finish(session, layout, tools, ctx)
+                        .await?;
+                }
+            }
+            InstallStage::Config { index } => {
+                let mut session = session;
+                let configs = required_config(&session.package);
+                let config = &configs[index];
+                session
+                    .config_values
+                    .insert(config.path.clone(), config_value(config, message)?);
+
+                let next = index + 1;
+                if let Some(config) = configs.get(next) {
+                    session.stage = InstallStage::Config { index: next };
+                    self.save_session(session.clone());
+                    send(tools, config_prompt(config), ctx).await?;
+                } else {
+                    self.complete(session, layout, tools, ctx).await?;
+                }
+            }
+            InstallStage::Verify {
+                activated,
+                ref code,
+            } => {
+                if activated
+                    && channel == Some(session.package.name.as_str())
+                    && message.trim().eq_ignore_ascii_case(code)
+                {
+                    let Some(channel_user_id) = channel_user_id else {
+                        send(
+                            tools,
+                            "I received the verification code, but this channel did not provide a stable user id. Continue setup from the original conversation.",
+                            ctx,
+                        )
+                        .await?;
+                        return Ok(serde_json::json!({ "ok": false, "verified": false }));
+                    };
+                    set_channel_owner_id(layout, &session.package, channel_user_id)?;
+                    self.activate_package(&session.package).await?;
+                    self.finish(session, tools, automations, ctx).await?;
+                    return Ok(serde_json::json!({ "ok": true, "verified": true }));
+                }
+
+                let is_setup_conversation = is_setup_conversation(&session, ctx);
+                match message.trim().to_ascii_lowercase().as_str() {
+                    _ if !is_setup_conversation
+                        && channel == Some(session.package.name.as_str()) =>
+                    {
+                        send(tools, "Please enter the verification code.", ctx).await?;
+                    }
+                    _ if !is_setup_conversation => {}
+                    "retry" => {
+                        self.retry(session, tools, ctx).await?;
+                    }
+                    "continue" if activated => {
+                        self.finish(session, tools, automations, ctx).await?;
+                    }
+                    "continue" => {
+                        send(
+                            tools,
+                            "The channel has not started successfully yet. Reply retry to reconfigure it, or rollback to cancel setup.",
+                            ctx,
+                        )
+                        .await?;
+                    }
+                    "rollback" | "cancel" => {
+                        self.rollback(session, tools, automations, ctx).await?;
+                    }
+                    _ if activated => {
+                        send(
+                            tools,
+                            &format!(
+                                "I am waiting for a message from the {} channel containing the verification code I sent above. Reply retry to reconfigure, continue to skip verification, or rollback to cancel setup.",
+                                session.package.name
+                            ),
+                            ctx,
+                        )
+                        .await?;
+                    }
+                    _ => {
+                        send(
+                            tools,
+                            "Reply retry to reconfigure the channel, or rollback to cancel setup.",
+                            ctx,
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
+
+        Ok(serde_json::json!({ "ok": true }))
+    }
+
+    fn save_session(&self, session: InstallSession) {
+        *self
+            .state
+            .session
+            .lock()
+            .expect("install channel session lock") = Some(session);
+    }
+
+    async fn prompt_config_or_finish(
+        &self,
+        mut session: InstallSession,
+        layout: &RuntimeLayout,
+        tools: &InternalTools,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
+        let configs = required_config(&session.package);
+        let Some(config) = configs.first() else {
+            return self.complete(session, layout, tools, ctx).await;
+        };
+        session.stage = InstallStage::Config { index: 0 };
+        self.save_session(session);
+        send(tools, config_prompt(config), ctx).await
+    }
+
+    async fn complete(
+        &self,
+        session: InstallSession,
+        layout: &RuntimeLayout,
+        tools: &InternalTools,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
+        write_package(layout, &session.package, &session.config_values)?;
+        match self.activate_package(&session.package).await {
+            Ok(()) => {
+                let code = verification_code();
+                let mut session = session;
+                session.stage = InstallStage::Verify {
+                    activated: true,
+                    code: code.clone(),
+                };
+                self.save_session(session.clone());
+                send(
+                    tools,
+                    &format!(
+                        "The {} channel is installed and started. Send me this code from that channel to confirm it works: {}. You can also reply retry to reconfigure, continue to skip verification, or rollback to cancel setup.",
+                        session.package.name,
+                        code
+                    ),
+                    ctx,
+                )
+                .await
+            }
+            Err(err) => {
+                let mut session = session;
+                session.stage = InstallStage::Verify {
+                    activated: false,
+                    code: verification_code(),
+                };
+                self.save_session(session);
+                send(
+                    tools,
+                    &format!(
+                        "I installed the channel files, but the channel did not start: {err}. Reply retry to reconfigure it, or rollback to cancel setup."
+                    ),
+                    ctx,
+                )
+                .await
+            }
+        }
+    }
+
+    async fn retry(
+        &self,
+        mut session: InstallSession,
+        tools: &InternalTools,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
+        session.config_values.clear();
+        if session.secrets.is_empty() {
+            let configs = required_config(&session.package);
+            if let Some(config) = configs.first() {
+                session.stage = InstallStage::Config { index: 0 };
+                self.save_session(session);
+                return send(tools, config_prompt(config), ctx).await;
+            }
+            return self.complete(session, &self.setup.layout, tools, ctx).await;
+        }
+        session.stage = InstallStage::Secret { index: 0 };
+        self.save_session(session.clone());
+        send(
+            tools,
+            &secret_prompt(&session.package, &session.secrets[0]),
+            ctx,
+        )
+        .await
+    }
+
+    async fn rollback(
+        &self,
+        session: InstallSession,
+        tools: &InternalTools,
+        automations: &Arc<Automations>,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
+        let continuation = session.continuation.clone();
+        self.setup
+            .channel_runtime()?
+            .remove_channel(&session.package.name)
+            .await;
+        remove_installed_package(&self.setup.layout, &session.package);
+        *self
+            .state
+            .session
+            .lock()
+            .expect("install channel session lock") = None;
+        stop_setup_automation(
+            automations,
+            &format!("channel_auth:{}", session.package.name),
+        )?;
+        send(
+            tools,
+            &format!(
+                "I rolled back the {} channel setup. I will answer normally again.",
+                session.package.name
+            ),
+            ctx,
+        )
+        .await?;
+        publish_tool_result(
+            continuation.as_ref(),
+            serde_json::json!({ "ok": false, "channel": session.package.name, "rolled_back": true }),
+        );
+        Ok(())
+    }
+
+    async fn cancel(
+        &self,
+        session: InstallSession,
+        tools: &InternalTools,
+        automations: &Arc<Automations>,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
+        let name = session.package.name.clone();
+        let continuation = session.continuation.clone();
+        *self
+            .state
+            .session
+            .lock()
+            .expect("install channel session lock") = None;
+        stop_setup_automation(automations, &format!("channel_auth:{name}"))?;
+        send(
+            tools,
+            "Channel installation cancelled. I will answer normally again.",
+            ctx,
+        )
+        .await?;
+        publish_tool_result(
+            continuation.as_ref(),
+            serde_json::json!({ "ok": true, "channel": name, "cancelled": true }),
+        );
+        Ok(())
+    }
+
+    async fn finish(
+        &self,
+        session: InstallSession,
+        tools: &InternalTools,
+        automations: &Arc<Automations>,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
+        let name = session.package.name.clone();
+        let continuation = session.continuation.clone();
+        *self
+            .state
+            .session
+            .lock()
+            .expect("install channel session lock") = None;
+        stop_setup_automation(automations, &format!("channel_auth:{name}"))?;
+        send(
+            tools,
+            &format!("The {name} channel is installed and running."),
+            ctx,
+        )
+        .await?;
+        publish_tool_result(
+            continuation.as_ref(),
+            serde_json::json!({ "ok": true, "channel": name, "installed": true }),
+        );
+        Ok(())
+    }
+
+    async fn activate_package(&self, package: &ChannelPackage) -> Result<(), String> {
+        let runtime = self.setup.channel_runtime()?;
+        runtime
+            .activate_installed_channel(&package.name, package.manifest.external)
+            .await
+    }
+}

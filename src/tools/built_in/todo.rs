@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::tools::{self, InternalTool, ToolContext, ToolResponder};
+use crate::{
+    bus::InvocationScope,
+    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -73,15 +76,16 @@ impl InternalTool for TodoTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
         let input: TodoInput = serde_json::from_value(args).map_err(|e| e.to_string())?;
-        let key = ctx
-            .conversation
-            .as_ref()
-            .map(|conversation| conversation.storage_key())
-            .unwrap_or_else(|| "default".to_string());
+        let key = match &ctx.invoked_by {
+            InvocationScope::Conversation(conversation) => conversation.storage_key(),
+            InvocationScope::ScheduledAutomation { automation_id } => {
+                format!("scheduled:{automation_id}")
+            }
+        };
         let all_done = input
             .todos
             .iter()
@@ -140,13 +144,13 @@ mod tests {
     #[tokio::test]
     async fn returns_previous_todos_for_conversation() {
         let tool = Arc::new(TodoTool::new());
-        let ctx = ToolContext {
-            conversation: Some(crate::bus::ConversationKey {
+        let ctx = ExecutionContext {
+            invoked_by: InvocationScope::Conversation(crate::bus::ConversationKey {
                 channel: "telegram".to_string(),
                 chat_id: "chat-1".to_string(),
                 thread_id: None,
             }),
-            ..ToolContext::default()
+            depth: 0,
         };
 
         let first = tools::run_internal_tool(
@@ -172,13 +176,13 @@ mod tests {
     #[tokio::test]
     async fn completed_lists_clear_stored_todos() {
         let tool = Arc::new(TodoTool::new());
-        let ctx = ToolContext {
-            conversation: Some(crate::bus::ConversationKey {
+        let ctx = ExecutionContext {
+            invoked_by: InvocationScope::Conversation(crate::bus::ConversationKey {
                 channel: "telegram".to_string(),
                 chat_id: "chat-1".to_string(),
                 thread_id: None,
             }),
-            ..ToolContext::default()
+            depth: 0,
         };
 
         tools::run_internal_tool(

@@ -9,7 +9,7 @@ use crate::{
     config::RuntimeLayout,
     message::ToolDefinition,
     secrets::{EncryptedSecretStore, Secrets, generate_phrase, phrase_is_valid, phrase_words},
-    tools::{self, InternalTool, InternalTools, ToolContext, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, InternalTools, ToolResponder},
 };
 
 use super::setup::{delete_current_message, send};
@@ -20,6 +20,9 @@ pub const AUTOMATION_NAME: &str = "unlock-secrets";
 pub struct UnlockSecretsParams {
     /// The latest user message.
     pub message: String,
+    /// Provider message id for the latest user message, when available.
+    #[serde(default)]
+    pub message_id: Option<String>,
 }
 
 pub struct UnlockSecretsTool {
@@ -51,24 +54,35 @@ impl UnlockSecretsTool {
             name: AUTOMATION_NAME.to_string(),
             trigger: Trigger::MessageIn {
                 sender: Some(Sender::User),
-                channel: None,
+                conversation: None,
             },
             effect: AutomationEffect::Tool {
                 tool: "unlock_secrets".to_string(),
                 args: serde_json::json!({
                     "message": "{{event.text}}",
+                    "message_id": "{{event.message_id}}",
                 }),
             },
         }
     }
 
-    async fn execute(&self, params: UnlockSecretsParams, ctx: &ToolContext) -> Result<(), String> {
+    async fn execute(
+        &self,
+        params: UnlockSecretsParams,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
         let step = {
             let mut session = self.session.lock().expect("unlock session lock");
             session.handle(&self.layout, &params.message)?
         };
         send(&self.tools, &step.message, ctx).await?;
-        delete_current_message(&self.tools, ctx, "unlock_secrets").await;
+        delete_current_message(
+            &self.tools,
+            ctx,
+            params.message_id.as_deref(),
+            "unlock_secrets",
+        )
+        .await;
         if let Some(store) = step.unlocked {
             self.secrets.unlock(store);
             self.bus.publish(Event::SecretsUnlocked);
@@ -93,7 +107,7 @@ impl InternalTool for UnlockSecretsTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
         let output = tools::execute_typed(args, |params: UnlockSecretsParams| async {

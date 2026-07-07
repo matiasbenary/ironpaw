@@ -141,11 +141,14 @@ async fn main() -> io::Result<()> {
         .registry
         .add(Arc::new(OnboardingTool::new(Arc::clone(&setup_services))))
         .map_err(std::io::Error::other)?;
+    let install_channel = Arc::new(InstallChannelTool::new(Arc::clone(&setup_services)));
     tools
         .registry
-        .add(Arc::new(InstallChannelTool::new(Arc::clone(
-            &setup_services,
-        ))))
+        .add(Arc::clone(&install_channel) as Arc<dyn InternalTool>)
+        .map_err(std::io::Error::other)?;
+    tools
+        .registry
+        .add(Arc::new(install_channel.setup_tool()))
         .map_err(std::io::Error::other)?;
     tools
         .registry
@@ -160,9 +163,14 @@ async fn main() -> io::Result<()> {
             secrets.clone(),
         )))
         .map_err(std::io::Error::other)?;
+    let install_tool = Arc::new(InstallToolTool::new(Arc::clone(&setup_services)));
     tools
         .registry
-        .add(Arc::new(InstallToolTool::new(Arc::clone(&setup_services))))
+        .add(Arc::clone(&install_tool) as Arc<dyn InternalTool>)
+        .map_err(std::io::Error::other)?;
+    tools
+        .registry
+        .add(Arc::new(install_tool.setup_tool()))
         .map_err(std::io::Error::other)?;
     let stored_count = automations.load_stored().map_err(std::io::Error::other)?;
     automations

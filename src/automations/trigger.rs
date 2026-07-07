@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crate::bus::{Event, Sender};
+use crate::bus::{ConversationKey, Event, InvocationScope, Sender};
 
 #[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -17,7 +17,7 @@ pub enum Trigger {
         #[serde(default)]
         sender: Option<Sender>,
         #[serde(default)]
-        channel: Option<String>,
+        conversation: Option<ConversationKey>,
     },
     /// Fires when a conversation-owned tool request has finished.
     ToolResult,
@@ -75,20 +75,23 @@ impl Trigger {
     pub(super) fn matches(&self, event: &Event) -> bool {
         match (self, event) {
             (
-                Trigger::MessageIn { sender, channel },
+                Trigger::MessageIn {
+                    sender,
+                    conversation,
+                },
                 Event::MessageIn {
                     sender: event_sender,
-                    channel: event_channel,
+                    conversation: event_conversation,
                     ..
                 },
             ) => {
                 sender.as_ref().is_none_or(|sender| sender == event_sender)
-                    && channel
+                    && conversation
                         .as_ref()
-                        .is_none_or(|channel| channel == event_channel)
+                        .is_none_or(|conversation| conversation == event_conversation)
             }
             (Trigger::ToolResult, Event::ToolResult { context, .. }) => {
-                context.conversation.is_some()
+                matches!(context.invoked_by, InvocationScope::Conversation(_))
             }
             _ => false,
         }
@@ -117,15 +120,22 @@ mod tests {
     };
 
     fn message_in(channel: &str, sender: Sender) -> Event {
-        Event::MessageIn {
-            channel: channel.to_string(),
-            sender,
-            channel_user_id: None,
-            conversation: ConversationKey {
+        message_in_conversation(
+            ConversationKey {
                 channel: channel.to_string(),
                 chat_id: "c1".to_string(),
                 thread_id: None,
             },
+            sender,
+        )
+    }
+
+    fn message_in_conversation(conversation: ConversationKey, sender: Sender) -> Event {
+        Event::MessageIn {
+            channel: conversation.channel.clone(),
+            sender,
+            channel_user_id: None,
+            conversation,
             message_id: None,
             message: Message::User {
                 text: "hi".to_string(),
@@ -138,7 +148,7 @@ mod tests {
     fn default_message_in_trigger_matches_user_messages_from_any_channel() {
         let trigger = Trigger::MessageIn {
             sender: Some(Sender::User),
-            channel: None,
+            conversation: None,
         };
 
         assert!(trigger.matches(&message_in("tui", Sender::User)));
@@ -147,12 +157,25 @@ mod tests {
     }
 
     #[test]
-    fn channel_filter_restricts_channel() {
+    fn conversation_filter_restricts_conversation() {
+        let conversation = ConversationKey {
+            channel: "telegram".to_string(),
+            chat_id: "c1".to_string(),
+            thread_id: None,
+        };
         let trigger = Trigger::MessageIn {
             sender: None,
-            channel: Some("telegram".to_string()),
+            conversation: Some(conversation),
         };
         assert!(trigger.matches(&message_in("telegram", Sender::Guest)));
+        assert!(!trigger.matches(&message_in_conversation(
+            ConversationKey {
+                channel: "telegram".to_string(),
+                chat_id: "c2".to_string(),
+                thread_id: None,
+            },
+            Sender::Guest,
+        )));
         assert!(!trigger.matches(&message_in("tui", Sender::User)));
     }
 

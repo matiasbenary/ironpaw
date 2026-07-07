@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use crate::{
     message::ToolDefinition,
     scripts::ScriptRuntime,
-    tools::{self, InternalTool, ToolContext, ToolRegistry, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolRegistry, ToolResponder},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -102,7 +102,7 @@ impl InternalTool for CreateToolTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &ToolContext,
+        _ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
         let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
@@ -262,7 +262,7 @@ impl InternalTool for DynamicTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
         let result = self

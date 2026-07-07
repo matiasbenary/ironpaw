@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     bus::Bus,
     history::History,
-    tools::{InternalTool, InternalTools, ToolContext, ToolRegistry, ToolResponder},
+    tools::{ExecutionContext, InternalTool, InternalTools, ToolRegistry, ToolResponder},
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can
@@ -16,7 +16,7 @@ pub async fn run_tool(
     tools: &InternalTools,
     name: &str,
     args: serde_json::Value,
-    ctx: &ToolContext,
+    ctx: &ExecutionContext,
 ) -> serde_json::Value {
     run_registered_tool(&tools.registry, name, args, ctx).await
 }
@@ -25,7 +25,7 @@ pub async fn run_registered_tool(
     registry: &ToolRegistry,
     name: &str,
     args: serde_json::Value,
-    ctx: &ToolContext,
+    ctx: &ExecutionContext,
 ) -> serde_json::Value {
     let tool = registry
         .all()
@@ -41,7 +41,7 @@ pub async fn run_registered_tool(
 pub async fn run_internal_tool(
     tool: Arc<dyn InternalTool>,
     args: serde_json::Value,
-    ctx: &ToolContext,
+    ctx: &ExecutionContext,
 ) -> serde_json::Value {
     if ctx.depth >= MAX_TOOL_DEPTH {
         return serde_json::json!({
@@ -50,7 +50,10 @@ pub async fn run_internal_tool(
         });
     }
     let (responder, captured) = ToolResponder::capture();
-    let ctx = ctx.deeper();
+    let ctx = ExecutionContext {
+        invoked_by: ctx.invoked_by.clone(),
+        depth: ctx.depth + 1,
+    };
     match tool.execute(args, &ctx, responder).await {
         Ok(()) => captured
             .lock()
@@ -67,7 +70,7 @@ pub(crate) async fn run_registered_tool_for_context(
     bus: Bus,
     history: std::sync::Arc<dyn History>,
     registry: &ToolRegistry,
-    ctx: &ToolContext,
+    ctx: &ExecutionContext,
     tool_call_id: String,
     tool_name: String,
     args: serde_json::Value,
@@ -90,7 +93,15 @@ pub(crate) async fn run_registered_tool_for_context(
             "tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"
         ))
     } else {
-        tool.execute(args, &ctx.deeper(), responder.clone()).await
+        tool.execute(
+            args,
+            &ExecutionContext {
+                invoked_by: ctx.invoked_by.clone(),
+                depth: ctx.depth + 1,
+            },
+            responder.clone(),
+        )
+        .await
     };
     if let Err(err) = result
         && !responder.has_responded()

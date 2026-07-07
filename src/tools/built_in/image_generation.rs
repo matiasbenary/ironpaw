@@ -95,7 +95,7 @@ impl InternalTool for ImageGenerationTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &crate::tools::ToolContext,
+        _ctx: &crate::tools::ExecutionContext,
         responder: crate::tools::ToolResponder,
     ) -> Result<(), String> {
         let params: ImageGenerationParams =

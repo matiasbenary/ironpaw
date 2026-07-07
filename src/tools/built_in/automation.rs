@@ -4,7 +4,7 @@ use crate::{
     automations::AutomationEffect,
     bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event},
     message::ToolDefinition,
-    tools::{self, InternalTool, ToolContext, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -173,7 +173,7 @@ impl InternalTool for AutomationTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &ToolContext,
+        _ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
         let output = match self.kind {

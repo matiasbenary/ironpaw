@@ -147,7 +147,7 @@ impl StoredAutomationRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::Sender;
+    use crate::bus::{ConversationKey, Sender};
 
     fn temp_store() -> SqliteAutomations {
         let path = std::env::temp_dir().join(format!(
@@ -189,7 +189,11 @@ mod tests {
                 "telegram-in",
                 Trigger::MessageIn {
                     sender: Some(Sender::User),
-                    channel: Some("telegram".to_string()),
+                    conversation: Some(ConversationKey {
+                        channel: "telegram".to_string(),
+                        chat_id: "c1".to_string(),
+                        thread_id: None,
+                    }),
                 },
             ))
             .unwrap();
@@ -217,11 +221,16 @@ mod tests {
             .iter()
             .find(|automation| automation.name == "telegram-in")
             .expect("telegram-in");
-        let Trigger::MessageIn { sender, channel } = &telegram.trigger else {
+        let Trigger::MessageIn {
+            sender,
+            conversation,
+        } = &telegram.trigger
+        else {
             panic!("expected message_in");
         };
         assert_eq!(sender, &Some(Sender::User));
-        assert_eq!(channel.as_deref(), Some("telegram"));
+        assert_eq!(conversation.as_ref().unwrap().channel, "telegram");
+        assert_eq!(conversation.as_ref().unwrap().chat_id, "c1");
     }
 
     #[test]

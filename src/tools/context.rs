@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use crate::bus::{Bus, Event, ToolContext};
+use crate::bus::{Bus, Event, ExecutionContext};
 use crate::{history::History, message::Message};
 
 #[derive(Clone)]
@@ -17,7 +17,7 @@ enum ToolResponderKind {
     Bus {
         bus: Bus,
         history: Arc<dyn History>,
-        context: ToolContext,
+        context: ExecutionContext,
         tool_call_id: String,
         tool_name: String,
     },
@@ -28,7 +28,7 @@ impl ToolResponder {
     pub(crate) fn bus(
         bus: Bus,
         history: Arc<dyn History>,
-        context: ToolContext,
+        context: ExecutionContext,
         tool_call_id: String,
         tool_name: String,
     ) -> Self {

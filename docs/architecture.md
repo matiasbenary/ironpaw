@@ -130,7 +130,7 @@ Channels do not receive raw secrets directly. They use the host-provided `http_r
 
 <summary> Adding Channels </summary>
 
-Channel installation is partly implemented inside the agent through `list_channels` and `install_channel`. The install flow discovers local channel packages, asks deterministic setup questions, stores required secrets in the encrypted secret store, copies the WASM/config into the runtime `channels` directory, and activates the channel in the running channel runtime.
+Channel installation is partly implemented inside the agent through `list_channels`, `install_channel`, and `setup_channel`. `install_channel` starts the install flow and registers a temporary automation. That automation calls `setup_channel` for follow-up replies. `setup_channel` discovers local channel packages, asks deterministic setup questions, stores required secrets in the encrypted secret store, copies the WASM/config into the runtime `channels` directory, and activates the channel in the running channel runtime.
 
 </details>
 
@@ -244,12 +244,14 @@ A trigger can be one of:
 
 Once a trigger fires, the automation runs a single pre-defined tool call. The tool call can be any registered tool, including internal and dynamic tools.
 
+Inbound-message triggers can match all conversations, or a specific `ConversationKey`. Setup flows that temporarily take over replies should scope their trigger to the conversation that started the flow.
+
 ### Examples
 
 When `warden` starts, it installs a default automation that reacts to inbound user messages with an `onboarding` tool. This tool asks the user for the NEAR API key needed for AI inference, then installs the default `answer-the-user` automation, which reacts to inbound user messages by calling the agent and sending the final answer back to the user.
 
 ```text answer-the-user
-MessageIn(User, any channel)
+MessageIn(User, any conversation)
 -> continue_conversation(current ConversationKey)
 ```
 
@@ -306,9 +308,9 @@ Internal tools are async and model-callable. Every internal tool exposes:
 
 - `name()`
 - `tool_definition()`
-- `execute(args, ctx).await`
+- `execute(args, ctx, responder).await`
 
-Each tool receives a `ToolContext` with the current `ConversationKey` and tool-call depth. Result delivery is separate: tools receive a `ToolResponder` alongside the context. This keeps execution context separate from output plumbing. Tools like `send_message` can default to the current conversation, while tools that operate on a specific message, such as `delete_message`, require an explicit `message_id`.
+Each tool receives an `ExecutionContext` with invocation metadata and tool-call depth. The invocation is explicit: `InvocationScope::Conversation(ConversationKey)` for conversation-scoped work, or `InvocationScope::ScheduledAutomation { automation_id }` for cron/at automation work. Tools match that scope directly and decide what to do. Result delivery is separate: tools receive a `ToolResponder` alongside the context. Message ids are action input, not execution metadata, so tools that operate on a specific message, such as `delete_message`, require an explicit `message_id`.
 
 Implemented internal tools include:
 
@@ -321,8 +323,8 @@ Implemented internal tools include:
 - `call_agent`: runs a sub-agent and returns its final answer as a tool result.
 - `create_tool`: writes and registers a new dynamic tool.
 - `create_automation`, `delete_automation`, `inspect_automation`, `list_automations`: manage persisted automations.
-- `list_channels`, `install_channel`: inspect and install local channel packages.
-- `list_tools`, `install_tool`: inspect and install local external WASM tool packages.
+- `list_channels`, `install_channel`, `setup_channel`: inspect and install local channel packages. `install_channel` starts the install flow and registers a temporary automation; `setup_channel` handles deterministic follow-up replies from that automation.
+- `list_tools`, `install_tool`, `setup_tool`: inspect and install local external WASM tool packages. `install_tool` starts the install flow and registers a temporary scoped automation; `setup_tool` handles the deterministic follow-up replies from that automation.
 - `onboarding`: collects required setup secrets and installs the normal answer automation.
 - `todo`: a small scratchpad-style tool.
 
@@ -346,7 +348,7 @@ At startup, Warden discovers installed WASM tools from the runtime tools directo
 
 External tools do not receive raw secrets directly. They use host-provided imports for external effects. HTTP tools call `http_request`, which the host wraps with `HttpTool<ToolSecrets>` so the installed tool config decides which hosts are allowed and where credentials are injected. Email tools call IMAP/SMTP-specific host imports, so the host owns the configured mail server connections and injects credentials without exposing passwords to WASM.
 
-The install flow is implemented through `list_tools` and `install_tool`. It discovers local packages from `WARDEN_TOOLS_SRC`, `<runtime-root>/tool-store`, and the built-in `tools-src` directory. Installation asks deterministic setup questions, stores required secrets in the encrypted secret store, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers the tool immediately.
+The install flow is implemented through `list_tools`, `install_tool`, and `setup_tool`. `install_tool` discovers local packages from `WARDEN_TOOLS_SRC`, `<runtime-root>/tool-store`, and the built-in `tools-src` directory, then registers a temporary automation scoped to the starting conversation. That automation calls `setup_tool` for follow-up replies. `setup_tool` asks deterministic setup questions, stores required secrets in the encrypted secret store, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers the tool immediately.
 
 The first external WASM tool is `web_search`. It searches Brave Search through `https://api.search.brave.com/res/v1/web/search`, while the `BRAVE_SEARCH_API` key is injected by the host as `X-Subscription-Token`. The `email` tool demonstrates a non-HTTP external tool: it can list and read messages through the configured IMAP server, and send plain-text mail through the configured SMTP server.
 
@@ -404,7 +406,7 @@ This example assumes Telegram has already received at least one valid owner mess
    }
    ```
 
-5. The automation runtime stores the inbound message in history and matches the default `answer-the-user` automation.
+5. The bridge stores the inbound message in history, then the automation runtime matches the default `answer-the-user` automation.
 
 6. `answer_the_user` calls `call_agent`, which starts the agent tool loop.
 

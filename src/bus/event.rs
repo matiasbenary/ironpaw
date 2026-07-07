@@ -31,22 +31,16 @@ pub struct MessageRef {
     pub message_id: String,
 }
 
-/// Ambient context a tool executes in. This is separate from the responder
-/// that decides where the tool result goes.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct ToolContext {
-    pub conversation: Option<ConversationKey>,
-    #[serde(default)]
-    pub message_id: Option<String>,
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExecutionContext {
+    pub invoked_by: InvocationScope,
     pub depth: usize,
 }
 
-impl ToolContext {
-    pub(crate) fn deeper(&self) -> Self {
-        let mut ctx = self.clone();
-        ctx.depth += 1;
-        ctx
-    }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InvocationScope {
+    Conversation(ConversationKey),
+    ScheduledAutomation { automation_id: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,7 +70,7 @@ pub enum AutomationTriggerSpec {
         #[serde(default)]
         sender: Option<Sender>,
         #[serde(default)]
-        channel: Option<String>,
+        conversation: Option<ConversationKey>,
     },
     ToolResult,
 }
@@ -127,12 +121,12 @@ pub enum Event {
         result: Result<serde_json::Value, String>,
     },
     ToolRequest {
-        context: ToolContext,
+        context: ExecutionContext,
         tool_call: ToolCall,
         args: serde_json::Value,
     },
     ToolResult {
-        context: ToolContext,
+        context: ExecutionContext,
         tool_call_id: String,
         tool_name: String,
         result: serde_json::Value,

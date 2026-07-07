@@ -335,7 +335,7 @@ impl InternalTool for RawInferenceTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &tools::ToolContext,
+        _ctx: &tools::ExecutionContext,
         responder: tools::ToolResponder,
     ) -> Result<(), String> {
         let output = tools::execute_typed(args, |request: RawInferenceRequest| async {

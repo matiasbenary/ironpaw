@@ -2,8 +2,11 @@ use std::sync::{Arc, RwLock};
 
 use crate::{
     agent::Agent,
-    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, Sender},
-    tools::{InternalTools, ToolContext},
+    bus::{
+        AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, InvocationScope,
+        Sender,
+    },
+    tools::{ExecutionContext, InternalTools},
 };
 
 mod effect;
@@ -24,7 +27,7 @@ enum AutomationEvent<'a> {
 }
 
 impl AutomationEvent<'_> {
-    fn context(&self) -> (ToolContext, serde_json::Value) {
+    fn context(&self) -> (ExecutionContext, serde_json::Value) {
         match self {
             AutomationEvent::Bus(event) => match event {
                 Event::MessageIn {
@@ -39,10 +42,9 @@ impl AutomationEvent<'_> {
                         crate::message::Message::User { text, .. } => text.clone(),
                         _ => String::new(),
                     };
-                    let ctx = ToolContext {
-                        conversation: Some(conversation.clone()),
-                        message_id: message_id.clone(),
-                        ..ToolContext::default()
+                    let ctx = ExecutionContext {
+                        invoked_by: InvocationScope::Conversation(conversation.clone()),
+                        depth: 0,
                     };
                     let event = serde_json::json!({
                         "type": "message_in",
@@ -64,7 +66,10 @@ impl AutomationEvent<'_> {
                     result,
                 } => {
                     let ctx = context.clone();
-                    let conversation = context.conversation.as_ref();
+                    let conversation = match &context.invoked_by {
+                        InvocationScope::Conversation(conversation) => Some(conversation),
+                        InvocationScope::ScheduledAutomation { .. } => None,
+                    };
                     let event = serde_json::json!({
                         "type": "tool_result",
                         "channel": conversation.map(|conversation| &conversation.channel),
@@ -78,7 +83,12 @@ impl AutomationEvent<'_> {
                     (ctx, event)
                 }
                 other => (
-                    ToolContext::default(),
+                    ExecutionContext {
+                        invoked_by: InvocationScope::ScheduledAutomation {
+                            automation_id: "bus-event".to_string(),
+                        },
+                        depth: 0,
+                    },
                     serde_json::json!({ "type": format!("{other:?}") }),
                 ),
             },
@@ -86,7 +96,12 @@ impl AutomationEvent<'_> {
                 kind,
                 automation_name,
             } => (
-                ToolContext::default(),
+                ExecutionContext {
+                    invoked_by: InvocationScope::ScheduledAutomation {
+                        automation_id: (*automation_name).to_string(),
+                    },
+                    depth: 0,
+                },
                 serde_json::json!({ "type": kind, "automation": automation_name }),
             ),
         }
@@ -149,7 +164,7 @@ impl Automations {
             name: "handle-conversation".to_string(),
             trigger: Trigger::MessageIn {
                 sender: Some(Sender::User),
-                channel: None,
+                conversation: None,
             },
             effect: AutomationEffect::ContinueConversation,
         }
@@ -250,9 +265,13 @@ impl Automations {
         let trigger = match spec.trigger {
             AutomationTriggerSpec::At { datetime } => Trigger::at(&datetime)?,
             AutomationTriggerSpec::Cron { expression } => Trigger::cron(&expression)?,
-            AutomationTriggerSpec::MessageIn { sender, channel } => {
-                Trigger::MessageIn { sender, channel }
-            }
+            AutomationTriggerSpec::MessageIn {
+                sender,
+                conversation,
+            } => Trigger::MessageIn {
+                sender,
+                conversation,
+            },
             AutomationTriggerSpec::ToolResult => Trigger::ToolResult,
         };
         match &spec.effect {
@@ -490,10 +509,13 @@ fn trigger_json(trigger: &Trigger) -> serde_json::Value {
             "type": "at",
             "datetime": datetime.to_rfc3339(),
         }),
-        Trigger::MessageIn { sender, channel } => serde_json::json!({
+        Trigger::MessageIn {
+            sender,
+            conversation,
+        } => serde_json::json!({
             "type": "message_in",
             "sender": sender,
-            "channel": channel,
+            "conversation": conversation,
         }),
         Trigger::ToolResult => serde_json::json!({
             "type": "tool_result",
@@ -594,8 +616,11 @@ mod tests {
         assert_eq!(event["type"], "message_in");
         assert_eq!(event["text"], "hi");
         assert_eq!(event["chat_id"], "c1");
-        assert_eq!(ctx.conversation.as_ref().unwrap().chat_id, "c1");
-        assert_eq!(ctx.conversation.as_ref().unwrap().channel, "tui");
+        let InvocationScope::Conversation(conversation) = ctx.invoked_by else {
+            panic!("expected conversation invocation");
+        };
+        assert_eq!(conversation.chat_id, "c1");
+        assert_eq!(conversation.channel, "tui");
     }
 
     #[test]
@@ -614,7 +639,7 @@ mod tests {
                 "daily-news",
                 Trigger::MessageIn {
                     sender: Some(Sender::User),
-                    channel: None,
+                    conversation: None,
                 },
             ))
             .unwrap();

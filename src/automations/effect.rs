@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     agent::Agent,
-    bus::{Bus, Event, Sender},
-    tools::{self, InternalTools, ToolContext},
+    bus::{Bus, Event, InvocationScope, Sender},
+    tools::{self, ExecutionContext, InternalTools},
 };
 
 use super::render_args::render_args;
@@ -28,7 +28,7 @@ impl AutomationEffect {
         bus: &Bus,
         tools: &Arc<InternalTools>,
         agent: &Agent,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
         event: &serde_json::Value,
     ) -> serde_json::Value {
         match self {
@@ -43,17 +43,23 @@ impl AutomationEffect {
                     Err(err) => serde_json::json!({ "ok": false, "error": err }),
                 }
             }
-            Self::ContinueConversation => {
-                match agent.handle_conversation(ctx.conversation.as_ref()).await {
-                    Ok(result) => {
-                        if let Some(text) = result {
-                            send_to_destination(bus, ctx, text);
+            Self::ContinueConversation => match &ctx.invoked_by {
+                InvocationScope::Conversation(conversation) => {
+                    match agent.handle_conversation(Some(conversation)).await {
+                        Ok(result) => {
+                            if let Some(text) = result {
+                                send_to_destination(bus, conversation, text);
+                            }
+                            serde_json::json!({ "ok": true })
                         }
-                        serde_json::json!({ "ok": true })
+                        Err(err) => serde_json::json!({ "ok": false, "error": err }),
                     }
-                    Err(err) => serde_json::json!({ "ok": false, "error": err }),
                 }
-            }
+                InvocationScope::ScheduledAutomation { automation_id } => serde_json::json!({
+                    "ok": false,
+                    "error": format!("continue_conversation cannot run from scheduled automation '{automation_id}'"),
+                }),
+            },
         }
     }
 }
@@ -66,11 +72,7 @@ fn render_text(template: &str, event: &serde_json::Value) -> String {
     }
 }
 
-fn send_to_destination(bus: &Bus, ctx: &ToolContext, text: String) {
-    let Some(conversation) = &ctx.conversation else {
-        eprintln!("automation result has no destination: {text}");
-        return;
-    };
+fn send_to_destination(bus: &Bus, conversation: &crate::bus::ConversationKey, text: String) {
     bus.publish(Event::MessageOut {
         channel: conversation.channel.clone(),
         recipient: Sender::User,

@@ -8,10 +8,12 @@ use std::sync::Arc;
 
 use crate::{
     automations::Automations,
-    tools::{self, InternalTools, ToolContext, ToolResponder},
+    tools::{self, ExecutionContext, InternalTools, ToolResponder},
 };
 
-pub use install_channel::{InstallChannelTool, ListChannelsTool, RemoveChannelTool};
+pub use install_channel::{
+    InstallChannelTool, ListChannelsTool, RemoveChannelTool, SetupChannelTool,
+};
 pub use install_tool::{InstallToolTool, ListToolsTool};
 pub use onboarding::OnboardingTool;
 pub use services::SetupServices;
@@ -33,7 +35,7 @@ fn stop_setup_automation(automations: &Arc<Automations>, name: &str) -> Result<(
 pub(super) async fn send(
     tools: &InternalTools,
     content: &str,
-    ctx: &ToolContext,
+    ctx: &ExecutionContext,
 ) -> Result<(), String> {
     let result = tools::run_tool(
         tools,
@@ -51,8 +53,23 @@ pub(super) async fn send(
     Ok(())
 }
 
-pub(super) async fn delete_current_message(tools: &InternalTools, ctx: &ToolContext, label: &str) {
-    let result = tools::run_tool(tools, "delete_message", serde_json::json!({}), ctx).await;
+pub(super) async fn delete_current_message(
+    tools: &InternalTools,
+    ctx: &ExecutionContext,
+    message_id: Option<&str>,
+    label: &str,
+) {
+    let Some(message_id) = message_id else {
+        eprintln!("{label} could not delete inbound setup message: missing message_id");
+        return;
+    };
+    let result = tools::run_tool(
+        tools,
+        "delete_message",
+        serde_json::json!({ "message_id": message_id }),
+        ctx,
+    )
+    .await;
     if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
         eprintln!(
             "{label} could not delete inbound setup message: {}",

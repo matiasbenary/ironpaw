@@ -7,7 +7,7 @@ use crate::{
     bus::Sender,
     message::ToolDefinition,
     tools::{
-        self, InternalTool, ToolContext, ToolResponder,
+        self, ExecutionContext, InternalTool, ToolResponder,
         setup::{SetupServices, delete_current_message, send},
     },
 };
@@ -16,6 +16,9 @@ use crate::{
 pub struct OnboardingParams {
     /// The latest user message.
     pub message: String,
+    /// Provider message id for the latest user message, when available.
+    #[serde(default)]
+    pub message_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,12 +46,13 @@ impl OnboardingTool {
             name: "onboarding".to_string(),
             trigger: Trigger::MessageIn {
                 sender: Some(Sender::User),
-                channel: None,
+                conversation: None,
             },
             effect: AutomationEffect::Tool {
                 tool: "onboarding".to_string(),
                 args: serde_json::json!({
                     "message": "{{event.text}}",
+                    "message_id": "{{event.message_id}}",
                 }),
             },
         }
@@ -57,7 +61,7 @@ impl OnboardingTool {
     async fn execute(
         &self,
         params: OnboardingParams,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
     ) -> Result<serde_json::Value, String> {
         let stage = *self.stage.lock().expect("onboarding stage lock");
         match stage {
@@ -79,7 +83,13 @@ impl OnboardingTool {
                 )
                 .await?;
                 self.setup.secrets.set("NEAR_API_KEY", &key)?;
-                delete_current_message(&self.setup.tools, ctx, "onboarding").await;
+                delete_current_message(
+                    &self.setup.tools,
+                    ctx,
+                    params.message_id.as_deref(),
+                    "onboarding",
+                )
+                .await;
                 send(
                     &self.setup.tools,
                     "Thanks, let me test the key to make sure it works.",
@@ -108,7 +118,7 @@ impl OnboardingTool {
         Ok(serde_json::json!({ "ok": true }))
     }
 
-    async fn test_near(&self, ctx: &ToolContext) -> Result<(), String> {
+    async fn test_near(&self, ctx: &ExecutionContext) -> Result<(), String> {
         let result = tools::run_tool(
             &self.setup.tools,
             "raw_inference",
@@ -123,7 +133,7 @@ impl OnboardingTool {
         tool_result_ok(result)
     }
 
-    async fn finish(&self, ctx: &ToolContext) -> Result<(), String> {
+    async fn finish(&self, ctx: &ExecutionContext) -> Result<(), String> {
         *self.stage.lock().expect("onboarding stage lock") = Stage::Complete;
         self.setup.automations.delete("onboarding")?;
         self.setup
@@ -175,7 +185,7 @@ impl InternalTool for OnboardingTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
         let output = tools::execute_typed(args, |params: OnboardingParams| async {

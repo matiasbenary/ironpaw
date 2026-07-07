@@ -5,7 +5,7 @@ use crate::{
     history::{History, HistoryEntry, MessageMetadata},
     message::{Message, ToolCall, ToolDefinition},
     models,
-    tools::{self, InternalTool, ToolContext, ToolHandler, ToolRegistry},
+    tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolHandler, ToolRegistry},
 };
 
 use super::{
@@ -88,9 +88,14 @@ impl Agent {
     /// model input for this run but are not persisted by the agent as user
     /// history.
     async fn run(&self, mut run: AgentRun<'_>) -> Result<Option<String>, String> {
-        let ctx = ToolContext {
-            conversation: run.destination.cloned(),
-            ..ToolContext::default()
+        let ctx = ExecutionContext {
+            invoked_by: match run.destination {
+                Some(conversation) => InvocationScope::Conversation(conversation.clone()),
+                None => InvocationScope::ScheduledAutomation {
+                    automation_id: "agent-task".to_string(),
+                },
+            },
+            depth: 0,
         };
         let mut prompt_tokens = 0;
 
@@ -326,7 +331,7 @@ fn history_metadata(destination: Destination<'_>) -> MessageMetadata {
 async fn execute_tool_call(
     tools: &ToolRegistry,
     tool_call: ToolCall,
-    ctx: &ToolContext,
+    ctx: &ExecutionContext,
     allowed_tool_names: Option<&[String]>,
 ) -> ExecutedToolCall {
     let tool_name = tool_call.name;
@@ -364,7 +369,7 @@ async fn execute_prepared_tool_call(
     tools: &ToolRegistry,
     tool_call: ToolCall,
     args: serde_json::Value,
-    ctx: &ToolContext,
+    ctx: &ExecutionContext,
 ) -> ExecutedToolCall {
     let tool_name = tool_call.name;
     let result = tools::run_registered_tool(tools, &tool_name, args, ctx).await;
@@ -505,8 +510,18 @@ mod tests {
             .to_string(),
         };
 
-        let result =
-            execute_tool_call(&tools.registry, tool_call, &ToolContext::default(), None).await;
+        let result = execute_tool_call(
+            &tools.registry,
+            tool_call,
+            &ExecutionContext {
+                invoked_by: InvocationScope::ScheduledAutomation {
+                    automation_id: "test".to_string(),
+                },
+                depth: 0,
+            },
+            None,
+        )
+        .await;
         let result = result.message;
         let Message::ToolResult {
             tool_call_id,
@@ -552,8 +567,18 @@ mod tests {
             arguments: "{\"channel\":\"telegram\"".to_string(),
         };
 
-        let result =
-            execute_tool_call(&tools.registry, tool_call, &ToolContext::default(), None).await;
+        let result = execute_tool_call(
+            &tools.registry,
+            tool_call,
+            &ExecutionContext {
+                invoked_by: InvocationScope::ScheduledAutomation {
+                    automation_id: "test".to_string(),
+                },
+                depth: 0,
+            },
+            None,
+        )
+        .await;
         let result = result.message;
         let Message::ToolResult {
             tool_call_id,

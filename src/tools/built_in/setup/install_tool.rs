@@ -1,40 +1,53 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    collections::BTreeMap,
     sync::{Arc, Mutex},
 };
 
 use async_trait::async_trait;
 
+#[path = "install_tool_package.rs"]
+mod install_tool_package;
+
 use crate::{
     automations::{Automation, AutomationEffect, Trigger},
-    bus::Sender,
+    bus::{ConversationKey, InvocationScope, Sender},
     config::RuntimeLayout,
     message::ToolDefinition,
     secrets::Secrets,
     tools::{
-        self, InternalTool, ToolContext, ToolResponder,
+        self, ExecutionContext, InternalTool, ToolResponder,
         setup::{
             SetupServices, delete_current_message,
             install_common::{
-                SetupConfig, SetupSecret, config_prompt, config_statuses, config_value,
-                discover_package_dir_names, is_yes, locate_config_template, secret_statuses,
-                secret_value, stored_secret_name, write_package_artifacts,
+                SetupSecret, config_prompt, config_value, is_yes, secret_value, stored_secret_name,
             },
             pause_conversation, publish_tool_result, send, stop_setup_automation,
         },
-        wasm::{WasmTool, WasmToolConfig, WasmToolManifest},
+        wasm::WasmTool,
     },
+};
+
+pub use install_tool_package::install_packaged_tool;
+use install_tool_package::{
+    ToolPackage, install_package, locate_tool_package, normalize_tool_name, required_config,
+    required_secrets,
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct InstallToolParams {
     /// Tool name to install, for example "web_search".
     pub name: String,
-    /// Latest user message. Omitted when setup starts; filled by the temporary
-    /// tool_auth automation for follow-up replies.
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct SetupToolParams {
+    /// Tool name being configured.
+    pub name: String,
+    /// Latest setup reply, filled by the temporary tool_auth automation.
+    pub message: String,
+    /// Provider message id for the follow-up reply, when available.
     #[serde(default)]
-    pub message: Option<String>,
+    pub message_id: Option<String>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -55,32 +68,17 @@ enum InstallStage {
     Config { index: usize },
 }
 
-#[derive(Clone)]
-struct ToolPackage {
-    name: String,
-    display_name: String,
-    wasm_path: PathBuf,
-    config_template_path: PathBuf,
-    manifest: ToolInstallManifest,
-}
-
-#[derive(Clone, serde::Deserialize)]
-struct ToolInstallManifest {
-    name: String,
-    #[serde(default)]
-    display_name: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    secrets: Vec<SetupSecret>,
-    #[serde(default)]
-    config: Vec<SetupConfig>,
-    #[serde(default)]
-    setup_url: Option<String>,
-}
-
 pub struct InstallToolTool {
     setup: Arc<SetupServices>,
+    state: Arc<InstallToolState>,
+}
+
+pub struct SetupToolTool {
+    setup: Arc<SetupServices>,
+    state: Arc<InstallToolState>,
+}
+
+struct InstallToolState {
     session: Mutex<Option<InstallSession>>,
 }
 
@@ -89,85 +87,9 @@ pub struct ListToolsTool {
     secrets: Secrets,
 }
 
-pub fn install_packaged_tool(
-    layout: &RuntimeLayout,
-    name: &str,
-) -> Result<WasmToolManifest, String> {
-    let name = normalize_tool_name(name)?;
-    let tools_dir = layout.tools_dir();
-    let wasm_path = tools_dir.join(format!("{name}.wasm"));
-    let config_path = tools_dir.join(format!("{name}.config.json"));
-    if wasm_path.exists() && config_path.exists() {
-        let config_json = std::fs::read_to_string(&config_path).map_err(|err| err.to_string())?;
-        let config: WasmToolConfig =
-            serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
-        return Ok(WasmToolManifest {
-            name,
-            wasm_path,
-            config_path,
-            config_json,
-            config,
-        });
-    }
-
-    let package = locate_tool_package(layout, &name)?;
-    if !required_config(&package).is_empty() {
-        return Err(format!(
-            "tool '{}' requires interactive config; use install_tool",
-            package.name
-        ));
-    }
-    install_package(layout, &package, &BTreeMap::new())
-}
-
 impl ListToolsTool {
     pub fn new(layout: RuntimeLayout, secrets: Secrets) -> Self {
         Self { layout, secrets }
-    }
-
-    async fn execute(&self) -> Result<serde_json::Value, String> {
-        let installed = installed_tool_names(&self.layout)?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let mut package_names = BTreeSet::new();
-        let mut tool_rows = Vec::new();
-
-        for package in discover_tool_packages(&self.layout) {
-            let package = package?;
-            let installed = installed.contains(&package.name);
-            package_names.insert(package.name.clone());
-            tool_rows.push(serde_json::json!({
-                "name": package.name,
-                "display_name": package.display_name,
-                "description": package.manifest.description,
-                "installed": installed,
-                "installable": !installed,
-                "required_secrets": secret_statuses(required_secrets(&package), &self.secrets, false),
-                "required_config": config_statuses(required_config(&package)),
-            }));
-        }
-
-        for name in installed.difference(&package_names) {
-            tool_rows.push(serde_json::json!({
-                "name": name,
-                "installed": true,
-                "installable": false,
-                "required_secrets": [],
-                "required_config": [],
-            }));
-        }
-
-        tool_rows.sort_by(|left, right| {
-            left["name"]
-                .as_str()
-                .unwrap_or_default()
-                .cmp(right["name"].as_str().unwrap_or_default())
-        });
-
-        Ok(serde_json::json!({
-            "ok": true,
-            "tools": tool_rows,
-        }))
     }
 }
 
@@ -175,22 +97,32 @@ impl InstallToolTool {
     pub fn new(setup: Arc<SetupServices>) -> Self {
         Self {
             setup,
-            session: Mutex::new(None),
+            state: Arc::new(InstallToolState {
+                session: Mutex::new(None),
+            }),
         }
     }
 
-    fn automation(tool_name: &str) -> Automation {
+    pub fn setup_tool(&self) -> SetupToolTool {
+        SetupToolTool {
+            setup: Arc::clone(&self.setup),
+            state: Arc::clone(&self.state),
+        }
+    }
+
+    fn automation(tool_name: &str, conversation: &ConversationKey) -> Automation {
         Automation {
             name: format!("tool_auth:{tool_name}"),
             trigger: Trigger::MessageIn {
                 sender: Some(Sender::User),
-                channel: None,
+                conversation: Some(conversation.clone()),
             },
             effect: AutomationEffect::Tool {
-                tool: "install_tool".to_string(),
+                tool: "setup_tool".to_string(),
                 args: serde_json::json!({
                     "name": tool_name,
                     "message": "{{event.text}}",
+                    "message_id": "{{event.message_id}}",
                 }),
             },
         }
@@ -199,31 +131,42 @@ impl InstallToolTool {
     async fn execute(
         &self,
         params: InstallToolParams,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
         let name = normalize_tool_name(&params.name)?;
-        match params.message {
-            None => self.start(&name, ctx, responder).await,
-            Some(message) => self.continue_setup(&name, &message, ctx).await,
-        }
+        self.start(&name, ctx, responder).await
     }
 
     async fn start(
         &self,
         name: &str,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
+        let conversation = match &ctx.invoked_by {
+            InvocationScope::Conversation(conversation) => conversation,
+            InvocationScope::ScheduledAutomation { automation_id } => {
+                return Err(format!(
+                    "install_tool cannot start from scheduled automation '{automation_id}'"
+                ));
+            }
+        };
         let package = locate_tool_package(&self.setup.layout, name)?;
-        *self.session.lock().expect("install tool session lock") = Some(InstallSession {
+        *self
+            .state
+            .session
+            .lock()
+            .expect("install tool session lock") = Some(InstallSession {
             package,
             stage: InstallStage::Confirm,
             config_values: BTreeMap::new(),
             continuation: Some(responder),
         });
         pause_conversation(&self.setup.automations)?;
-        self.setup.automations.add(Self::automation(name))?;
+        self.setup
+            .automations
+            .add(Self::automation(name, conversation))?;
         send(
             &self.setup.tools,
             &format!("Install the {name} tool? Reply yes to continue, or no to cancel."),
@@ -236,14 +179,18 @@ impl InstallToolTool {
             "message": "deterministic tool setup prompt sent"
         }))
     }
+}
 
+impl SetupToolTool {
     async fn continue_setup(
         &self,
         name: &str,
         message: &str,
-        ctx: &ToolContext,
+        message_id: Option<&str>,
+        ctx: &ExecutionContext,
     ) -> Result<serde_json::Value, String> {
         let session = self
+            .state
             .session
             .lock()
             .expect("install tool session lock")
@@ -285,7 +232,7 @@ impl InstallToolTool {
                 self.setup
                     .secrets
                     .set(&stored_secret_name(&secret.name), &value)?;
-                delete_current_message(&self.setup.tools, ctx, "install_tool").await;
+                delete_current_message(&self.setup.tools, ctx, message_id, "install_tool").await;
 
                 let next = index + 1;
                 if let Some(secret) = secrets.get(next) {
@@ -324,13 +271,17 @@ impl InstallToolTool {
     }
 
     fn save_session(&self, session: InstallSession) {
-        *self.session.lock().expect("install tool session lock") = Some(session);
+        *self
+            .state
+            .session
+            .lock()
+            .expect("install tool session lock") = Some(session);
     }
 
     async fn prompt_config_or_finish(
         &self,
         mut session: InstallSession,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
     ) -> Result<(), String> {
         let configs = required_config(&session.package);
         let Some(config) = configs.first() else {
@@ -341,7 +292,11 @@ impl InstallToolTool {
         send(&self.setup.tools, config_prompt(config), ctx).await
     }
 
-    async fn complete(&self, session: InstallSession, ctx: &ToolContext) -> Result<(), String> {
+    async fn complete(
+        &self,
+        session: InstallSession,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
         let manifest =
             install_package(&self.setup.layout, &session.package, &session.config_values)?;
         let tool = WasmTool::from_manifest(manifest, self.setup.secrets.tools.clone())?;
@@ -349,10 +304,14 @@ impl InstallToolTool {
         self.finish(session, ctx).await
     }
 
-    async fn cancel(&self, session: InstallSession, ctx: &ToolContext) -> Result<(), String> {
+    async fn cancel(&self, session: InstallSession, ctx: &ExecutionContext) -> Result<(), String> {
         let name = session.package.name.clone();
         let continuation = session.continuation.clone();
-        *self.session.lock().expect("install tool session lock") = None;
+        *self
+            .state
+            .session
+            .lock()
+            .expect("install tool session lock") = None;
         stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
         send(
             &self.setup.tools,
@@ -367,10 +326,14 @@ impl InstallToolTool {
         Ok(())
     }
 
-    async fn finish(&self, session: InstallSession, ctx: &ToolContext) -> Result<(), String> {
+    async fn finish(&self, session: InstallSession, ctx: &ExecutionContext) -> Result<(), String> {
         let name = session.package.name.clone();
         let continuation = session.continuation.clone();
-        *self.session.lock().expect("install tool session lock") = None;
+        *self
+            .state
+            .session
+            .lock()
+            .expect("install tool session lock") = None;
         stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
         send(
             &self.setup.tools,
@@ -404,7 +367,7 @@ impl InternalTool for ListToolsTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _ctx: &ToolContext,
+        _ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
         let output = ListToolsTool::execute(self).await?;
@@ -432,14 +395,13 @@ impl InternalTool for InstallToolTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &ToolContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
         let params: InstallToolParams =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let starts_setup = params.message.is_none();
         let result = InstallToolTool::execute(self, params, ctx, responder.clone()).await?;
-        if starts_setup && result.get("ok").and_then(|ok| ok.as_bool()) == Some(true) {
+        if result.get("ok").and_then(|ok| ok.as_bool()) == Some(true) {
             return Ok(());
         }
         responder.respond(result)?;
@@ -447,119 +409,35 @@ impl InternalTool for InstallToolTool {
     }
 }
 
-fn normalize_tool_name(name: &str) -> Result<String, String> {
-    let name = name.trim().to_ascii_lowercase().replace('-', "_");
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-    {
-        return Err(
-            "tool name must contain only lowercase letters, digits, '_' or '-'".to_string(),
-        );
+#[async_trait]
+impl InternalTool for SetupToolTool {
+    fn name(&self) -> &str {
+        "setup_tool"
     }
-    Ok(name)
-}
 
-fn locate_tool_package(layout: &RuntimeLayout, name: &str) -> Result<ToolPackage, String> {
-    let package_dir_name = name.replace('_', "-");
-    let source_dir = tool_source_dirs(layout)
-        .into_iter()
-        .flat_map(|dir| [dir.join(name), dir.join(&package_dir_name)])
-        .find(|dir| dir.exists())
-        .ok_or_else(|| format!("unknown installable tool: {name}"))?;
-    let actual_dir_name = source_dir
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| format!("invalid tool package path: {}", source_dir.display()))?
-        .to_string();
-    let manifest_path = source_dir.join(format!("{actual_dir_name}.install.json"));
-    if !manifest_path.exists() {
-        return Err(format!(
-            "tool '{name}' is missing {}",
-            manifest_path.display()
-        ));
+    fn tool_definition(&self) -> ToolDefinition {
+        tools::tool_definition::<SetupToolParams>(
+            self.name(),
+            "Continue the deterministic setup flow for a tool installation. \
+             This is called by temporary setup automations with inbound user replies.",
+        )
     }
-    let manifest: ToolInstallManifest = serde_json::from_str(
-        &std::fs::read_to_string(&manifest_path).map_err(|err| err.to_string())?,
-    )
-    .map_err(|err| err.to_string())?;
-    if normalize_tool_name(&manifest.name)? != name {
-        return Err(format!(
-            "install manifest declares tool '{}' but package is '{name}'",
-            manifest.name
-        ));
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ExecutionContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
+        let params: SetupToolParams =
+            serde_json::from_value(args).map_err(|err| err.to_string())?;
+        let name = normalize_tool_name(&params.name)?;
+        let result = self
+            .continue_setup(&name, &params.message, params.message_id.as_deref(), ctx)
+            .await?;
+        responder.respond(result)?;
+        Ok(())
     }
-    let wasm_path = locate_wasm(&source_dir, &actual_dir_name)?;
-    let config_template_path = locate_config_template(&source_dir, &actual_dir_name, "tool")?;
-    let display_name = manifest
-        .display_name
-        .clone()
-        .unwrap_or_else(|| format!("{name} tool"));
-    Ok(ToolPackage {
-        name: name.to_string(),
-        display_name,
-        wasm_path,
-        config_template_path,
-        manifest,
-    })
-}
-
-fn discover_tool_packages(layout: &RuntimeLayout) -> Vec<Result<ToolPackage, String>> {
-    discover_package_dir_names(tool_source_dirs(layout))
-        .into_iter()
-        .map(|name| locate_tool_package(layout, &name.replace('-', "_")))
-        .collect()
-}
-
-fn installed_tool_names(layout: &RuntimeLayout) -> Result<Vec<String>, String> {
-    let mut names = crate::tools::wasm::discover(layout)
-        .map_err(|err| err.to_string())?
-        .into_iter()
-        .map(|tool| tool.name)
-        .collect::<Vec<_>>();
-    names.sort();
-    names.dedup();
-    Ok(names)
-}
-
-fn tool_source_dirs(layout: &RuntimeLayout) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(path) = std::env::var("WARDEN_TOOLS_SRC") {
-        dirs.push(PathBuf::from(path));
-    }
-    dirs.push(layout.root().join("tool-store"));
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    dirs.push(manifest_dir.join("tools-src"));
-    dirs
-}
-
-fn locate_wasm(source_dir: &Path, dir_name: &str) -> Result<PathBuf, String> {
-    let flat = source_dir.join(format!("{dir_name}.wasm"));
-    if flat.exists() {
-        return Ok(flat);
-    }
-    let crate_name = dir_name.replace('-', "_");
-    let built = source_dir
-        .join("target")
-        .join("wasm32-wasip2")
-        .join("release")
-        .join(format!("{crate_name}.wasm"));
-    if built.exists() {
-        return Ok(built);
-    }
-    Err(format!(
-        "tool '{dir_name}' has no built WASM artifact in {}",
-        source_dir.display()
-    ))
-}
-
-fn required_secrets(package: &ToolPackage) -> Vec<SetupSecret> {
-    package.manifest.secrets.clone()
-}
-
-fn required_config(package: &ToolPackage) -> Vec<SetupConfig> {
-    package.manifest.config.clone()
 }
 
 fn secret_prompt(package: &ToolPackage, secret: &SetupSecret) -> String {
@@ -574,31 +452,6 @@ fn secret_prompt(package: &ToolPackage, secret: &SetupSecret) -> String {
     prompt
 }
 
-fn install_package(
-    layout: &RuntimeLayout,
-    package: &ToolPackage,
-    config_values: &BTreeMap<String, serde_json::Value>,
-) -> Result<WasmToolManifest, String> {
-    let (wasm_dst, config_dst, config_json) = write_package_artifacts(
-        "tool",
-        &layout.tools_dir(),
-        &package.name,
-        &package.wasm_path,
-        &package.config_template_path,
-        config_values,
-        true,
-    )?;
-    let parsed: WasmToolConfig =
-        serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
-    Ok(WasmToolManifest {
-        name: package.name.clone(),
-        wasm_path: wasm_dst,
-        config_path: config_dst,
-        config_json,
-        config: parsed,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,5 +459,33 @@ mod tests {
     #[test]
     fn normalizes_hyphenated_tool_name() {
         assert_eq!(normalize_tool_name("web-search").unwrap(), "web_search");
+    }
+
+    #[test]
+    fn setup_automation_is_scoped_to_starting_conversation() {
+        let conversation = ConversationKey {
+            channel: "telegram".to_string(),
+            chat_id: "chat-1".to_string(),
+            thread_id: Some("thread-1".to_string()),
+        };
+
+        let automation = InstallToolTool::automation("web_search", &conversation);
+
+        let Trigger::MessageIn {
+            sender,
+            conversation: trigger_conversation,
+        } = automation.trigger
+        else {
+            panic!("expected message_in trigger");
+        };
+        assert_eq!(sender, Some(Sender::User));
+        assert_eq!(trigger_conversation, Some(conversation));
+        let AutomationEffect::Tool { tool, args } = automation.effect else {
+            panic!("expected tool effect");
+        };
+        assert_eq!(tool, "setup_tool");
+        assert_eq!(args["name"], "web_search");
+        assert_eq!(args["message"], "{{event.text}}");
+        assert_eq!(args["message_id"], "{{event.message_id}}");
     }
 }
