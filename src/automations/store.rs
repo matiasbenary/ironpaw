@@ -163,7 +163,11 @@ mod tests {
             trigger,
             effect: AutomationEffect::Tool {
                 tool: "send_message".to_string(),
-                args: serde_json::json!({ "content": "hi" }),
+                args: serde_json::json!({
+                    "channel": "tui",
+                    "chat_id": "c1",
+                    "content": "hi",
+                }),
             },
         }
     }

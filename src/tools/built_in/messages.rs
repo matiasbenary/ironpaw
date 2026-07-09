@@ -34,22 +34,28 @@ impl SendMessageTool {
             .transpose()?
             .into_iter()
             .collect();
-        let channel = input
-            .channel
-            .filter(|channel| !channel.trim().is_empty())
-            .ok_or_else(|| "channel is required".to_string())?;
+        if input.channel.trim().is_empty() {
+            return Err("channel must not be empty".to_string());
+        }
+        if input.chat_id.trim().is_empty() {
+            return Err("chat_id must not be empty".to_string());
+        }
         let message = Message::Assistant {
             text: Some(input.content.unwrap_or_default()),
             attachments,
             tool_calls: Vec::new(),
         };
         self.bus.publish(Event::MessageOut {
-            channel: channel.clone(),
-            chat_id: input.chat_id,
+            channel: input.channel.clone(),
+            chat_id: Some(input.chat_id.clone()),
             thread_id: input.thread_id,
             message,
         });
-        Ok(serde_json::json!({ "ok": true, "channel": channel }))
+        Ok(serde_json::json!({
+            "ok": true,
+            "channel": input.channel,
+            "chat_id": input.chat_id,
+        }))
     }
 }
 
@@ -72,12 +78,11 @@ impl InternalTool for SendMessageTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &ExecutionContext,
+        _ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<(), String> {
-        let mut input: SendMessageToolInput =
+        let input: SendMessageToolInput =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
-        input.fill_current_destination(ctx);
         let output = SendMessageTool::execute(self, input)?;
         responder.respond(output)?;
         Ok(())
@@ -87,11 +92,8 @@ impl InternalTool for SendMessageTool {
 #[derive(schemars::JsonSchema, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendMessageToolInput {
-    #[serde(default)]
-    #[schemars(
-        description = "Optional channel to send through, for example telegram or tui. If omitted, Warden replies in the current conversation. If provided without chat_id, that channel's default destination is used."
-    )]
-    pub channel: Option<String>,
+    /// Channel to send through, for example telegram or tui.
+    pub channel: String,
     #[serde(default)]
     #[schemars(
         description = "ID of a generated file to attach. Use this alone when delivering an image from image_generation."
@@ -102,35 +104,11 @@ pub struct SendMessageToolInput {
         description = "Optional message text to send. Omit this when sending only a generated file."
     )]
     pub content: Option<String>,
-    #[serde(default)]
-    #[schemars(
-        description = "Optional chat id. If omitted for an explicit channel, Warden uses that channel's default destination."
-    )]
-    pub chat_id: Option<String>,
+    /// Destination chat id within the channel.
+    pub chat_id: String,
     #[serde(default)]
     #[schemars(description = "Optional channel thread/topic id.")]
     pub thread_id: Option<String>,
-}
-
-impl SendMessageToolInput {
-    /// When the model names no channel, reply in the conversation the
-    /// current run was triggered from.
-    fn fill_current_destination(&mut self, ctx: &ExecutionContext) {
-        if self.channel.is_some() {
-            return;
-        }
-        let conversation = match &ctx.invoked_by {
-            InvocationScope::Conversation(conversation) => conversation,
-            InvocationScope::ScheduledAutomation { .. } => return,
-        };
-        self.channel = Some(conversation.channel.clone());
-        if self.chat_id.is_none() {
-            self.chat_id = Some(conversation.chat_id.clone());
-        }
-        if self.thread_id.is_none() {
-            self.thread_id = conversation.thread_id.clone();
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -244,82 +222,21 @@ impl DeleteMessageToolInput {
 mod tests {
     use super::*;
 
-    fn input(args: serde_json::Value) -> SendMessageToolInput {
-        serde_json::from_value(args).expect("valid input")
-    }
-
-    fn tui_context() -> ExecutionContext {
-        ExecutionContext {
-            invoked_by: InvocationScope::Conversation(ConversationKey {
-                channel: "telegram".to_string(),
-                chat_id: "123".to_string(),
-                thread_id: Some("456".to_string()),
-            }),
-            depth: 0,
-        }
-    }
-
     #[test]
-    fn explicit_channel_is_left_untouched() {
-        let mut input = input(serde_json::json!({
-            "channel": "telegram",
-            "content": "hi"
-        }));
+    fn send_message_requires_explicit_destination() {
+        let definition =
+            SendMessageTool::new(Bus::new(1), |_| Err("unused".to_string())).tool_definition();
+        let required = definition.parameters["required"].as_array().unwrap();
 
-        input.fill_current_destination(&ExecutionContext {
-            invoked_by: InvocationScope::Conversation(ConversationKey {
-                channel: "tui".to_string(),
-                chat_id: "http://127.0.0.1:60684".to_string(),
-                thread_id: None,
-            }),
-            depth: 0,
-        });
-
-        assert_eq!(input.channel.as_deref(), Some("telegram"));
-        assert!(input.chat_id.is_none());
-        assert!(input.thread_id.is_none());
-    }
-
-    #[test]
-    fn omitted_channel_defaults_to_current_conversation() {
-        let mut input = input(serde_json::json!({ "content": "hi" }));
-
-        input.fill_current_destination(&tui_context());
-
-        assert_eq!(input.channel.as_deref(), Some("telegram"));
-        assert_eq!(input.chat_id.as_deref(), Some("123"));
-        assert_eq!(input.thread_id.as_deref(), Some("456"));
-    }
-
-    #[test]
-    fn scheduled_automation_context_fills_nothing() {
-        let mut input = input(serde_json::json!({ "content": "hi" }));
-
-        input.fill_current_destination(&ExecutionContext {
-            invoked_by: InvocationScope::ScheduledAutomation {
-                automation_id: "test".to_string(),
-            },
-            depth: 0,
-        });
-
-        assert!(input.channel.is_none());
-        assert!(input.chat_id.is_none());
-    }
-
-    #[test]
-    fn send_message_requires_channel_after_context_defaults() {
-        let bus = Bus::new(16);
-        let tool = SendMessageTool::new(bus, |_| Err("unexpected attachment".to_string()));
-
-        let result = tool.execute(SendMessageToolInput {
-            channel: None,
-            file_id: None,
-            content: Some("hi".to_string()),
-            chat_id: None,
-            thread_id: None,
-        });
-
-        assert_eq!(result.err().as_deref(), Some("channel is required"));
+        assert!(required.contains(&serde_json::json!("channel")));
+        assert!(required.contains(&serde_json::json!("chat_id")));
+        assert!(
+            serde_json::from_value::<SendMessageToolInput>(serde_json::json!({
+                "channel": "telegram",
+                "content": "hi"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -329,10 +246,10 @@ mod tests {
         let tool = SendMessageTool::new(bus, |_| Err("unexpected attachment".to_string()));
 
         tool.execute(SendMessageToolInput {
-            channel: Some("telegram".to_string()),
+            channel: "telegram".to_string(),
             file_id: None,
             content: Some("hi".to_string()),
-            chat_id: Some("chat-1".to_string()),
+            chat_id: "chat-1".to_string(),
             thread_id: Some("thread-1".to_string()),
         })
         .unwrap();

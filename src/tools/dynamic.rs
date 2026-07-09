@@ -24,10 +24,9 @@ pub struct CreateToolParams {
     /// JavaScript source implementing the tool. The sandbox has no network
     /// or filesystem; existing tools are exposed as synchronous global
     /// functions named after the tool, e.g. `web_fetch({ url })` or
-    /// `send_message({ content })`. The tool's arguments are available as the
+    /// `send_message({ channel, chat_id, content })`. The tool's arguments are available as the
     /// global `args`, and the script must use `return` to produce the tool
-    /// result. If the tool is meant to notify the user from a scheduled
-    /// automation, call `send_message` with explicit channel and chat_id.
+    /// result. `send_message` always requires an explicit channel and chat_id.
     /// Example: `const r = web_fetch({ url: "https://example.com" });
     /// return { length: r.length };`
     pub script: String,

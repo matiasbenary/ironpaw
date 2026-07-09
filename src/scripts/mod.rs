@@ -192,7 +192,7 @@ mod tests {
         runtime
             .run(
                 r#"
-                const r = send_message({ channel: "telegram", content: "hi from script" });
+                const r = send_message({ channel: "telegram", chat_id: "chat-1", content: "hi from script" });
                 if (!r.ok) { throw new Error("send failed"); }
                 "#
                 .to_string(),

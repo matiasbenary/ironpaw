@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use crate::{
     automations::Automations,
+    bus::InvocationScope,
     tools::{self, ExecutionContext, InternalTools, ToolResponder},
 };
 
@@ -37,10 +38,18 @@ pub(super) async fn send(
     content: &str,
     ctx: &ExecutionContext,
 ) -> Result<(), String> {
+    let InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
+        return Err("setup messages require a conversation".to_string());
+    };
     let result = tools::run_tool(
         tools,
         "send_message",
-        serde_json::json!({ "content": content }),
+        serde_json::json!({
+            "channel": conversation.channel,
+            "chat_id": conversation.chat_id,
+            "thread_id": conversation.thread_id,
+            "content": content,
+        }),
         ctx,
     )
     .await;

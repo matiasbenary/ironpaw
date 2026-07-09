@@ -505,6 +505,7 @@ mod tests {
             name: "send_message".to_string(),
             arguments: serde_json::json!({
                 "channel": "telegram",
+                "chat_id": "chat-1",
                 "content": "hi",
             })
             .to_string(),
@@ -551,7 +552,7 @@ mod tests {
             panic!("expected MessageOut");
         };
         assert_eq!(channel, "telegram");
-        assert!(chat_id.is_none());
+        assert_eq!(chat_id.as_deref(), Some("chat-1"));
         assert!(thread_id.is_none());
         let Message::Assistant { text, .. } = message else {
             panic!("expected assistant message");

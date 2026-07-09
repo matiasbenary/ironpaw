@@ -680,10 +680,8 @@ async fn hacker_news_automation() {
 
     let message = user_message(
         "Create a tool that fetches the titles of the current top 5 Hacker News \
-         stories (GET https://hacker-news.firebaseio.com/v0/topstories.json for \
-         the ids, then https://hacker-news.firebaseio.com/v0/item/<id>.json for \
-         each title) and sends them to me in a single message that starts with \
-         'HN TOP 5'. Then schedule that tool to run once, 5 seconds from now.",
+         stories and sends them to me in a single message that starts with \
+         'HN TOP 5'. Then schedule that tool to run once, 10 seconds from now.",
     );
 
     publish_user_message(

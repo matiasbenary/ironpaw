@@ -377,7 +377,7 @@ The script's last expression becomes the tool result.
 
 ## Example Flow: TUI Asks For A Telegram Message
 
-This example assumes Telegram has already received at least one valid owner message, so its `default_conversation` has been stored in `telegram.config.json`.
+This example assumes the Telegram chat id is known.
 
 1. The user sends a message in the TUI:
 
@@ -430,23 +430,23 @@ This example assumes Telegram has already received at least one valid owner mess
      "name": "send_message",
      "arguments": {
        "channel": "telegram",
+       "chat_id": "telegram-chat-id",
        "content": "hi"
      }
    }
    ```
 
-9. The agent executes the `send_message` tool. Because no explicit Telegram `chat_id` is provided, the tool publishes:
+9. The agent executes the `send_message` tool with an explicit destination and publishes:
 
    ```text
    Event::MessageOut {
        channel: "telegram",
-       recipient: User,
-       conversation: None,
+       chat_id: Some("telegram-chat-id"),
        message: Message::Assistant { ... }
    }
    ```
 
-10. The channel bridge receives `MessageOut`, finds the Telegram channel, and resolves `conversation` from Telegram's stored `default_conversation`.
+10. The channel bridge receives `MessageOut` and routes it to the explicit Telegram chat.
 
 11. The bridge calls:
 
