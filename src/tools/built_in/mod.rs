@@ -4,6 +4,7 @@ pub mod image_generation;
 pub mod inspect_file;
 pub mod messages;
 pub mod raw_inference;
+pub mod request_user_input;
 pub mod search_history;
 pub mod setup;
 pub mod todo;

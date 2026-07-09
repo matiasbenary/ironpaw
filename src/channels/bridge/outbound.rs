@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use serde::Serialize;
 
 use crate::{
-    bus::{Bus, ChannelAction, ConversationKey, Event, MessageRef},
+    bus::{Bus, ChannelAction, ConversationKey, Event, MessageRef, UserInputRequest},
     channels::bridge::{ChannelRegistry, LoadedChannel, history::append_channel_history},
     history::History,
     message::{Attachment, Message, ToolCall},
@@ -104,6 +104,28 @@ pub(super) async fn message_warden_to_channel(
                 )
                 .await;
             }
+            Ok(Event::UserInputRequested {
+                conversation,
+                request,
+            }) => {
+                let channel = conversation.channel.clone();
+                let Some(channel_runtime) = registry.by_name(&channel).await else {
+                    eprintln!("bridge: no loaded channel named {channel} for user input request");
+                    continue;
+                };
+                let channel_state = channel_runtime.state.lock().await.clone();
+                let event = Event::UserInputRequested {
+                    conversation,
+                    request,
+                };
+                let _ = dispatch_channel_event(
+                    &channel_runtime,
+                    &channel,
+                    &channel_state.config_json,
+                    &event,
+                )
+                .await;
+            }
             Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
@@ -126,6 +148,11 @@ enum ChannelOutboundEvent {
         channel: String,
         conversation: ConversationKey,
         action: ChannelAction,
+    },
+    UserInputRequested {
+        channel: String,
+        conversation: ConversationKey,
+        request: UserInputRequest,
     },
 }
 
@@ -254,6 +281,14 @@ fn channel_outbound_event_json(event: &Event) -> Result<String, String> {
             conversation: conversation.clone(),
             action: action.clone(),
         },
+        Event::UserInputRequested {
+            conversation,
+            request,
+        } => ChannelOutboundEvent::UserInputRequested {
+            channel: conversation.channel.clone(),
+            conversation: conversation.clone(),
+            request: request.clone(),
+        },
         _ => return Err("event is not deliverable to a channel".to_string()),
     };
     serde_json::to_string(&event).map_err(|err| err.to_string())
@@ -353,6 +388,40 @@ mod tests {
         assert_eq!(payload["ChannelAction"]["conversation"]["chat_id"], "chat");
         assert_eq!(payload["ChannelAction"]["conversation"]["thread_id"], "7");
         assert_eq!(payload["ChannelAction"]["action"], "typing");
+    }
+
+    #[test]
+    fn user_input_request_serializes_for_outbound_channel() {
+        let event = Event::UserInputRequested {
+            conversation: ConversationKey {
+                channel: "telegram".to_string(),
+                chat_id: "chat".to_string(),
+                thread_id: None,
+            },
+            request: UserInputRequest {
+                question: "Choose".to_string(),
+                options: vec![crate::bus::UserInputOption {
+                    label: "First".to_string(),
+                    value: "first".to_string(),
+                }],
+            },
+        };
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&channel_outbound_event_json(&event).unwrap()).unwrap();
+
+        assert_eq!(
+            payload["UserInputRequested"]["conversation"]["chat_id"],
+            "chat"
+        );
+        assert_eq!(
+            payload["UserInputRequested"]["request"]["question"],
+            "Choose"
+        );
+        assert_eq!(
+            payload["UserInputRequested"]["request"]["options"][0]["value"],
+            "first"
+        );
     }
 
     fn unique_test_files_dir() -> PathBuf {

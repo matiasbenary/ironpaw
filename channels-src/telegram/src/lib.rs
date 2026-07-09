@@ -30,7 +30,7 @@ impl Guest for TelegramChannel {
         );
         let mut body = serde_json::json!({
             "url": webhook_url,
-            "allowed_updates": ["message", "edited_message"],
+            "allowed_updates": ["message", "edited_message", "callback_query"],
         });
         if config.auth.r#type == "header_secret" {
             if let Some(value) = config.auth.value {
@@ -53,6 +53,9 @@ impl Guest for TelegramChannel {
             serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
         let update: TelegramUpdate =
             serde_json::from_str(&body_json).map_err(|err| err.to_string())?;
+        if let Some(callback) = update.callback_query {
+            return handle_callback_query(callback, &config);
+        }
         let Some(message) = update.message.or(update.edited_message) else {
             return Ok(());
         };
@@ -92,7 +95,10 @@ impl Guest for TelegramChannel {
         channel_host::emit_message(&event)
     }
 
-    fn on_outbound_event(event_json: String, config_json: String) -> Result<Option<String>, String> {
+    fn on_outbound_event(
+        event_json: String,
+        config_json: String,
+    ) -> Result<Option<String>, String> {
         let config: RuntimeConfig =
             serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
         let Some(telegram) = config.telegram else {
@@ -124,6 +130,14 @@ impl Guest for TelegramChannel {
             } => {
                 send_chat_action(&bot_token_placeholder, &conversation, action)?;
                 return Ok(Some(String::new()));
+            }
+            OutboundEvent::UserInputRequested {
+                conversation,
+                request,
+            } => {
+                let message_id =
+                    send_user_input_request(&bot_token_placeholder, &conversation, &request)?;
+                return Ok(Some(message_id.unwrap_or_default()));
             }
         };
         let text = display_message(&message);
@@ -172,6 +186,10 @@ enum OutboundEvent {
     ChannelAction {
         conversation: ConversationKey,
         action: ChannelAction,
+    },
+    UserInputRequested {
+        conversation: ConversationKey,
+        request: UserInputRequest,
     },
 }
 
@@ -260,6 +278,15 @@ struct MessageRef {
 struct TelegramUpdate {
     message: Option<TelegramMessage>,
     edited_message: Option<TelegramMessage>,
+    callback_query: Option<TelegramCallbackQuery>,
+}
+
+#[derive(Deserialize)]
+struct TelegramCallbackQuery {
+    id: String,
+    from: TelegramUser,
+    message: Option<TelegramMessage>,
+    data: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -342,6 +369,18 @@ struct TelegramUser {
     is_bot: bool,
 }
 
+#[derive(Deserialize)]
+struct UserInputRequest {
+    question: String,
+    options: Vec<UserInputOption>,
+}
+
+#[derive(Deserialize)]
+struct UserInputOption {
+    label: String,
+    value: String,
+}
+
 fn display_message(message: &AssistantMessage) -> String {
     if let Some(content) = &message.text {
         return content.clone();
@@ -363,6 +402,87 @@ fn extract_message_id(response: &str) -> Option<String> {
     value["result"]["message_id"]
         .as_i64()
         .map(|id| id.to_string())
+}
+
+fn handle_callback_query(
+    callback: TelegramCallbackQuery,
+    config: &RuntimeConfig,
+) -> Result<(), String> {
+    let Some(telegram) = &config.telegram else {
+        return Err("telegram config is required for callback queries".to_string());
+    };
+    let bot_token_placeholder = secret_placeholder(&telegram.bot_token_secret);
+    channel_host::http_request(
+        "POST",
+        &format!("https://api.telegram.org/bot{bot_token_placeholder}/answerCallbackQuery"),
+        &serde_json::json!({ "callback_query_id": callback.id }).to_string(),
+    )?;
+
+    if callback.from.is_bot {
+        return Ok(());
+    }
+    let Some(message) = callback.message else {
+        return Ok(());
+    };
+    let Some(answer) = callback.data.filter(|answer| !answer.is_empty()) else {
+        return Ok(());
+    };
+    let event = serde_json::json!({
+        "channel": "telegram",
+        "channel_user_id": callback.from.id.to_string(),
+        "conversation": {
+            "channel": "telegram",
+            "chat_id": message.chat.id.to_string(),
+            "thread_id": message.message_thread_id.map(|id| id.to_string())
+        },
+        "message_id": callback.id,
+        "content": [{
+            "type": "text",
+            "text": answer
+        }],
+    })
+    .to_string();
+    channel_host::emit_message(&event)
+}
+
+fn send_user_input_request(
+    bot_token_placeholder: &str,
+    conversation: &ConversationKey,
+    request: &UserInputRequest,
+) -> Result<Option<String>, String> {
+    let body = user_input_request_body(conversation, request)?;
+    let response = channel_host::http_request(
+        "POST",
+        &format!("https://api.telegram.org/bot{bot_token_placeholder}/sendMessage"),
+        &body.to_string(),
+    )?;
+    Ok(extract_message_id(&response))
+}
+
+fn user_input_request_body(
+    conversation: &ConversationKey,
+    request: &UserInputRequest,
+) -> Result<serde_json::Value, String> {
+    let inline_keyboard: Vec<Vec<serde_json::Value>> = request
+        .options
+        .iter()
+        .map(|option| {
+            vec![serde_json::json!({
+                "text": option.label,
+                "callback_data": option.value,
+            })]
+        })
+        .collect();
+    let mut body = serde_json::json!({
+        "chat_id": conversation.chat_id,
+        "text": request.question,
+        "reply_markup": { "inline_keyboard": inline_keyboard },
+    });
+    if let Some(thread_id) = &conversation.thread_id {
+        let message_thread_id = thread_id.parse::<i64>().map_err(|err| err.to_string())?;
+        body["message_thread_id"] = serde_json::json!(message_thread_id);
+    }
+    Ok(body)
 }
 
 fn send_image(
@@ -417,11 +537,11 @@ fn send_image(
     Ok(extract_message_id(&response))
 }
 
-fn delete_message(
-    bot_token_placeholder: &str,
-    message: &MessageRef,
-) -> Result<(), String> {
-    let message_id = message.message_id.parse::<i64>().map_err(|err| err.to_string())?;
+fn delete_message(bot_token_placeholder: &str, message: &MessageRef) -> Result<(), String> {
+    let message_id = message
+        .message_id
+        .parse::<i64>()
+        .map_err(|err| err.to_string())?;
     let body = serde_json::json!({
         "chat_id": message.conversation.chat_id,
         "message_id": message_id,
@@ -545,6 +665,37 @@ fn default_filename(mime_type: &str) -> &str {
         "image/gif" => "telegram-image.gif",
         "image/webp" => "telegram-image.webp",
         _ => "telegram-file",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_input_request_uses_inline_callback_buttons() {
+        let body = user_input_request_body(
+            &ConversationKey {
+                chat_id: "42".to_string(),
+                thread_id: Some("7".to_string()),
+            },
+            &UserInputRequest {
+                question: "Choose a database".to_string(),
+                options: vec![UserInputOption {
+                    label: "PostgreSQL".to_string(),
+                    value: "postgres".to_string(),
+                }],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(body["chat_id"], "42");
+        assert_eq!(body["message_thread_id"], 7);
+        assert_eq!(body["text"], "Choose a database");
+        assert_eq!(
+            body["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
+            "postgres"
+        );
     }
 }
 

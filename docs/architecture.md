@@ -72,6 +72,7 @@ Implemented event types are:
 - `MessageOut { channel, recipient, conversation, message }`
 - `DeleteMessage { channel, message }`
 - `ChannelAction { channel, recipient, conversation, action }`
+- `UserInputRequested { conversation, request }`
 - `AgentRequest { request_id, destination, request }`
 - `AgentResponse { request_id, response }`
 - `Automation { id, action }`
@@ -326,6 +327,7 @@ Implemented internal tools include:
 - `web_fetch`: fetches a public URL with no credentials.
 - `send_message`: publishes a message to a user through a channel.
 - `delete_message`: deletes a channel message when the channel supports it.
+- `request_user_input`: asks the current user to choose from specific answers. Telegram renders inline callback buttons; the selected value returns as a normal inbound user message.
 - `call_agent`: runs a sub-agent and returns its final answer as a tool result.
 - `create_tool`: writes and registers a new dynamic tool.
 - `create_automation`, `delete_automation`, `inspect_automation`, `list_automations`: manage persisted automations.

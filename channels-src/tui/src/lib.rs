@@ -59,7 +59,10 @@ impl Guest for TuiChannel {
         channel_host::emit_message(&event)
     }
 
-    fn on_outbound_event(event_json: String, _config_json: String) -> Result<Option<String>, String> {
+    fn on_outbound_event(
+        event_json: String,
+        _config_json: String,
+    ) -> Result<Option<String>, String> {
         let event: OutboundEvent =
             serde_json::from_str(&event_json).map_err(|err| err.to_string())?;
         match event {
@@ -74,8 +77,7 @@ impl Guest for TuiChannel {
                     return Ok(None);
                 };
                 let id = next_message_id().to_string();
-                let mut envelope =
-                    serde_json::to_value(&message).map_err(|err| err.to_string())?;
+                let mut envelope = serde_json::to_value(&message).map_err(|err| err.to_string())?;
                 envelope["kind"] = serde_json::json!("message");
                 envelope["id"] = serde_json::json!(id);
                 channel_host::http_request("POST", &conversation.chat_id, &envelope.to_string())?;
@@ -94,6 +96,26 @@ impl Guest for TuiChannel {
                 Ok(Some(String::new()))
             }
             OutboundEvent::ChannelAction { .. } => Ok(None),
+            OutboundEvent::UserInputRequested {
+                conversation,
+                request,
+            } => {
+                let id = next_message_id().to_string();
+                let options = request
+                    .options
+                    .iter()
+                    .map(|option| format!("- {} (`{}`)", option.label, option.value))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let envelope = serde_json::json!({
+                    "kind": "message",
+                    "id": id,
+                    "content": format!("{}\n\n{}", request.question, options),
+                    "tool_calls": [],
+                });
+                channel_host::http_request("POST", &conversation.chat_id, &envelope.to_string())?;
+                Ok(Some(id))
+            }
         }
     }
 }
@@ -111,6 +133,10 @@ enum OutboundEvent {
     ChannelAction {
         conversation: ConversationKey,
         action: String,
+    },
+    UserInputRequested {
+        conversation: ConversationKey,
+        request: UserInputRequest,
     },
 }
 
@@ -151,6 +177,18 @@ struct ConversationKey {
 struct MessageRef {
     conversation: ConversationKey,
     message_id: String,
+}
+
+#[derive(Deserialize)]
+struct UserInputRequest {
+    question: String,
+    options: Vec<UserInputOption>,
+}
+
+#[derive(Deserialize)]
+struct UserInputOption {
+    label: String,
+    value: String,
 }
 
 fn serialize_content<S>(content: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>

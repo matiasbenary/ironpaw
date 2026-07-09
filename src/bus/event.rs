@@ -73,6 +73,18 @@ pub enum ChannelAction {
     Typing,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserInputRequest {
+    pub question: String,
+    pub options: Vec<UserInputOption>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserInputOption {
+    pub label: String,
+    pub value: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AutomationSpec {
     pub name: String,
@@ -129,6 +141,10 @@ pub enum Event {
     ChannelAction {
         conversation: ConversationKey,
         action: ChannelAction,
+    },
+    UserInputRequested {
+        conversation: ConversationKey,
+        request: UserInputRequest,
     },
     Automation {
         id: String,

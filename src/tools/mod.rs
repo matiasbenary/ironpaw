@@ -17,7 +17,7 @@ use crate::{
 pub use crate::bus::{ExecutionContext, InvocationScope};
 pub use built_in::{
     automation, download_file, image_generation, inspect_file, messages, raw_inference,
-    search_history, setup, todo, unlock, web,
+    request_user_input, search_history, setup, todo, unlock, web,
 };
 pub use context::ToolResponder;
 pub use handler::ToolHandler;
@@ -31,6 +31,7 @@ use self::built_in::{
     inspect_file::InspectFileTool,
     messages::{DeleteMessageTool, SendMessageTool},
     raw_inference::RawInferenceTool,
+    request_user_input::RequestUserInputTool,
     search_history::SearchHistoryTool,
     setup::ListChannelsTool,
     todo::TodoTool,
@@ -146,6 +147,7 @@ impl InternalTools {
             tool(raw_inference.clone()),
             Arc::clone(&send_message) as Arc<dyn InternalTool>,
             Arc::clone(&delete_message) as Arc<dyn InternalTool>,
+            tool(RequestUserInputTool::new(bus.clone())),
             tool(ImageGenerationTool::new(
                 files_dir.clone(),
                 secrets.tools.clone(),
