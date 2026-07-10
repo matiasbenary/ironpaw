@@ -15,7 +15,9 @@ pub struct CreateAutomationParams {
     /// '2026-06-11T09:00:00+02:00'. Exactly one of `at` or `cron` must be set.
     #[serde(default)]
     pub at: Option<String>,
-    /// Recurring schedule as a standard 5-field cron expression.
+    /// Recurring schedule as a 5-field cron expression, or a 6/7-field
+    /// expression with seconds. For example, `*/5 * * * * * *` runs every
+    /// five seconds.
     #[serde(default)]
     pub cron: Option<String>,
     /// Name of the tool to run when the automation fires.

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 use std::{path::PathBuf, sync::Arc};
 
 use tokio::time::timeout;
@@ -6,7 +6,7 @@ use warden::{
     agent::Agent,
     automations::{Automations, SqliteAutomations},
     bus::{Bus, ConversationKey, Event, Sender},
-    history::{History, HistoryEntry, MessageMetadata, SqliteHistory},
+    history::{History, HistoryEntry, HistoryScope, MessageMetadata, SqliteHistory},
     message::{Attachment, Message},
     tools::{
         InternalTools, ToolHandler,
@@ -18,6 +18,18 @@ use warden::{
 };
 
 fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, Arc<dyn History>) {
+    let (task, history, _) = start_warden_with_automations(bus, files_dir);
+    (task, history)
+}
+
+fn start_warden_with_automations(
+    bus: &Bus,
+    files_dir: PathBuf,
+) -> (
+    tokio::task::JoinHandle<()>,
+    Arc<dyn History>,
+    Arc<Automations>,
+) {
     reset_raw_inference_log();
     let history = temp_history();
     let layout = warden::config::RuntimeLayout::from_root(
@@ -85,7 +97,7 @@ fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, 
         .add_transient(Automations::handle_tool_result())
         .expect("tool result automation registers");
     let _tool_handler_task = tool_handler.start();
-    (automations.start(), history)
+    (automations.start(), history, automations)
 }
 
 fn reset_raw_inference_log() {
@@ -658,6 +670,183 @@ async fn scheduled_message_at_wall_clock_time() {
         result.is_ok(),
         "timed out: the scheduled KIWI message never arrived within 60 s"
     );
+}
+
+/// Verify the agent can create a recurring task that remembers prior runs and deletes itself.
+///
+/// Run with:
+///   cargo test --test live_tests -- --ignored --nocapture --test-threads=1 lottery_automation
+#[tokio::test]
+#[ignore = "live: makes real NEAR AI calls, requires NEAR_API_KEY env var"]
+async fn lottery_automation() {
+    let _ = dotenvy::dotenv();
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+
+    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+
+    let bus = Bus::new(32);
+    let (_task, history, automations) = start_warden_with_automations(&bus, files_dir);
+    let existing = automations
+        .list()
+        .into_iter()
+        .map(|automation| automation.name)
+        .collect::<HashSet<_>>();
+    let conversation = ConversationKey {
+        channel: "tui".to_string(),
+        chat_id: "live-lottery".to_string(),
+        thread_id: None,
+    };
+    publish_user_message(
+        &bus,
+        history.as_ref(),
+        conversation,
+        user_message(
+            "I want to play the lotery, send me a lucky number every 5 seconds, do not send me the same number twice, stop after 3 numbers have been sent",
+        ),
+    );
+
+    let automation = timeout(Duration::from_secs(60), async {
+        loop {
+            if let Some(automation) = automations
+                .list()
+                .into_iter()
+                .find(|automation| !existing.contains(&automation.name))
+            {
+                break automation;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("agent did not create the lottery automation");
+    assert_eq!(automation.trigger["type"], "cron");
+    let cron = automation.trigger["expression"]
+        .as_str()
+        .expect("cron expression");
+    assert_eq!(cron.split_whitespace().next(), Some("*/5"));
+    assert!(cron.split_whitespace().count() >= 6);
+    let automation_name = automation.name;
+
+    timeout(Duration::from_secs(120), async {
+        while automations.contains(&automation_name) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("automation did not delete itself");
+
+    let entries = history
+        .load_scope(&HistoryScope::Automation(automation_name))
+        .expect("load automation history");
+    let numbers = entries
+        .iter()
+        .filter_map(|entry| {
+            let Message::Assistant { tool_calls, .. } = &entry.message else {
+                return None;
+            };
+            tool_calls.iter().find_map(|call| {
+                (call.name == "send_message")
+                    .then(|| serde_json::from_str::<serde_json::Value>(&call.arguments).ok())
+                    .flatten()
+                    .and_then(|args| args["content"].as_str().map(str::to_string))
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(numbers.len(), 3);
+    assert_eq!(numbers.iter().collect::<HashSet<_>>().len(), 3);
+    let invocations = entries
+        .iter()
+        .filter(|entry| matches!(entry.message, Message::User { .. }))
+        .count();
+    assert_eq!(invocations, 3);
+}
+
+/// Observe how the model translates the original daily album request into an automation.
+///
+/// Run with:
+///   cargo test --test live_tests -- --ignored --nocapture --test-threads=1 album_recommendation_automation
+#[tokio::test]
+#[ignore = "live: observational test that makes real NEAR AI calls"]
+async fn album_recommendation_automation() {
+    let _ = dotenvy::dotenv();
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+
+    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+
+    let bus = Bus::new(32);
+    let mut events = bus.subscribe();
+    let (_task, history, automations) = start_warden_with_automations(&bus, files_dir);
+    let existing = automations
+        .list()
+        .into_iter()
+        .map(|automation| automation.name)
+        .collect::<HashSet<_>>();
+
+    let prompt = r#"I am trying to listing to new bands, the more distant from my usual experience the better. The idea is not to listen to crap, but to move away from the mainstream influx of music we get bombarded with, which sounds all the same. Here are the albums I already listened to:
+
+https://docs.google.com/spreadsheets/d/1bgDum7fxXzIo5bRDJzn7dy33s8bcPZxrf1YF1-jEy1c/edit?usp=sharing
+
+rules:
+- prefer non-english speaking bands
+- bad candidates are obvious bands (e.g. daft punk, the cure, pink floyd)
+
+suggest me one new album to listen every day at 10am, including the band name and album name
+"#;
+
+    publish_user_message(
+        &bus,
+        history.as_ref(),
+        ConversationKey {
+            channel: "tui".to_string(),
+            chat_id: "live-album-recommendation".to_string(),
+            thread_id: None,
+        },
+        user_message(prompt),
+    );
+
+    let generated = timeout(Duration::from_secs(300), async {
+        loop {
+            let generated = automations
+                .list()
+                .into_iter()
+                .filter(|automation| !existing.contains(&automation.name))
+                .collect::<Vec<_>>();
+            if !generated.is_empty() {
+                break generated;
+            }
+            if let Ok(Ok(Event::MessageOut {
+                chat_id,
+                message:
+                    Message::Assistant {
+                        text: Some(text), ..
+                    },
+                ..
+            })) = timeout(Duration::from_millis(100), events.recv()).await
+                && chat_id.as_deref() == Some("live-album-recommendation")
+                && !text.starts_with("calling ")
+            {
+                eprintln!("[live_test] agent response: {text}");
+                break automations
+                    .list()
+                    .into_iter()
+                    .filter(|automation| !existing.contains(&automation.name))
+                    .collect();
+            }
+        }
+    })
+    .await
+    .unwrap_or_default();
+
+    if generated.is_empty() {
+        eprintln!("[live_test] generated album automation: none");
+    } else {
+        eprintln!(
+            "[live_test] generated album automation:\n{}",
+            serde_json::to_string_pretty(&generated).expect("serialize generated automation")
+        );
+    }
 }
 
 /// Verify the full dynamic-tool path: the agent authors a tool that fetches

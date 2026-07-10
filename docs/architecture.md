@@ -240,7 +240,7 @@ Stored automations live in:
 A trigger can be one of:
 
 - `event`: a bus event, e.g. an inbound user message.
-- `cron`: a recurring cron expression, evaluated in local time.
+- `cron`: a recurring cron expression, evaluated in local time. Five-field expressions are accepted, along with 6/7-field expressions for second-level schedules.
 - `at`: one-shot absolute time.
 
 Once a trigger fires, the automation runs a single pre-defined tool call. The tool call can be any registered tool, including internal and dynamic tools.
