@@ -53,12 +53,10 @@ mod tests {
 
         let entries = history.load(&conversation).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].metadata.conversation.channel, "telegram");
-        assert_eq!(entries[0].metadata.conversation.chat_id, "chat");
-        assert_eq!(
-            entries[0].metadata.conversation.thread_id.as_deref(),
-            Some("topic")
-        );
+        let conversation = entries[0].metadata.conversation.as_ref().unwrap();
+        assert_eq!(conversation.channel, "telegram");
+        assert_eq!(conversation.chat_id, "chat");
+        assert_eq!(conversation.thread_id.as_deref(), Some("topic"));
         assert_eq!(
             entries[0].metadata.external_id.as_deref(),
             Some("provider-1")
@@ -84,12 +82,10 @@ mod tests {
 
         let entries = history.load(&conversation).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].metadata.conversation.channel, "telegram");
-        assert_eq!(entries[0].metadata.conversation.chat_id, "chat");
-        assert_eq!(
-            entries[0].metadata.conversation.thread_id.as_deref(),
-            Some("topic")
-        );
+        let conversation = entries[0].metadata.conversation.as_ref().unwrap();
+        assert_eq!(conversation.channel, "telegram");
+        assert_eq!(conversation.chat_id, "chat");
+        assert_eq!(conversation.thread_id.as_deref(), Some("topic"));
         assert_eq!(entries[0].metadata.external_id, None);
         assert_eq!(entries[0].message, message);
     }

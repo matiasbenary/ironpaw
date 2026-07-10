@@ -261,6 +261,8 @@ MessageIn(User, any conversation)
 
 The agent is the bounded tool loop: history + raw inference + tool execution. It does not subscribe to the bus directly. Automations or tools call it through the `call_agent` tool.
 
+Agent runs keep their delivery destination separate from their history scope. A conversation run uses its `ConversationKey` for both, while a scheduled agent task has no implicit delivery destination and uses the automation name as its durable history scope. This lets recurring tasks remember previous runs without pretending that an automation is a channel conversation.
+
 For each run:
 
 1. Build model input from the system preamble, durable conversation history, and the new transient messages.
@@ -278,13 +280,13 @@ When a run has a destination, the agent also publishes typing and progress event
 
 ## History
 
-Warden stores durable conversation history in SQLite:
+Warden stores durable conversation and automation history in SQLite:
 
 ```text
 <runtime-root>/data/history.db
 ```
 
-The history module exposes:
+History is partitioned by an explicit scope: either a `ConversationKey` or an automation name. The history module exposes scoped load, append, and compact operations, along with conversation convenience methods:
 
 - `load(conversation) -> Vec<HistoryEntry>` - load active conversation history.
 - `append(conversation, entries)`
@@ -292,9 +294,11 @@ The history module exposes:
 - `compact(conversation, summary)` - replace active items with a summary while retaining originals for search.
 - `search(query) -> Vec<HistoryEntry>`
 
-Each history entry stores a Warden message plus metadata: Warden id, `ConversationKey`, and optional provider-owned external message id.
+Each history entry stores a Warden message plus metadata: a Warden id, its conversation or automation owner, and an optional provider-owned external message id.
 
-Inbound user messages and outbound channel messages are persisted by the bridge. Tool transcript entries, meaning assistant tool calls and tool results, are persisted by the tool handler. Final assistant text is persisted by the agent when it returns directly to the current conversation.
+Inbound user messages and outbound channel messages are persisted by the bridge. Tool transcript entries, meaning assistant tool calls and tool results, are persisted by the tool handler. Final assistant text is persisted by the agent in the active conversation or automation scope.
+
+Scheduled agent tasks persist their rendered prompt, tool transcript, and final assistant text under the automation's name. On later runs, the agent loads that history before inference. Tool results are bounded before durable storage so a fetched page or document extraction cannot consume the whole future context. Compaction runs before a later inference call, retains the current user request and recent tool transcript, and replaces only older context with an explicitly non-authoritative system summary. Automation history is isolated from other automations and conversations.
 
 ---
 

@@ -619,6 +619,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_handler_persists_automation_tool_transcript() {
+        let bus = Bus::new(16);
+        let registry = Arc::new(ToolRegistry::new());
+        registry.add(Arc::new(FakeTool("fake"))).expect("add");
+        let history = temp_history("warden-tool-handler-automation-history");
+        let handler = ToolHandler::new(bus, registry, history.clone());
+        let automation_id = "daily-album";
+        let ctx = ExecutionContext {
+            invoked_by: InvocationScope::ScheduledAutomation {
+                automation_id: automation_id.to_string(),
+            },
+            depth: 0,
+        };
+
+        handler
+            .execute_tool_call(
+                ToolCall {
+                    id: "call-1".to_string(),
+                    name: "fake".to_string(),
+                    arguments: "{}".to_string(),
+                },
+                serde_json::json!({}),
+                &ctx,
+            )
+            .await
+            .expect("execute tool call");
+
+        let scope = crate::history::HistoryScope::Automation(automation_id.to_string());
+        let entries = history.load_scope(&scope).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.metadata.automation_id.as_deref() == Some(automation_id))
+        );
+        assert!(matches!(entries[0].message, Message::Assistant { .. }));
+        assert!(matches!(entries[1].message, Message::ToolResult { .. }));
+    }
+
+    #[tokio::test]
     async fn tool_handler_persists_bus_tool_transcript() {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());

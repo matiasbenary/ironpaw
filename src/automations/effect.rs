@@ -38,7 +38,16 @@ impl AutomationEffect {
             }
             Self::AgentTask { prompt, tools } => {
                 let prompt = render_text(prompt, event);
-                match agent.run_task(prompt, tools.clone()).await {
+                let automation_id = match &ctx.invoked_by {
+                    InvocationScope::ScheduledAutomation { automation_id } => automation_id.clone(),
+                    InvocationScope::Conversation(_) => {
+                        return serde_json::json!({
+                            "ok": false,
+                            "error": "agent task automation requires an automation invocation"
+                        });
+                    }
+                };
+                match agent.run_task(automation_id, prompt, tools.clone()).await {
                     Ok(result) => serde_json::json!({ "ok": true, "result": result }),
                     Err(err) => serde_json::json!({ "ok": false, "error": err }),
                 }

@@ -7,7 +7,7 @@ use rusqlite::{Connection, params};
 
 use crate::message::Message;
 
-use super::{History, HistoryEntry, MessageMetadata};
+use super::{History, HistoryEntry, HistoryScope, MessageMetadata};
 
 /// SQLite-backed persistent history.
 ///
@@ -115,11 +115,8 @@ fn entry_from_row(item_json: String, metadata_json: String) -> Option<HistoryEnt
 }
 
 impl History for SqliteHistory {
-    fn load(
-        &self,
-        conversation: &crate::bus::ConversationKey,
-    ) -> Result<Vec<HistoryEntry>, String> {
-        let conversation_key = conversation.storage_key();
+    fn load_scope(&self, scope: &HistoryScope) -> Result<Vec<HistoryEntry>, String> {
+        let conversation_key = scope.storage_key();
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
@@ -143,12 +140,8 @@ impl History for SqliteHistory {
         Ok(entries)
     }
 
-    fn append(
-        &self,
-        conversation: &crate::bus::ConversationKey,
-        entries: &[HistoryEntry],
-    ) -> Result<(), String> {
-        let conversation_key = conversation.storage_key();
+    fn append_scope(&self, scope: &HistoryScope, entries: &[HistoryEntry]) -> Result<(), String> {
+        let conversation_key = scope.storage_key();
         let conn = self.conn()?;
         for entry in entries {
             let json = serde_json::to_string(&entry.message).map_err(|err| err.to_string())?;
@@ -208,20 +201,28 @@ impl History for SqliteHistory {
         Ok(())
     }
 
-    fn compact(
+    fn compact_scope(
         &self,
-        conversation: &crate::bus::ConversationKey,
+        scope: &HistoryScope,
         summary: &str,
+        retained: &[HistoryEntry],
     ) -> Result<(), String> {
-        let conversation_key = conversation.storage_key();
+        let conversation_key = scope.storage_key();
         let conn = self.conn()?;
         conn.execute(
             "UPDATE entries SET active = 0 WHERE conversation_key = ?1 AND active = 1",
             params![conversation_key],
         )
         .map_err(|err| err.to_string())?;
-        let summary_item = Message::System(format!("[conversation summary] {summary}"));
-        let summary_metadata = MessageMetadata::new(conversation.clone(), None);
+        let summary_item = Message::System(format!("[history summary] {summary}"));
+        let summary_metadata = match scope {
+            HistoryScope::Conversation(conversation) => {
+                MessageMetadata::new(conversation.clone(), None)
+            }
+            HistoryScope::Automation(automation_id) => {
+                MessageMetadata::for_automation(automation_id.clone())
+            }
+        };
         let json = serde_json::to_string(&summary_item).map_err(|err| err.to_string())?;
         let metadata_json =
             serde_json::to_string(&summary_metadata).map_err(|err| err.to_string())?;
@@ -231,6 +232,18 @@ impl History for SqliteHistory {
             params![conversation_key, json, metadata_json, summary],
         )
         .map_err(|err| err.to_string())?;
+        for entry in retained {
+            let json = serde_json::to_string(&entry.message).map_err(|err| err.to_string())?;
+            let metadata_json =
+                serde_json::to_string(&entry.metadata).map_err(|err| err.to_string())?;
+            let text = extract_search_text(&entry.message);
+            conn.execute(
+                "INSERT INTO entries(conversation_key, item_json, metadata_json, search_text)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![conversation_key, json, metadata_json, text],
+            )
+            .map_err(|err| err.to_string())?;
+        }
         Ok(())
     }
 
@@ -321,9 +334,65 @@ mod tests {
 
         let loaded = history.load(&conversation).unwrap();
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].metadata.conversation.channel, "telegram");
-        assert_eq!(loaded[0].metadata.conversation.chat_id, "chat-1");
+        let loaded_conversation = loaded[0].metadata.conversation.as_ref().unwrap();
+        assert_eq!(loaded_conversation.channel, "telegram");
+        assert_eq!(loaded_conversation.chat_id, "chat-1");
         assert_eq!(loaded[0].metadata.external_id, None);
+    }
+
+    #[test]
+    fn automation_history_is_durable_and_isolated() {
+        let history = temp_history();
+        let daily_album = HistoryScope::Automation("daily-album".to_string());
+        let daily_news = HistoryScope::Automation("daily-news".to_string());
+        let entry = HistoryEntry {
+            message: Message::Assistant {
+                text: Some("recommended album".to_string()),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+            },
+            metadata: MessageMetadata::for_automation("daily-album"),
+        };
+
+        history
+            .append_scope(&daily_album, std::slice::from_ref(&entry))
+            .unwrap();
+
+        assert_eq!(history.load_scope(&daily_album).unwrap(), vec![entry]);
+        assert!(history.load_scope(&daily_news).unwrap().is_empty());
+    }
+
+    #[test]
+    fn compaction_retains_active_task_context() {
+        let history = temp_history();
+        let scope = HistoryScope::Automation("daily-album".to_string());
+        let entries = vec![
+            HistoryEntry {
+                message: Message::User {
+                    text: "old request".to_string(),
+                    attachments: Vec::new(),
+                },
+                metadata: MessageMetadata::for_automation("daily-album"),
+            },
+            HistoryEntry {
+                message: Message::User {
+                    text: "current request".to_string(),
+                    attachments: Vec::new(),
+                },
+                metadata: MessageMetadata::for_automation("daily-album"),
+            },
+        ];
+        history.append_scope(&scope, &entries).unwrap();
+
+        history
+            .compact_scope(&scope, "older context", &entries[1..])
+            .unwrap();
+
+        let loaded = history.load_scope(&scope).unwrap();
+        assert!(
+            matches!(&loaded[0].message, Message::System(text) if text.contains("older context"))
+        );
+        assert_eq!(loaded[1], entries[1]);
     }
 
     #[test]

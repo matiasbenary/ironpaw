@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     bus::{Bus, Event, InvocationScope},
-    history::{History, HistoryEntry, MessageMetadata},
+    history::{History, HistoryEntry, HistoryScope, MessageMetadata},
     message::{Message, ToolCall},
     tools::{ExecutionContext, ToolRegistry, run_registered_tool, run_registered_tool_for_context},
 };
@@ -95,19 +95,16 @@ impl ToolHandler {
         ctx: &ExecutionContext,
         tool_call: &ToolCall,
     ) -> Result<(), String> {
-        let conversation = match &ctx.invoked_by {
-            InvocationScope::Conversation(conversation) => conversation,
-            InvocationScope::ScheduledAutomation { .. } => return Ok(()),
-        };
-        self.history.append(
-            conversation,
+        let scope = history_scope(ctx);
+        self.history.append_scope(
+            &scope,
             &[HistoryEntry {
                 message: Message::Assistant {
                     text: None,
                     attachments: Vec::new(),
                     tool_calls: vec![tool_call.clone()],
                 },
-                metadata: MessageMetadata::new(conversation.clone(), None),
+                metadata: history_metadata(&scope),
             }],
         )
     }
@@ -118,18 +115,120 @@ pub(crate) fn persist_tool_result(
     ctx: &ExecutionContext,
     message: &Message,
 ) -> Result<(), String> {
-    let conversation = match &ctx.invoked_by {
-        InvocationScope::Conversation(conversation) => conversation,
-        InvocationScope::ScheduledAutomation { .. } => return Ok(()),
-    };
+    let scope = history_scope(ctx);
     let Message::ToolResult { .. } = message else {
         return Ok(());
     };
-    history.append(
-        conversation,
+    history.append_scope(
+        &scope,
         &[HistoryEntry {
-            message: message.clone(),
-            metadata: MessageMetadata::new(conversation.clone(), None),
+            message: bounded_history_message(message),
+            metadata: history_metadata(&scope),
         }],
     )
+}
+
+fn bounded_history_message(message: &Message) -> Message {
+    const MAX_STRING_BYTES: usize = 8_000;
+    const MAX_ARRAY_ITEMS: usize = 5;
+    let Message::ToolResult {
+        tool_call_id,
+        tool_name,
+        result,
+    } = message
+    else {
+        return message.clone();
+    };
+    Message::ToolResult {
+        tool_call_id: tool_call_id.clone(),
+        tool_name: tool_name.clone(),
+        result: bound_json(result, MAX_STRING_BYTES, MAX_ARRAY_ITEMS),
+    }
+}
+
+fn bound_json(
+    value: &serde_json::Value,
+    max_string_bytes: usize,
+    max_array_items: usize,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(text) => {
+            if text.len() <= max_string_bytes {
+                return value.clone();
+            }
+            let mut end = max_string_bytes;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            serde_json::Value::String(format!("{}\n[truncated in durable history]", &text[..end]))
+        }
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .take(max_array_items)
+                .map(|item| bound_json(item, max_string_bytes, max_array_items))
+                .collect(),
+        ),
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        bound_json(value, max_string_bytes, max_array_items),
+                    )
+                })
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn history_scope(ctx: &ExecutionContext) -> HistoryScope {
+    match &ctx.invoked_by {
+        InvocationScope::Conversation(conversation) => {
+            HistoryScope::Conversation(conversation.clone())
+        }
+        InvocationScope::ScheduledAutomation { automation_id } => {
+            HistoryScope::Automation(automation_id.clone())
+        }
+    }
+}
+
+fn history_metadata(scope: &HistoryScope) -> MessageMetadata {
+    match scope {
+        HistoryScope::Conversation(conversation) => {
+            MessageMetadata::new(conversation.clone(), None)
+        }
+        HistoryScope::Automation(automation_id) => {
+            MessageMetadata::for_automation(automation_id.clone())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounds_large_tool_result_strings_for_history() {
+        let message = Message::ToolResult {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "web_fetch".to_string(),
+            result: serde_json::json!({
+                "file_id": 7,
+                "body": "x".repeat(9_000),
+            }),
+        };
+        let Message::ToolResult { result, .. } = bounded_history_message(&message) else {
+            panic!("expected tool result");
+        };
+        assert_eq!(result["file_id"], 7);
+        assert!(
+            result["body"]
+                .as_str()
+                .unwrap()
+                .contains("truncated in durable history")
+        );
+    }
 }
