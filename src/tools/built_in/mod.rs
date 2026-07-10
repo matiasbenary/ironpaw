@@ -1,4 +1,5 @@
 pub mod automation;
+pub mod download_file;
 pub mod image_generation;
 pub mod inspect_file;
 pub mod messages;

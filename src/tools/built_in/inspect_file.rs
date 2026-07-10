@@ -12,14 +12,14 @@ use crate::{
 };
 
 pub struct InspectFileTool {
-    files_dir: PathBuf,
+    file_dirs: Vec<PathBuf>,
     raw_inference: RawInferenceTool,
 }
 
 impl InspectFileTool {
-    pub fn new(files_dir: PathBuf, raw_inference: RawInferenceTool) -> Self {
+    pub fn new(file_dirs: Vec<PathBuf>, raw_inference: RawInferenceTool) -> Self {
         Self {
-            files_dir,
+            file_dirs,
             raw_inference,
         }
     }
@@ -45,7 +45,7 @@ impl InternalTool for InspectFileTool {
     fn tool_definition(&self) -> crate::message::ToolDefinition {
         tools::tool_definition::<InspectFileParams>(
             self.name(),
-            "Inspect an attached file by file_id. If query is omitted, it defaults to 'describe this file'. For documents and PDFs, the tool extracts readable text. For images, the tool shows the image with the query.",
+            "Inspect a stored file by file_id. If query is omitted, it defaults to 'describe this file'. PDFs use text extraction, text files are passed through as bounded raw content, and images use vision.",
         )
     }
 
@@ -57,7 +57,11 @@ impl InternalTool for InspectFileTool {
     ) -> Result<(), String> {
         let params: InspectFileParams = serde_json::from_value(args).map_err(|e| e.to_string())?;
 
-        let attachment = Attachment::from_file_id(&self.files_dir, params.file_id)?;
+        let attachment = self
+            .file_dirs
+            .iter()
+            .find_map(|dir| Attachment::from_file_id(dir, params.file_id).ok())
+            .ok_or_else(|| format!("file not found: {}", params.file_id))?;
         let path = attachment.source.clone();
         let data =
             std::fs::read(&path).map_err(|_| format!("file not found: {}", params.file_id))?;
@@ -82,10 +86,7 @@ impl InternalTool for InspectFileTool {
                 Err(_) => format!("[Could not extract text from PDF: {}]", params.file_id),
             }
         } else {
-            match String::from_utf8(data) {
-                Ok(t) => t,
-                Err(_) => format!("[File {} is not valid UTF-8]", params.file_id),
-            }
+            bounded_raw_text(&data)
         };
 
         let answer = self.inspect_text(&text, query).await?;
@@ -153,4 +154,35 @@ fn text_item(text: String) -> Message {
 
 fn inspection_output(_file_id: u32, _query: &str, answer: String) -> ToolOutput {
     serde_json::Value::String(answer)
+}
+
+fn bounded_raw_text(data: &[u8]) -> String {
+    const MAX_TEXT_BYTES: usize = 100_000;
+    let text = String::from_utf8_lossy(data);
+    let mut end = text.len().min(MAX_TEXT_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut output = text[..end].to_string();
+    if end < text.len() {
+        output.push_str("\n[File content truncated at 100000 bytes]");
+    }
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded_raw_text;
+
+    #[test]
+    fn preserves_raw_csv_content() {
+        let content = bounded_raw_text(b"artist,album\n\"A, B\",Record\n");
+        assert_eq!(content, "artist,album\n\"A, B\",Record\n");
+    }
+
+    #[test]
+    fn preserves_malformed_csv_as_lossy_text() {
+        let content = bounded_raw_text(b"artist,album\nunfinished,\xff\n");
+        assert!(content.contains("artist,album\nunfinished,"));
+    }
 }

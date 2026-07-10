@@ -16,8 +16,8 @@ use crate::{
 
 pub use crate::bus::{ExecutionContext, InvocationScope};
 pub use built_in::{
-    automation, image_generation, inspect_file, messages, raw_inference, search_history, setup,
-    todo, unlock, web,
+    automation, download_file, image_generation, inspect_file, messages, raw_inference,
+    search_history, setup, todo, unlock, web,
 };
 pub use context::ToolResponder;
 pub use handler::ToolHandler;
@@ -26,6 +26,7 @@ pub use runner::{run_internal_tool, run_registered_tool, run_tool};
 
 use self::built_in::{
     automation::{AutomationTool, AutomationToolKind},
+    download_file::DownloadFileTool,
     image_generation::ImageGenerationTool,
     inspect_file::InspectFileTool,
     messages::{DeleteMessageTool, SendMessageTool},
@@ -149,7 +150,11 @@ impl InternalTools {
                 files_dir.clone(),
                 secrets.tools.clone(),
             )),
-            tool(InspectFileTool::new(files_dir, raw_inference.clone())),
+            tool(InspectFileTool::new(
+                vec![files_dir, layout.download_dir()],
+                raw_inference.clone(),
+            )),
+            tool(DownloadFileTool::new(layout.download_dir())),
             tool(TodoTool::new()),
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::Create)),
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::Delete)),

@@ -36,6 +36,10 @@ impl RuntimeLayout {
         self.root.join("files")
     }
 
+    pub fn download_dir(&self) -> PathBuf {
+        self.root.join("download")
+    }
+
     pub fn data_dir(&self) -> PathBuf {
         self.root.join("data")
     }

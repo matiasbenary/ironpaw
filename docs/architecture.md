@@ -44,6 +44,7 @@ The default runtime root is the directory containing the `warden` binary unless 
 <runtime-root>/channels
 <runtime-root>/tools
 <runtime-root>/files
+<runtime-root>/download
 <runtime-root>/data
 <runtime-root>/secrets
 ```
@@ -99,7 +100,7 @@ Warden handles files as first-class message attachments: images, PDFs, text file
 
 Warden stores files locally and passes around typed attachments containing a numeric `file_id`, MIME type, optional filename, and source path. User messages and assistant messages both use the same attachment type on the bus; channels translate their provider-specific payloads into attachments on the way in, and the bridge translates attachments back into provider-ready outbound payloads on the way out.
 
-The model interacts with stored files through tools. `inspect_file(file_id, query)` can extract text from documents or call a vision model for images. `image_generation` stores the generated image locally and returns a `file_id`; `send_message` can then publish an assistant message with that attachment for channel delivery.
+The model interacts with stored files through tools. `download_file(url)` stores a public URL under the runtime `download` directory and returns a `file_id` without placing the response body in conversation history. It recognizes public Google Sheets, Docs, and Slides editor links and exports them as CSV, text, and PDF respectively. `inspect_file(file_id, query)` can inspect downloaded files and message attachments, passing bounded raw text to a text model, extracting text from PDFs, or calling a vision model for images. `image_generation` stores the generated image locally and returns a `file_id`; `send_message` can then publish an assistant message with that attachment for channel delivery.
 
 All file ids are `u32` values for now. The current architecture treats that as the stable attachment identifier.
 
@@ -321,6 +322,7 @@ Implemented internal tools include:
 - `raw_inference`: calls `/v1/chat/completions` using the configured NEAR API key.
 - `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image, and returns a `file_id` for later delivery.
 - `inspect_file`: inspects a locally stored file by numeric `file_id`, using text extraction for documents and a vision model for images.
+- `download_file`: downloads a public URL into `<runtime-root>/download` and returns a numeric `file_id` for bounded inspection with `inspect_file`.
 - `web_fetch`: fetches a public URL with no credentials.
 - `send_message`: publishes a message to a user through a channel.
 - `delete_message`: deletes a channel message when the channel supports it.

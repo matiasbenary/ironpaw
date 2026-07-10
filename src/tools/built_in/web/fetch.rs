@@ -89,7 +89,7 @@ fn truncate_on_char_boundary(body: String, max: usize) -> String {
 /// HTTPS-only (http for loopback) and block loopback/private/link-local
 /// resolved addresses. Redirects are disabled at the client, so a public URL
 /// cannot bounce the request to an internal target after this check.
-async fn guard_url(url: &reqwest::Url) -> Result<Option<Vec<SocketAddr>>, String> {
+pub(crate) async fn guard_url(url: &reqwest::Url) -> Result<Option<Vec<SocketAddr>>, String> {
     let host = url.host_str().unwrap_or_default();
     let is_loopback_host = matches!(host, "localhost" | "127.0.0.1" | "::1");
     if url.scheme() != "https" && !(url.scheme() == "http" && is_loopback_host) {
@@ -123,7 +123,7 @@ async fn guard_url(url: &reqwest::Url) -> Result<Option<Vec<SocketAddr>>, String
     Ok(Some(addresses))
 }
 
-fn pinned_client(host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, String> {
+pub(crate) fn pinned_client(host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
