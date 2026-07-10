@@ -1,4 +1,4 @@
-pub const DEFAULT_TEXT_MODEL: &str = "Qwen/Qwen3-30B-A3B-Instruct-2507";
+pub const DEFAULT_TEXT_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 pub const DEFAULT_VISION_MODEL: &str = "Qwen/Qwen3-VL-30B-A3B-Instruct";
 pub const DEFAULT_IMAGE_MODEL: &str = "black-forest-labs/FLUX.2-klein-4B";
 
