@@ -26,7 +26,9 @@ pub struct CreateAutomationParams {
     /// Arguments the tool is called with, matching its schema.
     #[serde(default)]
     pub args: Option<serde_json::Value>,
-    /// Prompt for an agent task automation.
+    /// Prompt for an agent task that runs on every trigger. Agent tasks keep
+    /// durable history across runs. Include any durable source URLs or file IDs
+    /// the task will need in this prompt.
     #[serde(default)]
     pub agent_prompt: Option<String>,
     /// Exact tools the agent task may use. Required with `agent_prompt`.
@@ -155,7 +157,7 @@ impl InternalTool for AutomationTool {
         match self.kind {
             AutomationToolKind::Create => tools::tool_definition::<CreateAutomationParams>(
                 self.name(),
-                "Create an automation: a tool call that runs later — once at an absolute time, or repeatedly on a cron schedule.",
+                "Create an automation: a tool call or stateful agent task that runs later — once at an absolute time, or repeatedly on a cron schedule. Agent tasks keep history across runs. Cron supports 5-field expressions and 6/7-field expressions with seconds.",
             ),
             AutomationToolKind::Delete => tools::tool_definition::<DeleteAutomationParams>(
                 self.name(),

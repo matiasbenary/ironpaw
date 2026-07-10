@@ -30,6 +30,15 @@ pub(super) fn system_preamble(destination: Destination<'_>) -> Vec<Message> {
         " The current local time is {}.",
         chrono::Local::now().format("%A %Y-%m-%dT%H:%M:%S%:z")
     ));
+    text.push_str(
+        " When the user requests a future or recurring action, create an automation. \
+        Build a deterministic tool for fixed logic, or create a recurrent agent task when \
+        the work requires judgment, research, or memory across runs.",
+    );
+    text.push_str(
+        " Use focused tool calls to verify external facts or process user-provided data. \
+        Stop once you have enough evidence to act; do not research broadly when it will not improve the result.",
+    );
 
     vec![Message::System(text)]
 }
