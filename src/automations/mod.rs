@@ -570,12 +570,25 @@ mod tests {
             Arc::clone(&tools.registry),
             Arc::clone(&tools.history),
         ));
+        let secrets = crate::secrets::Secrets::for_tests();
+        let memory = Arc::new(
+            crate::memory::Memory::new(
+                std::env::temp_dir().join(format!(
+                    "warden-automation-test-memory-{}.db",
+                    uuid::Uuid::new_v4()
+                )),
+                secrets.tools.clone(),
+                RawInferenceTool::new(secrets.tools).unwrap(),
+            )
+            .unwrap(),
+        );
         Arc::new(Agent::new(
             bus.clone(),
             Arc::clone(&tools.registry),
             tool_handler,
             Arc::clone(&tools.history),
             tools.raw_inference.clone(),
+            memory,
         ))
     }
 

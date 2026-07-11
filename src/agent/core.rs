@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::{
     bus::{Bus, ChannelAction, ConversationKey, Event},
     history::{History, HistoryEntry, HistoryScope, MessageMetadata},
+    memory::Memory,
     message::{Message, ToolCall, ToolDefinition},
     models,
     tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolHandler, ToolRegistry},
@@ -15,7 +16,7 @@ use super::{
 use crate::tools::raw_inference::{RawInferenceRequest, RawInferenceTool};
 
 const MAX_TOOL_ROUNDS: usize = 8;
-const COMPACT_AT_PROMPT_TOKENS: u64 = 256_000_000;
+const COMPACT_AT_PROMPT_TOKENS: u64 = 256_000;
 
 /// The conversation a run replies to.
 pub type Destination<'a> = Option<&'a ConversationKey>;
@@ -27,6 +28,7 @@ pub struct Agent {
     tool_handler: Arc<ToolHandler>,
     history: Arc<dyn History>,
     raw_inference: RawInferenceTool,
+    memory: Arc<Memory>,
 }
 
 impl Agent {
@@ -36,6 +38,7 @@ impl Agent {
         tool_handler: Arc<ToolHandler>,
         history: Arc<dyn History>,
         raw_inference: RawInferenceTool,
+        memory: Arc<Memory>,
     ) -> Self {
         Self {
             bus,
@@ -43,6 +46,7 @@ impl Agent {
             tool_handler,
             history,
             raw_inference,
+            memory,
         }
     }
 
@@ -61,6 +65,7 @@ impl Agent {
             tools: self.tools.all(),
             allowed_tool_names: None,
             persist_history: true,
+            recalled_memories: Vec::new(),
         })
         .await
     }
@@ -91,6 +96,7 @@ impl Agent {
             tools,
             allowed_tool_names: Some(tool_names),
             persist_history: true,
+            recalled_memories: Vec::new(),
         })
         .await
     }
@@ -103,6 +109,12 @@ impl Agent {
             invoked_by: run.invocation_scope.clone(),
             depth: 0,
         };
+        if let Some(query) = self.latest_user_text(run.history_scope.as_ref())? {
+            match self.memory.recall(&query).await {
+                Ok(memories) => run.recalled_memories = memories,
+                Err(error) => debug_log(format!("memory recall failed: {error}")),
+            }
+        }
         let mut compact_before_next_round = false;
 
         for round in 0..MAX_TOOL_ROUNDS {
@@ -150,6 +162,7 @@ impl Agent {
                         .expect("persistent run has scope");
                     self.history
                         .append_scope(scope, &[history_entry(output.clone(), Some(scope))])?;
+                    self.ingest_memory(scope);
                 }
                 return Ok(text.filter(|text| !text.is_empty()));
             }
@@ -221,6 +234,17 @@ impl Agent {
 
     fn model_messages(&self, run: &AgentRun<'_>) -> Result<Vec<Message>, String> {
         let mut messages = system_preamble(run.destination);
+        if !run.recalled_memories.is_empty() {
+            let recalled = run
+                .recalled_memories
+                .iter()
+                .map(|memory| format!("- {memory}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            messages.push(Message::System(format!(
+                "[recalled user memory]\n{recalled}\nUse these memories only when relevant."
+            )));
+        }
         if run.persist_history {
             for entry in self.history.load_scope(
                 run.history_scope
@@ -247,6 +271,47 @@ impl Agent {
         }
         messages.extend(run.transient_messages.clone());
         Ok(messages)
+    }
+
+    fn latest_user_text(&self, scope: Option<&HistoryScope>) -> Result<Option<String>, String> {
+        let Some(scope) = scope else {
+            return Ok(None);
+        };
+        Ok(self
+            .history
+            .load_scope(scope)?
+            .into_iter()
+            .rev()
+            .find_map(|entry| match entry.message {
+                Message::User { text, .. } => Some(text),
+                _ => None,
+            }))
+    }
+
+    fn ingest_memory(&self, scope: &HistoryScope) {
+        let Ok(entries) = self.history.load_scope(scope) else {
+            return;
+        };
+        let Some(user_index) = entries
+            .iter()
+            .rposition(|entry| matches!(entry.message, Message::User { .. }))
+        else {
+            return;
+        };
+        let previous = entries[user_index.saturating_sub(10)..user_index]
+            .iter()
+            .map(|entry| entry.message.clone())
+            .collect::<Vec<_>>();
+        let current = entries[user_index..]
+            .iter()
+            .map(|entry| entry.message.clone())
+            .collect::<Vec<_>>();
+        let memory = Arc::clone(&self.memory);
+        tokio::spawn(async move {
+            if let Err(error) = memory.ingest(&previous, &current).await {
+                debug_log(format!("memory ingestion failed: {error}"));
+            }
+        });
     }
 
     fn publish_tool_progress(&self, destination: Destination<'_>, tool_name: &str) {
@@ -340,6 +405,7 @@ struct AgentRun<'a> {
     tools: Vec<Arc<dyn InternalTool>>,
     allowed_tool_names: Option<Vec<String>>,
     persist_history: bool,
+    recalled_memories: Vec<String>,
 }
 
 fn tool_definitions(tools: &[Arc<dyn InternalTool>]) -> Vec<ToolDefinition> {

@@ -304,6 +304,34 @@ Scheduled agent tasks persist their rendered prompt, tool transcript, and final 
 
 ---
 
+## Memory
+
+History is Warden's complete record of what happened. Memory is a smaller,
+derived collection of facts that may be useful again across conversations. It
+does not replace history and can be rebuilt from it.
+
+After a conversation turn finishes, Warden gives the recent messages and the
+ten most relevant existing memories to the text model. The model extracts
+self-contained memories such as preferences, relationships, exact identifiers,
+decisions, and outcomes. Warden embeds the extracted text with NEAR AI, removes
+exact duplicates, and stores the memories and their embeddings in
+`<runtime-root>/data/memory.db`.
+
+Before a conversation run, Warden searches the latest verbatim user message
+with both dense similarity and SQLite FTS5/BM25. Reciprocal rank fusion combines
+the two rankings without mixing their incompatible raw scores, and the ten best
+memories are added to the model input as recalled context. Recall is automatic:
+the model does not need to decide to call a tool. The existing history search
+tool remains available when the model needs the original transcript or exact
+evidence.
+
+The first implementation deliberately has no vector server. Embeddings are
+stored as SQLite blobs and compared in process because a personal agent is
+expected to have a modest number of memories. Memory failures do not prevent
+Warden from answering; durable history remains the fallback and source of truth.
+
+---
+
 ## Tools
 
 In Warden we currently distinguish between internal tools, external WASM tools, and dynamic ones.

@@ -7,6 +7,7 @@ use warden::{
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
     history::{History, SqliteHistory},
+    memory::Memory,
     message::Attachment,
     tools::{
         InternalTool, InternalTools, ToolHandler,
@@ -70,12 +71,21 @@ async fn main() -> io::Result<()> {
         Arc::clone(&tools.registry),
         Arc::clone(&history),
     ));
+    let memory = Arc::new(
+        Memory::new(
+            layout.data_dir().join("memory.db"),
+            secrets.tools.clone(),
+            tools.raw_inference.clone(),
+        )
+        .map_err(io::Error::other)?,
+    );
     let agent = Arc::new(Agent::new(
         bus.clone(),
         Arc::clone(&tools.registry),
         Arc::clone(&tool_handler),
         Arc::clone(&history),
         tools.raw_inference.clone(),
+        memory,
     ));
     let automation_store = Arc::new(
         SqliteAutomations::new(layout.data_dir().join("automations.db"))

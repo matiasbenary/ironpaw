@@ -7,6 +7,7 @@ use warden::{
     automations::{Automations, SqliteAutomations},
     bus::{Bus, ConversationKey, Event, Sender},
     history::{History, HistoryEntry, HistoryScope, MessageMetadata, SqliteHistory},
+    memory::Memory,
     message::{Attachment, Message},
     tools::{
         InternalTools, ToolHandler,
@@ -29,6 +30,19 @@ fn start_warden_with_automations(
     tokio::task::JoinHandle<()>,
     Arc<dyn History>,
     Arc<Automations>,
+) {
+    let (task, history, automations, _) = start_warden_config(bus, files_dir);
+    (task, history, automations)
+}
+
+fn start_warden_config(
+    bus: &Bus,
+    files_dir: PathBuf,
+) -> (
+    tokio::task::JoinHandle<()>,
+    Arc<dyn History>,
+    Arc<Automations>,
+    Arc<Memory>,
 ) {
     reset_raw_inference_log();
     let history = temp_history();
@@ -59,13 +73,23 @@ fn start_warden_with_automations(
         Arc::clone(&history),
     ));
     let tool_handler_for_agent = Arc::clone(&tool_handler);
-    let agent = Arc::new(Agent::new(
+    let memory = Arc::new(
+        Memory::new(
+            layout.data_dir().join("memory.db"),
+            secrets.tools.clone(),
+            tools.raw_inference.clone(),
+        )
+        .expect("create native memory"),
+    );
+    let agent = Agent::new(
         bus.clone(),
         Arc::clone(&tools.registry),
         tool_handler_for_agent,
         Arc::clone(&history),
         tools.raw_inference.clone(),
-    ));
+        Arc::clone(&memory),
+    );
+    let agent = Arc::new(agent);
     let automations_db = std::env::temp_dir().join(format!(
         "warden-live-test-automations-{}.db",
         uuid::Uuid::new_v4()
@@ -97,7 +121,7 @@ fn start_warden_with_automations(
         .add_transient(Automations::handle_tool_result())
         .expect("tool result automation registers");
     let _tool_handler_task = tool_handler.start();
-    (automations.start(), history, automations)
+    (automations.start(), history, automations, memory)
 }
 
 fn reset_raw_inference_log() {
@@ -174,6 +198,190 @@ fn send_message_tool(bus: &Bus, files_dir: PathBuf) -> SendMessageTool {
     SendMessageTool::new(bus.clone(), move |file_id| {
         Attachment::from_file_id(&files_dir, file_id)
     })
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct MemoryFixtureMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct MemoryEvalProbe {
+    name: String,
+    question: String,
+    required: Vec<String>,
+    forbidden: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct MemoryEvalFixture {
+    messages: Vec<MemoryFixtureMessage>,
+    probes: Vec<MemoryEvalProbe>,
+}
+
+fn memory_eval_fixture() -> MemoryEvalFixture {
+    serde_json::from_str(include_str!("fixtures/memory_conversation.json"))
+        .expect("parse memory evaluation fixture")
+}
+
+fn seed_cold_history(
+    history: &dyn History,
+    conversation: &ConversationKey,
+    messages: &[MemoryFixtureMessage],
+) {
+    let entries = messages
+        .iter()
+        .map(|fixture| HistoryEntry {
+            message: fixture_message(fixture),
+            metadata: MessageMetadata::new(conversation.clone(), None),
+        })
+        .collect::<Vec<_>>();
+    history
+        .append(conversation, &entries)
+        .expect("seed memory evaluation history");
+    history
+        .compact_scope(
+            &HistoryScope::Conversation(conversation.clone()),
+            "Older conversation was compacted.",
+            &[],
+        )
+        .expect("make seeded history cold");
+}
+
+fn fixture_message(fixture: &MemoryFixtureMessage) -> Message {
+    match fixture.role.as_str() {
+        "user" => user_message(&fixture.content),
+        "assistant" => Message::Assistant {
+            text: Some(fixture.content.clone()),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+        },
+        role => panic!("unsupported memory fixture role: {role}"),
+    }
+}
+
+async fn ask_and_wait_for_reply(
+    bus: &Bus,
+    events: &mut tokio::sync::broadcast::Receiver<Event>,
+    history: &dyn History,
+    conversation: ConversationKey,
+    question: &str,
+) -> String {
+    publish_user_message(bus, history, conversation.clone(), user_message(question));
+    timeout(Duration::from_secs(180), async {
+        loop {
+            let event = events.recv().await.expect("bus closed");
+            let Event::MessageOut {
+                chat_id,
+                message:
+                    Message::Assistant {
+                        text: Some(text), ..
+                    },
+                ..
+            } = event
+            else {
+                continue;
+            };
+            if chat_id.as_deref() == Some(conversation.chat_id.as_str())
+                && !text.starts_with("calling ")
+            {
+                return text;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for memory evaluation reply")
+}
+
+async fn ingest_fixture(memory: &Memory, messages: &[MemoryFixtureMessage]) {
+    let mut previous = Vec::new();
+    for chunk in messages.chunks(20) {
+        let current = chunk.iter().map(fixture_message).collect::<Vec<_>>();
+        memory
+            .ingest(&previous, &current)
+            .await
+            .expect("ingest native memory fixture");
+        previous.extend(current);
+        if previous.len() > 10 {
+            previous.drain(..previous.len() - 10);
+        }
+    }
+}
+
+/// Run the cold-history scenarios with Warden's native automatic memory recall.
+///
+/// Run with:
+///   cargo test --test live_tests -- --ignored --nocapture --test-threads=1 memory_native_eval
+#[tokio::test]
+#[ignore = "live: evaluates native memory using real NEAR AI calls"]
+async fn memory_native_eval() {
+    let _ = dotenvy::dotenv();
+    std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
+    let fixture = memory_eval_fixture();
+    let probe_filter = std::env::var("WARDEN_MEMORY_EVAL_PROBE").ok();
+    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    let bus = Bus::new(64);
+    let mut events = bus.subscribe();
+    let (_task, history, _, memory) = start_warden_config(&bus, files_dir);
+    let mut passed = 0;
+    let mut evaluated = 0;
+    ingest_fixture(&memory, &fixture.messages).await;
+
+    for case in &fixture.probes {
+        if probe_filter
+            .as_deref()
+            .is_some_and(|filter| filter != case.name)
+        {
+            continue;
+        }
+        evaluated += 1;
+        let conversation = ConversationKey {
+            channel: "tui".to_string(),
+            chat_id: format!("memory-{}", case.name),
+            thread_id: None,
+        };
+        seed_cold_history(history.as_ref(), &conversation, &fixture.messages);
+        let started = std::time::Instant::now();
+        let memories = memory
+            .recall(&case.question)
+            .await
+            .expect("recall native memory");
+        let reply = ask_and_wait_for_reply(
+            &bus,
+            &mut events,
+            history.as_ref(),
+            conversation.clone(),
+            &case.question,
+        )
+        .await;
+        let lower = reply.to_lowercase();
+        let correct = case.required.iter().all(|term| lower.contains(term))
+            && case.forbidden.iter().all(|term| !lower.contains(term));
+        let searched = history
+            .load(&conversation)
+            .expect("load memory evaluation transcript")
+            .iter()
+            .any(|entry| match &entry.message {
+                Message::Assistant { tool_calls, .. } => {
+                    tool_calls.iter().any(|call| call.name == "search_history")
+                }
+                _ => false,
+            });
+        passed += usize::from(correct);
+        eprintln!(
+            "[memory_eval] case={} correct={} searched={} memories={:?} latency_ms={} reply={:?}",
+            case.name,
+            correct,
+            searched,
+            memories,
+            started.elapsed().as_millis(),
+            reply,
+        );
+    }
+
+    eprintln!("[memory_eval] score={passed}/{}", evaluated);
 }
 
 /// Verify the agent can answer a minimal text message.
