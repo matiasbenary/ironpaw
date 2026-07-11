@@ -255,7 +255,12 @@ impl History for SqliteHistory {
                  FROM entries_fts f
                  JOIN entries e ON e.id = f.rowid
                  WHERE f.search_text MATCH ?1
-                 ORDER BY e.id DESC
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM json_each(e.item_json, '$.Assistant.tool_calls') call
+                     WHERE json_extract(call.value, '$.name') = 'search_history'
+                   )
+                 ORDER BY bm25(entries_fts)
                  LIMIT 20",
             )
             .map_err(|err| err.to_string())?;

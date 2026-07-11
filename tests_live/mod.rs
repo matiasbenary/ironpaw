@@ -970,7 +970,7 @@ async fn lottery_automation() {
     assert_eq!(invocations, 3);
 }
 
-/// Observe how the model translates the original daily album request into an automation.
+/// Verify the generated daily album automation returns different recommendations across runs.
 ///
 /// Run with:
 ///   cargo test --test live_tests -- --ignored --nocapture --test-threads=1 album_recommendation_automation
@@ -1048,13 +1048,29 @@ suggest me one new album to listen every day at 10am, including the band name an
     .unwrap_or_default();
 
     if generated.is_empty() {
-        eprintln!("[live_test] generated album automation: none");
+        panic!("agent did not create an album automation");
     } else {
         eprintln!(
             "[live_test] generated album automation:\n{}",
             serde_json::to_string_pretty(&generated).expect("serialize generated automation")
         );
     }
+
+    let automation_name = &generated[0].name;
+    let first = automations
+        .trigger(automation_name)
+        .await
+        .expect("trigger album automation first time");
+    let second = automations
+        .trigger(automation_name)
+        .await
+        .expect("trigger album automation second time");
+    eprintln!("[live_test] first recommendation: {first}");
+    eprintln!("[live_test] second recommendation: {second}");
+    assert_ne!(
+        first, second,
+        "album automation repeated its recommendation"
+    );
 }
 
 /// Verify the full dynamic-tool path: the agent authors a tool that fetches

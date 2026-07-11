@@ -256,6 +256,26 @@ impl Automations {
         self.is_registered(name)
     }
 
+    pub async fn trigger(&self, name: &str) -> Result<serde_json::Value, String> {
+        let automation = self
+            .automations
+            .read()
+            .expect("automations lock")
+            .iter()
+            .find(|automation| automation.name == name)
+            .cloned()
+            .ok_or_else(|| format!("unknown automation: {name}"))?;
+        Ok(self
+            .execute(
+                &automation,
+                AutomationEvent::Timer {
+                    kind: "manual",
+                    automation_name: &automation.name,
+                },
+            )
+            .await)
+    }
+
     pub fn automation_from_spec(&self, spec: AutomationSpec) -> Result<Automation, String> {
         if spec.name.trim().is_empty() {
             return Err("name must not be empty".to_string());
@@ -470,7 +490,11 @@ impl Automations {
         });
     }
 
-    async fn execute(&self, automation: &Automation, event: AutomationEvent<'_>) {
+    async fn execute(
+        &self,
+        automation: &Automation,
+        event: AutomationEvent<'_>,
+    ) -> serde_json::Value {
         let (ctx, event) = event.context();
         let result = automation
             .effect
@@ -486,6 +510,7 @@ impl Automations {
                     .unwrap_or("unknown error")
             );
         }
+        result
     }
 }
 
