@@ -103,6 +103,8 @@ Warden stores files locally and passes around typed attachments containing a num
 
 The model interacts with stored files through tools. `download_file(url)` stores a public URL under the runtime `download` directory and returns a `file_id` without placing the response body in conversation history. It recognizes public Google Sheets, Docs, and Slides editor links and exports them as CSV, text, and PDF respectively. `inspect_file(file_id, query)` can inspect downloaded files and message attachments, passing bounded raw text to a text model, extracting text from PDFs, or calling a vision model for images. `image_generation` stores the generated image locally and returns a `file_id`; `send_message` can then publish an assistant message with that attachment for channel delivery.
 
+Agent-created files use a separate scoped workspace. `list_files`, `read_file`, `create_file`, and `update_file` are the only agent filesystem tools. Conversations on every channel share `<runtime-root>/files/user`; a scheduled automation gets its own directory; and tool calls get a directory matching their caller stack. The host appends every registered tool call to `ExecutionContext.tool_stack`; a file tool resolves its root from that stack without its own final entry. Relative paths only are accepted, and symlinks are rejected. Automation and tool names are encoded before becoming directory components.
+
 All file ids are `u32` values for now. The current architecture treats that as the stable attachment identifier.
 
 ---
@@ -352,6 +354,7 @@ Implemented internal tools include:
 - `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image, and returns a `file_id` for later delivery.
 - `inspect_file`: inspects a locally stored file by numeric `file_id`, using text extraction for documents and a vision model for images.
 - `download_file`: downloads a public URL into `<runtime-root>/download` and returns a numeric `file_id` for bounded inspection with `inspect_file`.
+- `list_files`, `read_file`, `create_file`, `update_file`: access the execution-scoped agent workspace.
 - `web_fetch`: fetches a public URL with no credentials.
 - `send_message`: publishes a message to a user through a channel.
 - `delete_message`: deletes a channel message when the channel supports it.

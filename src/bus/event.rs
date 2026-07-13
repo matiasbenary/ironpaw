@@ -58,7 +58,29 @@ pub struct MessageRef {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExecutionContext {
     pub invoked_by: InvocationScope,
+    /// Every registered tool entered through the host runner, in call order.
+    pub tool_stack: Vec<String>,
     pub depth: usize,
+}
+
+impl ExecutionContext {
+    pub fn new(invoked_by: InvocationScope) -> Self {
+        Self {
+            invoked_by,
+            tool_stack: Vec::new(),
+            depth: 0,
+        }
+    }
+
+    pub fn with_tool(&self, tool_name: String) -> Self {
+        let mut tool_stack = self.tool_stack.clone();
+        tool_stack.push(tool_name);
+        Self {
+            invoked_by: self.invoked_by.clone(),
+            tool_stack,
+            depth: self.depth,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

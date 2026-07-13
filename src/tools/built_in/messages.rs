@@ -278,14 +278,11 @@ mod tests {
         let bus = Bus::new(16);
         let mut events = bus.subscribe();
         let tool = Arc::new(DeleteMessageTool::new(bus));
-        let ctx = ExecutionContext {
-            invoked_by: InvocationScope::Conversation(ConversationKey {
-                channel: "telegram".to_string(),
-                chat_id: "123".to_string(),
-                thread_id: None,
-            }),
-            depth: 0,
-        };
+        let ctx = ExecutionContext::new(InvocationScope::Conversation(ConversationKey {
+            channel: "telegram".to_string(),
+            chat_id: "123".to_string(),
+            thread_id: None,
+        }));
 
         tools::run_internal_tool(tool, serde_json::json!({ "message_id": "456" }), &ctx).await;
 

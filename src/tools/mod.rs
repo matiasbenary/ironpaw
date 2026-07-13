@@ -27,6 +27,7 @@ pub use runner::{run_internal_tool, run_registered_tool, run_tool};
 use self::built_in::{
     automation::{AutomationTool, AutomationToolKind},
     download_file::DownloadFileTool,
+    files::{CreateFileTool, ListFilesTool, ReadFileTool, UpdateFileTool},
     image_generation::ImageGenerationTool,
     inspect_file::InspectFileTool,
     messages::{DeleteMessageTool, SendMessageTool},
@@ -157,6 +158,10 @@ impl InternalTools {
                 raw_inference.clone(),
             )),
             tool(DownloadFileTool::new(layout.download_dir())),
+            tool(ListFilesTool::new(layout.files_dir())),
+            tool(ReadFileTool::new(layout.files_dir())),
+            tool(CreateFileTool::new(layout.files_dir())),
+            tool(UpdateFileTool::new(layout.files_dir())),
             tool(TodoTool::new()),
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::Create)),
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::Delete)),
@@ -525,12 +530,10 @@ mod tests {
         let tools = test_tools();
         tools.registry.add(Arc::new(FakeTool("fake"))).expect("add");
 
-        let deep = ExecutionContext {
-            invoked_by: InvocationScope::ScheduledAutomation {
-                automation_id: "test".to_string(),
-            },
-            depth: runner::MAX_TOOL_DEPTH,
-        };
+        let mut deep = ExecutionContext::new(InvocationScope::ScheduledAutomation {
+            automation_id: "test".to_string(),
+        });
+        deep.depth = runner::MAX_TOOL_DEPTH;
         let result = run_tool(&tools, "fake", serde_json::json!({}), &deep).await;
         assert_eq!(result["ok"], false);
 
@@ -538,12 +541,9 @@ mod tests {
             &tools,
             "fake",
             serde_json::json!({}),
-            &ExecutionContext {
-                invoked_by: InvocationScope::ScheduledAutomation {
-                    automation_id: "test".to_string(),
-                },
-                depth: 0,
-            },
+            &ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                automation_id: "test".to_string(),
+            }),
         )
         .await;
         assert_eq!(ok["depth"], 1);
@@ -560,12 +560,9 @@ mod tests {
         let mut events = bus.subscribe();
 
         bus.publish(Event::ToolRequest {
-            context: ExecutionContext {
-                invoked_by: InvocationScope::ScheduledAutomation {
-                    automation_id: "test".to_string(),
-                },
-                depth: 0,
-            },
+            context: ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                automation_id: "test".to_string(),
+            }),
             tool_call: ToolCall {
                 id: "call-1".to_string(),
                 name: "fake".to_string(),
@@ -609,10 +606,7 @@ mod tests {
             name: "fake".to_string(),
             arguments: "{}".to_string(),
         };
-        let ctx = ExecutionContext {
-            invoked_by: InvocationScope::Conversation(conversation.clone()),
-            depth: 0,
-        };
+        let ctx = ExecutionContext::new(InvocationScope::Conversation(conversation.clone()));
 
         handler
             .execute_tool_call(tool_call, serde_json::json!({}), &ctx)
@@ -633,12 +627,9 @@ mod tests {
         let history = temp_history("warden-tool-handler-automation-history");
         let handler = ToolHandler::new(bus, registry, history.clone());
         let automation_id = "daily-album";
-        let ctx = ExecutionContext {
-            invoked_by: InvocationScope::ScheduledAutomation {
-                automation_id: automation_id.to_string(),
-            },
-            depth: 0,
-        };
+        let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
+            automation_id: automation_id.to_string(),
+        });
 
         handler
             .execute_tool_call(
@@ -677,10 +668,7 @@ mod tests {
         let conversation = test_conversation();
 
         bus.publish(Event::ToolRequest {
-            context: ExecutionContext {
-                invoked_by: InvocationScope::Conversation(conversation.clone()),
-                depth: 0,
-            },
+            context: ExecutionContext::new(InvocationScope::Conversation(conversation.clone())),
             tool_call: ToolCall {
                 id: "call-1".to_string(),
                 name: "fake".to_string(),

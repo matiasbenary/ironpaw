@@ -144,14 +144,12 @@ mod tests {
     #[tokio::test]
     async fn returns_previous_todos_for_conversation() {
         let tool = Arc::new(TodoTool::new());
-        let ctx = ExecutionContext {
-            invoked_by: InvocationScope::Conversation(crate::bus::ConversationKey {
+        let ctx =
+            ExecutionContext::new(InvocationScope::Conversation(crate::bus::ConversationKey {
                 channel: "telegram".to_string(),
                 chat_id: "chat-1".to_string(),
                 thread_id: None,
-            }),
-            depth: 0,
-        };
+            }));
 
         let first = tools::run_internal_tool(
             Arc::clone(&tool) as Arc<dyn InternalTool>,
@@ -176,14 +174,12 @@ mod tests {
     #[tokio::test]
     async fn completed_lists_clear_stored_todos() {
         let tool = Arc::new(TodoTool::new());
-        let ctx = ExecutionContext {
-            invoked_by: InvocationScope::Conversation(crate::bus::ConversationKey {
+        let ctx =
+            ExecutionContext::new(InvocationScope::Conversation(crate::bus::ConversationKey {
                 channel: "telegram".to_string(),
                 chat_id: "chat-1".to_string(),
                 thread_id: None,
-            }),
-            depth: 0,
-        };
+            }));
 
         tools::run_internal_tool(
             Arc::clone(&tool) as Arc<dyn InternalTool>,

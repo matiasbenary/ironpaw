@@ -105,10 +105,7 @@ impl Agent {
     /// model input for this run but are not persisted by the agent as user
     /// history.
     async fn run(&self, mut run: AgentRun<'_>) -> Result<Option<String>, String> {
-        let ctx = ExecutionContext {
-            invoked_by: run.invocation_scope.clone(),
-            depth: 0,
-        };
+        let ctx = ExecutionContext::new(run.invocation_scope.clone());
         if let Some(query) = self.latest_user_text(run.history_scope.as_ref())? {
             match self.memory.recall(&query).await {
                 Ok(memories) => run.recalled_memories = memories,
@@ -620,12 +617,9 @@ mod tests {
         let result = execute_tool_call(
             &tools.registry,
             tool_call,
-            &ExecutionContext {
-                invoked_by: InvocationScope::ScheduledAutomation {
-                    automation_id: "test".to_string(),
-                },
-                depth: 0,
-            },
+            &ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                automation_id: "test".to_string(),
+            }),
             None,
         )
         .await;
@@ -679,12 +673,9 @@ mod tests {
         let result = execute_tool_call(
             &tools.registry,
             tool_call,
-            &ExecutionContext {
-                invoked_by: InvocationScope::ScheduledAutomation {
-                    automation_id: "test".to_string(),
-                },
-                depth: 0,
-            },
+            &ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                automation_id: "test".to_string(),
+            }),
             None,
         )
         .await;

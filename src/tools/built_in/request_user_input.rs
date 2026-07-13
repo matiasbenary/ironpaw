@@ -112,14 +112,11 @@ mod tests {
     async fn publishes_request_to_current_conversation() {
         let bus = Bus::new(4);
         let mut events = bus.subscribe();
-        let context = ExecutionContext {
-            invoked_by: InvocationScope::Conversation(ConversationKey {
-                channel: "telegram".to_string(),
-                chat_id: "42".to_string(),
-                thread_id: None,
-            }),
-            depth: 0,
-        };
+        let context = ExecutionContext::new(InvocationScope::Conversation(ConversationKey {
+            channel: "telegram".to_string(),
+            chat_id: "42".to_string(),
+            thread_id: None,
+        }));
 
         let result = run_internal_tool(
             Arc::new(RequestUserInputTool::new(bus)),

@@ -50,10 +50,8 @@ pub async fn run_internal_tool(
         });
     }
     let (responder, captured) = ToolResponder::capture();
-    let ctx = ExecutionContext {
-        invoked_by: ctx.invoked_by.clone(),
-        depth: ctx.depth + 1,
-    };
+    let mut ctx = ctx.with_tool(tool.name().to_string());
+    ctx.depth += 1;
     match tool.execute(args, &ctx, responder).await {
         Ok(()) => captured
             .lock()
@@ -93,15 +91,9 @@ pub(crate) async fn run_registered_tool_for_context(
             "tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"
         ))
     } else {
-        tool.execute(
-            args,
-            &ExecutionContext {
-                invoked_by: ctx.invoked_by.clone(),
-                depth: ctx.depth + 1,
-            },
-            responder.clone(),
-        )
-        .await
+        let mut tool_ctx = ctx.with_tool(tool.name().to_string());
+        tool_ctx.depth += 1;
+        tool.execute(args, &tool_ctx, responder.clone()).await
     };
     if let Err(err) = result
         && !responder.has_responded()

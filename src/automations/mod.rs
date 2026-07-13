@@ -40,10 +40,8 @@ impl AutomationEvent<'_> {
                         crate::message::Message::User { text, .. } => text.clone(),
                         _ => String::new(),
                     };
-                    let ctx = ExecutionContext {
-                        invoked_by: InvocationScope::Conversation(conversation.clone()),
-                        depth: 0,
-                    };
+                    let ctx =
+                        ExecutionContext::new(InvocationScope::Conversation(conversation.clone()));
                     let event = serde_json::json!({
                         "type": "message_in",
                         "channel": &conversation.channel,
@@ -81,12 +79,9 @@ impl AutomationEvent<'_> {
                     (ctx, event)
                 }
                 other => (
-                    ExecutionContext {
-                        invoked_by: InvocationScope::ScheduledAutomation {
-                            automation_id: "bus-event".to_string(),
-                        },
-                        depth: 0,
-                    },
+                    ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                        automation_id: "bus-event".to_string(),
+                    }),
                     serde_json::json!({ "type": format!("{other:?}") }),
                 ),
             },
@@ -94,12 +89,9 @@ impl AutomationEvent<'_> {
                 kind,
                 automation_name,
             } => (
-                ExecutionContext {
-                    invoked_by: InvocationScope::ScheduledAutomation {
-                        automation_id: (*automation_name).to_string(),
-                    },
-                    depth: 0,
-                },
+                ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                    automation_id: (*automation_name).to_string(),
+                }),
                 serde_json::json!({ "type": kind, "automation": automation_name }),
             ),
         }

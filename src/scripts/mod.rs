@@ -103,6 +103,23 @@ fn execute_script(
                 };
             }
             globalThis.console = { log: (...a) => __log(a.map(String).join(" ")) };
+            globalThis.require = (module) => {
+                switch (module) {
+                    case "fs":
+                    case "node:fs":
+                        throw new Error("require is unavailable in scripts. For filesystem work, use list_files, read_file, create_file, or update_file.");
+                    case "child_process":
+                    case "node:child_process":
+                        throw new Error("require is unavailable in scripts; scripts cannot start processes.");
+                    case "http":
+                    case "https":
+                    case "node:http":
+                    case "node:https":
+                        throw new Error("require is unavailable in scripts. For network requests, use web_fetch or web_search.");
+                    default:
+                        throw new Error("require is unavailable in scripts.");
+                }
+            };
         "#;
         js.eval::<(), _>(PRELUDE)
             .catch(&js)
@@ -196,12 +213,9 @@ mod tests {
                 if (!r.ok) { throw new Error("send failed"); }
                 "#
                 .to_string(),
-                ExecutionContext {
-                    invoked_by: InvocationScope::ScheduledAutomation {
-                        automation_id: "script-test".to_string(),
-                    },
-                    depth: 0,
-                },
+                ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                    automation_id: "script-test".to_string(),
+                }),
                 serde_json::json!({}),
             )
             .await
@@ -233,12 +247,9 @@ mod tests {
                 return { doubled };
                 "#
                 .to_string(),
-                ExecutionContext {
-                    invoked_by: InvocationScope::ScheduledAutomation {
-                        automation_id: "script-test".to_string(),
-                    },
-                    depth: 0,
-                },
+                ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                    automation_id: "script-test".to_string(),
+                }),
                 serde_json::json!({ "value": 21 }),
             )
             .await
@@ -258,12 +269,9 @@ mod tests {
                 return { ok: true, value: args.value };
                 "#
                 .to_string(),
-                ExecutionContext {
-                    invoked_by: InvocationScope::ScheduledAutomation {
-                        automation_id: "script-test".to_string(),
-                    },
-                    depth: 0,
-                },
+                ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                    automation_id: "script-test".to_string(),
+                }),
                 serde_json::json!({ "value": "kiwi" }),
             )
             .await
@@ -299,12 +307,9 @@ mod tests {
 	                return {{ first: JSON.parse(r)[0], third: JSON.parse(r)[2] }};
 	                "#
                 ),
-                ExecutionContext {
-                    invoked_by: InvocationScope::ScheduledAutomation {
-                        automation_id: "script-test".to_string(),
-                    },
-                    depth: 0,
-                },
+                ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                    automation_id: "script-test".to_string(),
+                }),
                 serde_json::json!({}),
             )
             .await
@@ -321,16 +326,43 @@ mod tests {
         let result = runtime
             .run(
                 "this is not valid javascript {".to_string(),
-                ExecutionContext {
-                    invoked_by: InvocationScope::ScheduledAutomation {
-                        automation_id: "script-test".to_string(),
-                    },
-                    depth: 0,
-                },
+                ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                    automation_id: "script-test".to_string(),
+                }),
                 serde_json::json!({}),
             )
             .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn require_explains_unavailable_modules() {
+        let bus = Bus::new(16);
+        let runtime = test_runtime(&bus);
+        let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
+            automation_id: "script-test".to_string(),
+        });
+
+        let fs_error = runtime
+            .run(
+                r#"require("fs");"#.to_string(),
+                ctx.clone(),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap_err();
+        assert!(fs_error.contains("list_files"));
+        assert!(fs_error.contains("require is unavailable"));
+
+        let module_error = runtime
+            .run(
+                r#"require("left-pad");"#.to_string(),
+                ctx,
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap_err();
+        assert!(module_error.contains("require is unavailable"));
     }
 }

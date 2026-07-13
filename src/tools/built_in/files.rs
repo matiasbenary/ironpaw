@@ -1,0 +1,398 @@
+use std::path::{Component, Path, PathBuf};
+
+use async_trait::async_trait;
+use tokio::fs::{self, OpenOptions};
+use tokio::io::AsyncWriteExt;
+
+use crate::{
+    message::ToolDefinition,
+    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+};
+
+/// File tools are the only filesystem surface exposed to the agent. Their
+/// root is selected from the host-owned execution context.
+#[derive(Clone)]
+struct ScopedFiles {
+    files_dir: PathBuf,
+}
+
+impl ScopedFiles {
+    fn new(files_dir: PathBuf) -> Self {
+        Self { files_dir }
+    }
+
+    async fn path(&self, ctx: &ExecutionContext, path: &str) -> Result<PathBuf, String> {
+        let path = Path::new(path);
+        if path.is_absolute()
+            || path.components().any(|part| {
+                matches!(
+                    part,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err("path must be relative to this execution's workspace".to_string());
+        }
+        if path.as_os_str().is_empty() {
+            return Err("path must not be empty".to_string());
+        }
+
+        let caller_stack = ctx
+            .tool_stack
+            .split_last()
+            .map_or(&[][..], |(_, stack)| stack);
+        let root = if caller_stack.is_empty() {
+            match &ctx.invoked_by {
+                crate::tools::InvocationScope::Conversation(_) => self.files_dir.join("user"),
+                crate::tools::InvocationScope::ScheduledAutomation { automation_id } => self
+                    .files_dir
+                    .join("automations")
+                    .join(scope_component(automation_id)),
+            }
+        } else {
+            caller_stack
+                .iter()
+                .fold(self.files_dir.join("tools"), |root, name| {
+                    root.join(scope_component(name))
+                })
+        };
+        fs::create_dir_all(&root)
+            .await
+            .map_err(|err| err.to_string())?;
+
+        let mut current = root.clone();
+        for component in path.components() {
+            let Component::Normal(name) = component else {
+                continue;
+            };
+            current.push(name);
+            if let Ok(metadata) = fs::symlink_metadata(&current).await
+                && metadata.file_type().is_symlink()
+            {
+                return Err("symbolic links are not allowed in the workspace".to_string());
+            }
+        }
+        Ok(root.join(path))
+    }
+}
+
+fn scope_component(name: &str) -> String {
+    name.bytes().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct ListFilesParams {
+    /// Directory relative to this execution's workspace. Defaults to the workspace root.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+pub struct ListFilesTool(ScopedFiles);
+
+impl ListFilesTool {
+    pub fn new(files_dir: PathBuf) -> Self {
+        Self(ScopedFiles::new(files_dir))
+    }
+}
+
+#[async_trait]
+impl InternalTool for ListFilesTool {
+    fn name(&self) -> &str {
+        "list_files"
+    }
+
+    fn tool_definition(&self) -> ToolDefinition {
+        tools::tool_definition::<ListFilesParams>(
+            self.name(),
+            "List files in this execution's private workspace. Paths are relative to that workspace.",
+        )
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ExecutionContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
+        let params: ListFilesParams =
+            serde_json::from_value(args).map_err(|err| err.to_string())?;
+        let path = self
+            .0
+            .path(ctx, params.path.as_deref().unwrap_or("."))
+            .await?;
+        let mut directory = fs::read_dir(path).await.map_err(|err| err.to_string())?;
+        let mut entries = Vec::new();
+        while let Some(entry) = directory
+            .next_entry()
+            .await
+            .map_err(|err| err.to_string())?
+        {
+            let kind = if entry
+                .file_type()
+                .await
+                .map_err(|err| err.to_string())?
+                .is_dir()
+            {
+                "directory"
+            } else {
+                "file"
+            };
+            entries.push(serde_json::json!({
+                "name": entry.file_name().to_string_lossy(),
+                "kind": kind,
+            }));
+        }
+        entries.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+        responder.respond(serde_json::json!({ "ok": true, "entries": entries }))?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct ReadFileParams {
+    /// File path relative to this execution's workspace.
+    pub path: String,
+}
+
+pub struct ReadFileTool(ScopedFiles);
+
+impl ReadFileTool {
+    pub fn new(files_dir: PathBuf) -> Self {
+        Self(ScopedFiles::new(files_dir))
+    }
+}
+
+#[async_trait]
+impl InternalTool for ReadFileTool {
+    fn name(&self) -> &str {
+        "read_file"
+    }
+
+    fn tool_definition(&self) -> ToolDefinition {
+        tools::tool_definition::<ReadFileParams>(
+            self.name(),
+            "Read a UTF-8 file from this execution's private workspace.",
+        )
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ExecutionContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
+        let params: ReadFileParams = serde_json::from_value(args).map_err(|err| err.to_string())?;
+        let path = self.0.path(ctx, &params.path).await?;
+        let content = fs::read_to_string(path)
+            .await
+            .map_err(|err| err.to_string())?;
+        responder.respond(serde_json::json!({ "ok": true, "content": content }))?;
+        Ok(())
+    }
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateFileParams {
+    /// File path relative to this execution's workspace.
+    pub path: String,
+    pub content: String,
+}
+
+pub struct CreateFileTool(ScopedFiles);
+
+impl CreateFileTool {
+    pub fn new(files_dir: PathBuf) -> Self {
+        Self(ScopedFiles::new(files_dir))
+    }
+}
+
+#[async_trait]
+impl InternalTool for CreateFileTool {
+    fn name(&self) -> &str {
+        "create_file"
+    }
+
+    fn tool_definition(&self) -> ToolDefinition {
+        tools::tool_definition::<CreateFileParams>(
+            self.name(),
+            "Create a new UTF-8 file in this execution's private workspace. Fails if it exists.",
+        )
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ExecutionContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
+        let params: CreateFileParams =
+            serde_json::from_value(args).map_err(|err| err.to_string())?;
+        let path = self.0.path(ctx, &params.path).await?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .await
+            .map_err(|err| err.to_string())?
+            .write_all(params.content.as_bytes())
+            .await
+            .map_err(|err| err.to_string())?;
+        responder.respond(serde_json::json!({ "ok": true }))?;
+        Ok(())
+    }
+}
+
+pub struct UpdateFileTool(ScopedFiles);
+
+impl UpdateFileTool {
+    pub fn new(files_dir: PathBuf) -> Self {
+        Self(ScopedFiles::new(files_dir))
+    }
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct UpdateFileParams {
+    /// File path relative to this execution's workspace.
+    pub path: String,
+    /// Exact text to replace. It must occur once in the file.
+    pub old_content: String,
+    /// Replacement text.
+    pub new_content: String,
+}
+
+#[async_trait]
+impl InternalTool for UpdateFileTool {
+    fn name(&self) -> &str {
+        "update_file"
+    }
+
+    fn tool_definition(&self) -> ToolDefinition {
+        tools::tool_definition::<UpdateFileParams>(
+            self.name(),
+            "Make one targeted edit to an existing UTF-8 file. Read the file first, then provide its exact old_content and replacement new_content.",
+        )
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ExecutionContext,
+        responder: ToolResponder,
+    ) -> Result<(), String> {
+        let params: UpdateFileParams =
+            serde_json::from_value(args).map_err(|err| err.to_string())?;
+        if params.old_content.is_empty() {
+            return Err("old_content must not be empty".to_string());
+        }
+        let path = self.0.path(ctx, &params.path).await?;
+        let content = fs::read_to_string(&path)
+            .await
+            .map_err(|err| err.to_string())?;
+        if content.matches(&params.old_content).count() != 1 {
+            return Err("old_content must occur exactly once in the file".to_string());
+        }
+        fs::write(
+            path,
+            content.replacen(&params.old_content, &params.new_content, 1),
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+        responder.respond(serde_json::json!({ "ok": true }))?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::InvocationScope;
+
+    #[tokio::test]
+    async fn paths_are_isolated_by_scope() {
+        let files = ScopedFiles::new(
+            std::env::temp_dir().join(format!("warden-file-tool-test-{}", uuid::Uuid::new_v4())),
+        );
+        let user = ExecutionContext::new(InvocationScope::ScheduledAutomation {
+            automation_id: "morning".to_string(),
+        });
+        let tool = user
+            .with_tool("reporter".to_string())
+            .with_tool("read_file".to_string());
+
+        assert!(
+            files
+                .path(&user, "state.json")
+                .await
+                .unwrap()
+                .ends_with("automations/6d6f726e696e67/state.json")
+        );
+        assert!(
+            files
+                .path(&tool, "state.json")
+                .await
+                .unwrap()
+                .ends_with("tools/7265706f72746572/state.json")
+        );
+        assert_eq!(
+            tool.with_tool("other_tool".to_string()).tool_stack,
+            vec!["reporter", "read_file", "other_tool"]
+        );
+    }
+
+    #[tokio::test]
+    async fn paths_cannot_escape_the_scope() {
+        let files = ScopedFiles::new(std::env::temp_dir());
+        let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
+            automation_id: "morning".to_string(),
+        });
+        assert!(files.path(&ctx, "../secrets").await.is_err());
+        assert!(files.path(&ctx, "/etc/passwd").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_and_update_stay_in_the_automation_workspace() {
+        let root =
+            std::env::temp_dir().join(format!("warden-file-tool-test-{}", uuid::Uuid::new_v4()));
+        let create = CreateFileTool::new(root.clone());
+        let update = UpdateFileTool::new(root.clone());
+        let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
+            automation_id: "morning".to_string(),
+        });
+
+        let (responder, _) = ToolResponder::capture();
+        create
+            .execute(
+                serde_json::json!({ "path": "state/today.txt", "content": "first" }),
+                &ctx,
+                responder,
+            )
+            .await
+            .unwrap();
+        let (responder, _) = ToolResponder::capture();
+        update
+            .execute(
+                serde_json::json!({
+                    "path": "state/today.txt",
+                    "old_content": "first",
+                    "new_content": "second",
+                }),
+                &ctx,
+                responder,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("automations/6d6f726e696e67/state/today.txt"))
+                .await
+                .unwrap(),
+            "second"
+        );
+        assert!(!root.join("user/state/today.txt").exists());
+    }
+}
