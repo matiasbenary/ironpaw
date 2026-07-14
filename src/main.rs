@@ -6,7 +6,7 @@ use warden::{
     bus::{Bus, Event},
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
-    history::{History, SqliteHistory},
+    history::{History, HistoryContext, SqliteHistory},
     memory::Memory,
     message::Attachment,
     tools::{
@@ -79,11 +79,14 @@ async fn main() -> io::Result<()> {
         )
         .map_err(io::Error::other)?,
     );
+    let history_context = Arc::new(HistoryContext::new(
+        Arc::clone(&history),
+        tools.raw_inference.clone(),
+    ));
     let agent = Arc::new(Agent::new(
         bus.clone(),
         Arc::clone(&tools.registry),
-        Arc::clone(&tool_handler),
-        Arc::clone(&history),
+        Arc::clone(&history_context),
         tools.raw_inference.clone(),
         memory,
     ));
@@ -95,6 +98,7 @@ async fn main() -> io::Result<()> {
         bus.clone(),
         Arc::clone(&tools),
         Arc::clone(&agent),
+        history_context,
         automation_store,
     ));
     let boot_events = bus.subscribe();
@@ -186,11 +190,6 @@ async fn main() -> io::Result<()> {
     automations
         .recover_stale_channel_auth()
         .map_err(std::io::Error::other)?;
-    if !automations.contains("handle-tool-result") {
-        automations
-            .add_transient(Automations::handle_tool_result())
-            .map_err(std::io::Error::other)?;
-    }
     if stored_count == 0 {
         if secrets.exists("NEAR_API_KEY") {
             automations

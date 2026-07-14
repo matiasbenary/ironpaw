@@ -609,55 +609,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_handler_persists_direct_tool_transcript() {
-        let bus = Bus::new(16);
-        let registry = Arc::new(ToolRegistry::new());
-        registry.add(Arc::new(FakeTool("fake"))).expect("add");
-        let history = temp_history("warden-tool-handler-direct-history");
-        let handler = ToolHandler::new(bus, registry, history.clone());
-        let conversation = test_conversation();
-        let tool_call = ToolCall {
-            id: "call-1".to_string(),
-            name: "fake".to_string(),
-            arguments: "{}".to_string(),
-        };
-        let ctx = ExecutionContext::new(InvocationScope::Conversation(conversation.clone()));
-
-        handler
-            .execute_tool_call(tool_call, serde_json::json!({}), &ctx)
-            .await
-            .expect("execute tool call");
-
-        let entries = history.load(&conversation).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert!(matches!(entries[0].message, Message::Assistant { .. }));
-        assert!(matches!(entries[1].message, Message::ToolResult { .. }));
-    }
-
-    #[tokio::test]
     async fn tool_handler_persists_automation_tool_transcript() {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());
         registry.add(Arc::new(FakeTool("fake"))).expect("add");
         let history = temp_history("warden-tool-handler-automation-history");
-        let handler = ToolHandler::new(bus, registry, history.clone());
+        let handler = Arc::new(ToolHandler::new(bus.clone(), registry, history.clone()));
+        let task = handler.start();
+        let mut events = bus.subscribe();
         let automation_id = "daily-album";
         let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
             automation_id: automation_id.to_string(),
         });
 
-        handler
-            .execute_tool_call(
-                ToolCall {
-                    id: "call-1".to_string(),
-                    name: "fake".to_string(),
-                    arguments: "{}".to_string(),
-                },
-                serde_json::json!({}),
-                &ctx,
-            )
-            .await
-            .expect("execute tool call");
+        bus.publish(Event::ToolRequest {
+            context: ctx,
+            tool_call: ToolCall {
+                id: "call-1".to_string(),
+                name: "fake".to_string(),
+                arguments: "{}".to_string(),
+            },
+            args: serde_json::json!({}),
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if matches!(
+                    events.recv().await.expect("event"),
+                    Event::ToolResult { .. }
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("tool result");
+        task.abort();
 
         let scope = crate::history::HistoryScope::Automation(automation_id.to_string());
         let entries = history.load_scope(&scope).unwrap();

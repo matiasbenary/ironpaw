@@ -6,7 +6,9 @@ use warden::{
     agent::Agent,
     automations::{Automations, SqliteAutomations},
     bus::{Bus, ConversationKey, Event, Sender},
-    history::{History, HistoryEntry, HistoryScope, MessageMetadata, SqliteHistory},
+    history::{
+        History, HistoryContext, HistoryEntry, HistoryScope, MessageMetadata, SqliteHistory,
+    },
     memory::Memory,
     message::{Attachment, Message},
     tools::{
@@ -72,7 +74,6 @@ fn start_warden_config(
         Arc::clone(&tools.registry),
         Arc::clone(&history),
     ));
-    let tool_handler_for_agent = Arc::clone(&tool_handler);
     let memory = Arc::new(
         Memory::new(
             layout.data_dir().join("memory.db"),
@@ -81,11 +82,14 @@ fn start_warden_config(
         )
         .expect("create native memory"),
     );
+    let history_context = Arc::new(HistoryContext::new(
+        Arc::clone(&history),
+        tools.raw_inference.clone(),
+    ));
     let agent = Agent::new(
         bus.clone(),
         Arc::clone(&tools.registry),
-        tool_handler_for_agent,
-        Arc::clone(&history),
+        Arc::clone(&history_context),
         tools.raw_inference.clone(),
         Arc::clone(&memory),
     );
@@ -100,6 +104,7 @@ fn start_warden_config(
         bus.clone(),
         Arc::clone(&tools),
         Arc::clone(&agent),
+        history_context,
         automation_store,
     ));
     install_web_search_for_live_tests(&layout, &tools, &secrets);
@@ -117,9 +122,6 @@ fn start_warden_config(
     automations
         .add(Automations::handle_conversation())
         .expect("stock automation registers");
-    automations
-        .add_transient(Automations::handle_tool_result())
-        .expect("tool result automation registers");
     let _tool_handler_task = tool_handler.start();
     (automations.start(), history, automations, memory)
 }

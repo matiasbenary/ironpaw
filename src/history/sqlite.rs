@@ -122,7 +122,10 @@ impl History for SqliteHistory {
             .prepare(
                 "SELECT item_json, metadata_json FROM entries
                  WHERE conversation_key = ?1 AND active = 1
-                 ORDER BY id ASC",
+                 ORDER BY CASE
+                     WHEN json_extract(item_json, '$.System') LIKE '[history summary] %' THEN 0
+                     ELSE 1
+                 END, id ASC",
             )
             .map_err(|err| err.to_string())?;
         let rows = stmt
@@ -208,12 +211,14 @@ impl History for SqliteHistory {
         retained: &[HistoryEntry],
     ) -> Result<(), String> {
         let conversation_key = scope.storage_key();
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE entries SET active = 0 WHERE conversation_key = ?1 AND active = 1",
-            params![conversation_key],
-        )
-        .map_err(|err| err.to_string())?;
+        let mut conn = self.conn()?;
+        let transaction = conn.transaction().map_err(|err| err.to_string())?;
+        transaction
+            .execute(
+                "UPDATE entries SET active = 0 WHERE conversation_key = ?1 AND active = 1",
+                params![&conversation_key],
+            )
+            .map_err(|err| err.to_string())?;
         let summary_item = Message::System(format!("[history summary] {summary}"));
         let summary_metadata = match scope {
             HistoryScope::Conversation(conversation) => {
@@ -226,25 +231,24 @@ impl History for SqliteHistory {
         let json = serde_json::to_string(&summary_item).map_err(|err| err.to_string())?;
         let metadata_json =
             serde_json::to_string(&summary_metadata).map_err(|err| err.to_string())?;
-        conn.execute(
-            "INSERT INTO entries(conversation_key, item_json, metadata_json, search_text)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![conversation_key, json, metadata_json, summary],
-        )
-        .map_err(|err| err.to_string())?;
-        for entry in retained {
-            let json = serde_json::to_string(&entry.message).map_err(|err| err.to_string())?;
-            let metadata_json =
-                serde_json::to_string(&entry.metadata).map_err(|err| err.to_string())?;
-            let text = extract_search_text(&entry.message);
-            conn.execute(
+        transaction
+            .execute(
                 "INSERT INTO entries(conversation_key, item_json, metadata_json, search_text)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![conversation_key, json, metadata_json, text],
+             VALUES (?1, ?2, ?3, ?4)",
+                params![&conversation_key, json, metadata_json, summary],
             )
             .map_err(|err| err.to_string())?;
+        for entry in retained {
+            transaction
+                .execute(
+                    "UPDATE entries SET active = 1
+                     WHERE conversation_key = ?1
+                       AND json_extract(metadata_json, '$.id') = ?2",
+                    params![&conversation_key, &entry.metadata.id],
+                )
+                .map_err(|err| err.to_string())?;
         }
-        Ok(())
+        transaction.commit().map_err(|err| err.to_string())
     }
 
     fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, String> {

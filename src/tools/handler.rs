@@ -4,7 +4,7 @@ use crate::{
     bus::{Bus, Event, InvocationScope},
     history::{History, HistoryEntry, HistoryScope, MessageMetadata},
     message::{Message, ToolCall},
-    tools::{ExecutionContext, ToolRegistry, run_registered_tool, run_registered_tool_for_context},
+    tools::{ExecutionContext, ToolRegistry, run_registered_tool_for_context},
 };
 
 pub struct ToolHandler {
@@ -71,23 +71,6 @@ impl ToolHandler {
             )
             .await;
         });
-    }
-
-    pub async fn execute_tool_call(
-        &self,
-        tool_call: ToolCall,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-    ) -> Result<Message, String> {
-        self.persist_tool_call(ctx, &tool_call)?;
-        let result = run_registered_tool(&self.registry, &tool_call.name, args, ctx).await;
-        let message = Message::ToolResult {
-            tool_call_id: tool_call.id,
-            tool_name: tool_call.name,
-            result,
-        };
-        persist_tool_result(self.history.as_ref(), ctx, &message)?;
-        Ok(message)
     }
 
     fn persist_tool_call(
