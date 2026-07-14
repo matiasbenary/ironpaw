@@ -9,6 +9,8 @@ use crate::{
     tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolHandler, ToolRegistry},
 };
 
+const DEFAULT_TASK_TOOLS: [&str; 4] = ["list_files", "read_file", "create_file", "update_file"];
+
 use super::{
     preamble::system_preamble,
     utils::{publish_channel_action, publish_progress},
@@ -74,8 +76,13 @@ impl Agent {
         &self,
         automation_id: String,
         prompt: String,
-        tool_names: Vec<String>,
+        mut tool_names: Vec<String>,
     ) -> Result<Option<String>, String> {
+        for name in DEFAULT_TASK_TOOLS {
+            if !tool_names.iter().any(|tool_name| tool_name == name) {
+                tool_names.push(name.to_string());
+            }
+        }
         let tools = self.tools.named_tools(&tool_names)?;
         let history_scope = HistoryScope::Automation(automation_id.clone());
         self.history.append_scope(

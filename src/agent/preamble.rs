@@ -23,7 +23,8 @@ pub(super) fn system_preamble(destination: Destination<'_>) -> Vec<Message> {
             text
         }
         None => "You are a personal assistant running a background task. \
-            Your final message is returned to the caller that started the task."
+            Your final message is returned to the caller that started the task. \
+            Use file tools to persist state between executions when needed."
             .to_string(),
     };
     text.push_str(&format!(

@@ -27,11 +27,10 @@ pub struct CreateAutomationParams {
     #[serde(default)]
     pub args: Option<serde_json::Value>,
     /// Prompt for an agent task that runs on every trigger. Each execution receives
-    /// message history from earlier runs. File tools included in `agent_tools` access
-    /// this automation's isolated directory.
+    /// message history from earlier runs and file tools scoped to this automation.
     #[serde(default)]
     pub agent_prompt: Option<String>,
-    /// Exact tools the agent task may use. Required with `agent_prompt`.
+    /// Additional tools the agent task may use beyond its default file tools.
     #[serde(default)]
     pub agent_tools: Vec<String>,
 }
@@ -113,13 +112,10 @@ impl AutomationTool {
                 tool,
                 args: parse_args(params.args)?,
             },
-            (None, Some(prompt)) if !params.agent_tools.is_empty() => AutomationEffect::AgentTask {
+            (None, Some(prompt)) => AutomationEffect::AgentTask {
                 prompt,
                 tools: params.agent_tools,
             },
-            (None, Some(_)) => {
-                return Err("agent_tools must not be empty for an agent task".to_string());
-            }
             _ => return Err("set exactly one of tool or agent_prompt".to_string()),
         };
         self.request(AutomationAction::Create {
