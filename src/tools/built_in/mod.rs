@@ -1,4 +1,5 @@
 pub mod automation;
+pub mod browser;
 pub mod download_file;
 pub mod files;
 pub mod image_generation;

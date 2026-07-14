@@ -164,7 +164,9 @@ impl InternalTool for WebFetchTool {
         tools::tool_definition::<WebFetchParams>(
             self.name(),
             "Fetch a public URL (HTTP GET). Returns the response body as a \
-             string (call JSON.parse on it if the body is JSON). Read-only.",
+             string (call JSON.parse on it if the body is JSON). Read-only; it \
+             does not execute JavaScript or interact with the page. Use browser \
+             for rendered, JavaScript-heavy, or interactive pages.",
         )
     }
 

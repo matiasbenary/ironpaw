@@ -79,9 +79,7 @@ impl RawInferenceTool {
             .secrets
             .get("NEAR_API_KEY")
             .ok_or_else(|| "missing tool secret: NEAR_API_KEY".to_string())?;
-        log_entry("request", &request);
         let chat_request = self.chat_request(&request)?;
-        log_entry("chat request", &chat_request);
 
         let response = self
             .client
@@ -100,15 +98,33 @@ impl RawInferenceTool {
             .map_err(|err| err.to_string())?;
 
         if !status.is_success() {
-            write_log_entry(&format!("error {status}"), &body);
             return Err(format!("request failed with {status}: {body}"));
         }
 
         let response = serde_json::from_str(&body)
             .map_err(|err| format!("failed to parse chat response JSON: {err}"))?;
-        log_entry("response", &response);
 
         response_to_output(response)
+    }
+
+    pub fn log_agent_run(&self, request: &RawInferenceRequest, output: &RawInferenceOutput) {
+        let Ok(request) = self.chat_request(request) else {
+            return;
+        };
+        log_entry(
+            "agent run",
+            &serde_json::json!({ "request": request, "response": output }),
+        );
+    }
+
+    pub fn log_agent_request(&self, request: &RawInferenceRequest) {
+        let Ok(request) = self.chat_request(request) else {
+            return;
+        };
+        log_entry(
+            "agent run (in progress)",
+            &serde_json::json!({ "request": request }),
+        );
     }
 
     fn chat_request(&self, request: &RawInferenceRequest) -> Result<serde_json::Value, String> {
@@ -208,25 +224,18 @@ fn log_entry(label: &str, content: &impl serde::Serialize) {
     let Ok(body) = serde_json::to_string_pretty(content) else {
         return;
     };
-    write_log_entry(label, &body);
-}
-
-fn write_log_entry(label: &str, content: &str) {
-    static INITIALIZED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     let path = "/Users/gagdiez/tmp/miniclaw/release/llm_requests.log";
-    let first = INITIALIZED.set(()).is_ok();
     let header = format!("=== {label} ===");
     let sep = "=".repeat(header.len());
     let _ = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
-        .truncate(first)
-        .append(!first)
+        .truncate(true)
         .open(path)
         .and_then(|mut f| {
             use std::io::Write as _;
             writeln!(f, "{header}")?;
-            writeln!(f, "{content}")?;
+            writeln!(f, "{body}")?;
             writeln!(f, "{sep}")
         });
 }

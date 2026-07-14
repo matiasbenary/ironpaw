@@ -60,7 +60,12 @@ impl Agent {
             history_scope: HistoryScope::Conversation(conversation.clone()),
             context,
             transient_messages: Vec::new(),
-            tools: self.tools.all(),
+            tools: self
+                .tools
+                .all()
+                .into_iter()
+                .filter(|tool| tool.agent_visible())
+                .collect(),
             allowed_tool_names: None,
             recalled_memories: Vec::new(),
         })
@@ -140,9 +145,10 @@ impl Agent {
                 parallel_tool_calls: false,
             };
 
-            let output = self.raw_inference.execute(request).await?;
-            compact_before_next_round = output.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS;
-            let output = output.message;
+            self.raw_inference.log_agent_request(&request);
+            let inference = self.raw_inference.execute(request.clone()).await?;
+            compact_before_next_round = inference.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS;
+            let output = inference.message.clone();
             let Message::Assistant {
                 text, tool_calls, ..
             } = output.clone()
@@ -151,6 +157,7 @@ impl Agent {
             };
             run.transient_messages.clear();
             if tool_calls.is_empty() {
+                self.raw_inference.log_agent_run(&request, &inference);
                 debug_log(format!(
                     "agent: round {} finished with assistant text",
                     round

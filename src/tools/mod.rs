@@ -16,7 +16,7 @@ use crate::{
 
 pub use crate::bus::{ExecutionContext, InvocationScope};
 pub use built_in::{
-    automation, download_file, image_generation, inspect_file, messages, raw_inference,
+    automation, browser, download_file, image_generation, inspect_file, messages, raw_inference,
     request_user_input, search_history, setup, todo, unlock, web,
 };
 pub use context::ToolResponder;
@@ -26,6 +26,7 @@ pub use runner::{run_internal_tool, run_registered_tool, run_tool};
 
 use self::built_in::{
     automation::{AutomationTool, AutomationToolKind},
+    browser::{BrowserTool, BrowserUpdateTool},
     download_file::DownloadFileTool,
     files::{CreateFileTool, ListFilesTool, ReadFileTool, UpdateFileTool},
     image_generation::ImageGenerationTool,
@@ -170,9 +171,11 @@ impl InternalTools {
                 AutomationToolKind::Inspect,
             )),
             tool(AutomationTool::new(bus, AutomationToolKind::List)),
-            tool(ListChannelsTool::new(layout, secrets)),
+            tool(ListChannelsTool::new(layout.clone(), secrets)),
             Arc::clone(&create_tool) as Arc<dyn InternalTool>,
             tool(SearchHistoryTool::new(Arc::clone(&history))),
+            tool(BrowserTool::new(layout.clone())),
+            tool(BrowserUpdateTool::new(layout.clone())),
             tool(WebFetchTool::new()),
         ] {
             registry.add(tool).expect("unique built-in tool name");
@@ -190,6 +193,12 @@ impl InternalTools {
 #[async_trait]
 pub trait InternalTool: Send + Sync {
     fn name(&self) -> &str;
+
+    /// Maintenance tools can run from system automations without being offered
+    /// to the language model.
+    fn agent_visible(&self) -> bool {
+        true
+    }
 
     fn tool_definition(&self) -> ToolDefinition;
 

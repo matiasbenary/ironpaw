@@ -113,7 +113,7 @@ pub(crate) fn persist_tool_result(
 
 fn bounded_history_message(message: &Message) -> Message {
     const MAX_STRING_BYTES: usize = 8_000;
-    const MAX_ARRAY_ITEMS: usize = 5;
+    const MAX_ARRAY_ITEMS: usize = 100;
     let Message::ToolResult {
         tool_call_id,
         tool_name,

@@ -11,6 +11,7 @@ use warden::{
     message::Attachment,
     tools::{
         InternalTool, InternalTools, ToolHandler,
+        browser::BrowserUpdateTool,
         dynamic::DynamicTool,
         messages::{DeleteMessageTool, SendMessageTool},
         raw_inference::RawInferenceTool,
@@ -182,6 +183,15 @@ async fn main() -> io::Result<()> {
         .add(Arc::new(install_tool.setup_tool()))
         .map_err(std::io::Error::other)?;
     let stored_count = automations.load_stored().map_err(std::io::Error::other)?;
+    if !automations
+        .list()
+        .iter()
+        .any(|automation| automation.name == warden::tools::browser::UPDATE_AUTOMATION_NAME)
+    {
+        automations
+            .add_transient(BrowserUpdateTool::automation())
+            .map_err(std::io::Error::other)?;
+    }
     automations
         .recover_stale_channel_auth()
         .map_err(std::io::Error::other)?;
