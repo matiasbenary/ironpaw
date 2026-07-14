@@ -1,7 +1,5 @@
-mod context;
 mod sqlite;
 
-pub use context::HistoryContext;
 pub use sqlite::SqliteHistory;
 
 use crate::{

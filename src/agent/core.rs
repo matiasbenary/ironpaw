@@ -2,7 +2,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     bus::{Bus, ChannelAction, ConversationKey, Event},
-    history::{HistoryContext, HistoryEntry, HistoryScope, MessageMetadata},
+    history::{History, HistoryEntry, HistoryScope, MessageMetadata},
     memory::Memory,
     message::{Message, ToolCall, ToolDefinition},
     models,
@@ -10,6 +10,7 @@ use crate::{
 };
 
 const DEFAULT_TASK_TOOLS: [&str; 4] = ["list_files", "read_file", "create_file", "update_file"];
+const COMPACT_AT_PROMPT_TOKENS: u64 = 256_000;
 
 use super::{
     preamble::system_preamble,
@@ -24,7 +25,7 @@ pub type Destination<'a> = Option<&'a ConversationKey>;
 pub struct Agent {
     bus: Bus,
     tools: Arc<ToolRegistry>,
-    history_context: Arc<HistoryContext>,
+    history: Arc<dyn History>,
     raw_inference: RawInferenceTool,
     memory: Arc<Memory>,
 }
@@ -33,14 +34,14 @@ impl Agent {
     pub fn new(
         bus: Bus,
         tools: Arc<ToolRegistry>,
-        history_context: Arc<HistoryContext>,
+        history: Arc<dyn History>,
         raw_inference: RawInferenceTool,
         memory: Arc<Memory>,
     ) -> Self {
         Self {
             bus,
             tools,
-            history_context,
+            history,
             raw_inference,
             memory,
         }
@@ -79,7 +80,7 @@ impl Agent {
         }
         let tools = self.tools.named_tools(&tool_names)?;
         let history_scope = HistoryScope::Automation(automation_id.clone());
-        self.history_context.append(
+        self.history.append_scope(
             &history_scope,
             &[HistoryEntry {
                 message: Message::User {
@@ -112,9 +113,13 @@ impl Agent {
                 Err(error) => debug_log(format!("memory recall failed: {error}")),
             }
         }
+        let mut compact_before_next_round = false;
         let mut round = 0;
         loop {
             round += 1;
+            if compact_before_next_round {
+                self.compact_history(&run.history_scope).await?;
+            }
             run.transient_messages
                 .extend(ctx.drain_tool_budget_messages());
             if let Some(conversation) = run.destination {
@@ -136,9 +141,7 @@ impl Agent {
             };
 
             let output = self.raw_inference.execute(request).await?;
-            self.history_context
-                .compact_if_needed(&run.history_scope, output.usage.prompt_tokens)
-                .await?;
+            compact_before_next_round = output.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS;
             let output = output.message;
             let Message::Assistant {
                 text, tool_calls, ..
@@ -154,8 +157,8 @@ impl Agent {
                 ));
                 if text.as_deref().is_some_and(|text| !text.is_empty()) {
                     let scope = &run.history_scope;
-                    self.history_context
-                        .append(scope, &[history_entry(output.clone(), scope)])?;
+                    self.history
+                        .append_scope(scope, &[history_entry(output.clone(), scope)])?;
                     self.ingest_memory(scope);
                 }
                 return Ok(text.filter(|text| !text.is_empty()));
@@ -212,7 +215,7 @@ impl Agent {
                 "[recalled user memory]\n{recalled}\nUse these memories only when relevant."
             )));
         }
-        for entry in self.history_context.load(&run.history_scope)? {
+        for entry in self.history.load_scope(&run.history_scope)? {
             let mut message = entry.message;
             if let Some(external_id) = entry.metadata.external_id {
                 match &mut message {
@@ -236,8 +239,8 @@ impl Agent {
 
     fn latest_user_text(&self, scope: &HistoryScope) -> Result<Option<String>, String> {
         Ok(self
-            .history_context
-            .load(scope)?
+            .history
+            .load_scope(scope)?
             .into_iter()
             .rev()
             .find_map(|entry| match entry.message {
@@ -247,7 +250,7 @@ impl Agent {
     }
 
     fn ingest_memory(&self, scope: &HistoryScope) {
-        let Ok(entries) = self.history_context.load(scope) else {
+        let Ok(entries) = self.history.load_scope(scope) else {
             return;
         };
         let Some(user_index) = entries
@@ -279,6 +282,71 @@ impl Agent {
             publish_progress(&self.bus, conversation, progress_message);
         }
     }
+
+    async fn compact_history(&self, scope: &HistoryScope) -> Result<(), String> {
+        let history = self.history.load_scope(scope)?;
+        if history.is_empty() {
+            return Ok(());
+        }
+        let retained = retained_entries(&history);
+        let retained_ids = retained
+            .iter()
+            .map(|entry| entry.metadata.id.as_str())
+            .collect::<HashSet<_>>();
+        let messages = history
+            .iter()
+            .filter(|entry| !retained_ids.contains(entry.metadata.id.as_str()))
+            .map(|entry| entry.message.clone())
+            .collect::<Vec<_>>();
+        if messages.is_empty() {
+            return Ok(());
+        }
+        let transcript = serde_json::to_string(&messages).map_err(|err| err.to_string())?;
+        let response = self
+            .raw_inference
+            .execute(RawInferenceRequest {
+                model: models::text_model(),
+                messages: vec![
+                    Message::System(
+                        "Summarize older history for future runs. This summary is not an action ledger. Do not claim an action, delivery, user acknowledgement, recommendation, date, or research finding unless the transcript explicitly proves it. Omit uncertain information. Preserve only user preferences, durable source ids, verified tool evidence, and unresolved work."
+                            .to_string(),
+                    ),
+                    Message::User {
+                        text: transcript,
+                        attachments: Vec::new(),
+                    },
+                ],
+                tools: Vec::new(),
+                parallel_tool_calls: false,
+            })
+            .await?;
+        let Message::Assistant { text, .. } = response.message else {
+            return Err(
+                "history compaction model response was not an assistant message".to_string(),
+            );
+        };
+        let summary = text.unwrap_or_default();
+        if summary.trim().is_empty() {
+            return Err("history compaction response was empty".to_string());
+        }
+        self.history.compact_scope(scope, &summary, &retained)
+    }
+}
+
+fn retained_entries(history: &[HistoryEntry]) -> Vec<HistoryEntry> {
+    let mut retained = history.iter().rev().take(4).cloned().collect::<Vec<_>>();
+    if let Some(user) = history
+        .iter()
+        .rev()
+        .find(|entry| matches!(entry.message, Message::User { .. }))
+        && !retained
+            .iter()
+            .any(|entry| entry.metadata.id == user.metadata.id)
+    {
+        retained.push(user.clone());
+    }
+    retained.reverse();
+    retained
 }
 
 async fn wait_for_tool_results(

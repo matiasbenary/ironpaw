@@ -6,7 +6,7 @@ use warden::{
     bus::{Bus, Event},
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
-    history::{History, HistoryContext, SqliteHistory},
+    history::{History, SqliteHistory},
     memory::Memory,
     message::Attachment,
     tools::{
@@ -79,14 +79,10 @@ async fn main() -> io::Result<()> {
         )
         .map_err(io::Error::other)?,
     );
-    let history_context = Arc::new(HistoryContext::new(
-        Arc::clone(&history),
-        tools.raw_inference.clone(),
-    ));
     let agent = Arc::new(Agent::new(
         bus.clone(),
         Arc::clone(&tools.registry),
-        Arc::clone(&history_context),
+        Arc::clone(&history),
         tools.raw_inference.clone(),
         memory,
     ));
@@ -98,7 +94,6 @@ async fn main() -> io::Result<()> {
         bus.clone(),
         Arc::clone(&tools),
         Arc::clone(&agent),
-        history_context,
         automation_store,
     ));
     let boot_events = bus.subscribe();

@@ -6,8 +6,6 @@ use crate::{
         AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, InvocationScope,
         Sender, SenderKind,
     },
-    history::{HistoryContext, HistoryEntry, HistoryScope, MessageMetadata},
-    message::Message,
     tools::{ExecutionContext, InternalTools},
 };
 
@@ -130,7 +128,6 @@ pub struct Automations {
     bus: Bus,
     tools: Arc<InternalTools>,
     agent: Arc<Agent>,
-    history_context: Arc<HistoryContext>,
     automations: RwLock<Vec<Arc<Automation>>>,
     store: Arc<SqliteAutomations>,
 }
@@ -140,14 +137,12 @@ impl Automations {
         bus: Bus,
         tools: Arc<InternalTools>,
         agent: Arc<Agent>,
-        history_context: Arc<HistoryContext>,
         store: Arc<SqliteAutomations>,
     ) -> Self {
         Self {
             bus,
             tools,
             agent,
-            history_context,
             automations: RwLock::new(Vec::new()),
             store,
         }
@@ -489,35 +484,6 @@ impl Automations {
             .effect
             .execute(&self.bus, &self.tools, &self.agent, &ctx, &event)
             .await;
-        if matches!(automation.effect, AutomationEffect::AgentTask { .. }) {
-            let scope = HistoryScope::Automation(automation.name.clone());
-            let error = result
-                .get("ok")
-                .and_then(serde_json::Value::as_bool)
-                .filter(|ok| !ok)
-                .and_then(|_| result.get("error"))
-                .and_then(serde_json::Value::as_str);
-            if let Some(error) = error
-                && let Err(append_error) = self.history_context.append(
-                    &scope,
-                    &[HistoryEntry {
-                        message: Message::System(format!("[automation run failed] {error}")),
-                        metadata: MessageMetadata::for_automation(&automation.name),
-                    }],
-                )
-            {
-                eprintln!(
-                    "failed to record automation failure '{}': {append_error}",
-                    automation.name
-                );
-            }
-            if let Err(error) = self.history_context.compact(&scope).await {
-                eprintln!(
-                    "failed to compact automation history '{}': {error}",
-                    automation.name
-                );
-            }
-        }
         if result.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
             eprintln!(
                 "automation '{}' failed: {}",
@@ -570,7 +536,7 @@ mod tests {
     use crate::{
         agent::Agent,
         bus::ConversationKey,
-        history::{HistoryContext, SqliteHistory},
+        history::SqliteHistory,
         message::Message,
         tools::{InternalTools, messages::SendMessageTool, raw_inference::RawInferenceTool},
     };
@@ -623,16 +589,9 @@ mod tests {
         Arc::new(Agent::new(
             bus.clone(),
             Arc::clone(&tools.registry),
-            test_history_context(tools),
-            tools.raw_inference.clone(),
-            memory,
-        ))
-    }
-
-    fn test_history_context(tools: &Arc<InternalTools>) -> Arc<HistoryContext> {
-        Arc::new(HistoryContext::new(
             Arc::clone(&tools.history),
             tools.raw_inference.clone(),
+            memory,
         ))
     }
 
@@ -690,7 +649,6 @@ mod tests {
             bus.clone(),
             Arc::clone(&tools),
             test_agent(&bus, &tools),
-            test_history_context(&tools),
             Arc::clone(&store),
         ));
         automations
@@ -717,7 +675,6 @@ mod tests {
             bus.clone(),
             Arc::clone(&tools),
             test_agent(&bus, &tools),
-            test_history_context(&tools),
             temp_store(),
         ));
         automations.add(Automations::handle_conversation()).unwrap();

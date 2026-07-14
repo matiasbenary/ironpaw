@@ -6,9 +6,7 @@ use warden::{
     agent::Agent,
     automations::{Automations, SqliteAutomations},
     bus::{Bus, ConversationKey, Event, Sender},
-    history::{
-        History, HistoryContext, HistoryEntry, HistoryScope, MessageMetadata, SqliteHistory,
-    },
+    history::{History, HistoryEntry, HistoryScope, MessageMetadata, SqliteHistory},
     memory::Memory,
     message::{Attachment, Message},
     tools::{
@@ -82,14 +80,10 @@ fn start_warden_config(
         )
         .expect("create native memory"),
     );
-    let history_context = Arc::new(HistoryContext::new(
-        Arc::clone(&history),
-        tools.raw_inference.clone(),
-    ));
     let agent = Agent::new(
         bus.clone(),
         Arc::clone(&tools.registry),
-        Arc::clone(&history_context),
+        Arc::clone(&history),
         tools.raw_inference.clone(),
         Arc::clone(&memory),
     );
@@ -104,7 +98,6 @@ fn start_warden_config(
         bus.clone(),
         Arc::clone(&tools),
         Arc::clone(&agent),
-        history_context,
         automation_store,
     ));
     install_web_search_for_live_tests(&layout, &tools, &secrets);
