@@ -1,5 +1,6 @@
 use crate::message::{Message, ToolCall};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Sender {
@@ -60,7 +61,16 @@ pub struct ExecutionContext {
     pub invoked_by: InvocationScope,
     /// Every registered tool entered through the host runner, in call order.
     pub tool_stack: Vec<String>,
+    /// Tool usage for this turn, shared by nested and asynchronous tools.
+    #[serde(skip)]
+    pub(crate) tool_budget: Arc<Mutex<ToolBudget>>,
     pub depth: usize,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ToolBudget {
+    pub used: usize,
+    pub pending_warnings: Vec<Message>,
 }
 
 impl ExecutionContext {
@@ -68,6 +78,7 @@ impl ExecutionContext {
         Self {
             invoked_by,
             tool_stack: Vec::new(),
+            tool_budget: Arc::new(Mutex::new(ToolBudget::default())),
             depth: 0,
         }
     }
@@ -78,8 +89,19 @@ impl ExecutionContext {
         Self {
             invoked_by: self.invoked_by.clone(),
             tool_stack,
+            tool_budget: Arc::clone(&self.tool_budget),
             depth: self.depth,
         }
+    }
+
+    pub(crate) fn drain_tool_budget_messages(&self) -> Vec<Message> {
+        std::mem::take(
+            &mut self
+                .tool_budget
+                .lock()
+                .expect("tool budget lock")
+                .pending_warnings,
+        )
     }
 }
 

@@ -550,6 +550,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_tool_enforces_agent_call_budget() {
+        let tools = test_tools();
+        tools.registry.add(Arc::new(FakeTool("fake"))).expect("add");
+        let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
+            automation_id: "test".to_string(),
+        });
+        ctx.tool_budget.lock().unwrap().used = runner::MAX_TOOL_CALLS;
+
+        let result = run_tool(&tools, "fake", serde_json::json!({}), &ctx).await;
+
+        assert_eq!(result["ok"], false);
+        assert!(result["error"].as_str().unwrap().contains("limit reached"));
+    }
+
+    #[tokio::test]
     async fn tool_handler_runs_tool_requests() {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());

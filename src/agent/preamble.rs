@@ -37,7 +37,7 @@ pub(super) fn system_preamble(destination: Destination<'_>) -> Vec<Message> {
     );
     text.push_str(
         " Use focused tool calls to verify external facts or process user-provided data. \
-        Stop once you have enough evidence to act; do not research broadly when it will not improve the result.",
+        Be mindful of unnecessary tool calls. Stop once you have enough evidence to act; do not research broadly when it will not improve the result.",
     );
 
     vec![Message::System(text)]

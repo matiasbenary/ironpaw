@@ -54,7 +54,10 @@ impl AutomationEffect {
             }
             Self::ContinueConversation => match &ctx.invoked_by {
                 InvocationScope::Conversation(conversation) => {
-                    match agent.handle_conversation(Some(conversation)).await {
+                    match agent
+                        .handle_conversation(Some(conversation), ctx.clone())
+                        .await
+                    {
                         Ok(result) => {
                             if let Some(text) = result {
                                 send_to_destination(bus, conversation, text);

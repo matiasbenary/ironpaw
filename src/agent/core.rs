@@ -15,7 +15,6 @@ use super::{
 };
 use crate::tools::raw_inference::{RawInferenceRequest, RawInferenceTool};
 
-const MAX_TOOL_ROUNDS: usize = 8;
 const COMPACT_AT_PROMPT_TOKENS: u64 = 256_000;
 
 /// The conversation a run replies to.
@@ -53,6 +52,7 @@ impl Agent {
     pub async fn handle_conversation(
         &self,
         destination: Destination<'_>,
+        context: ExecutionContext,
     ) -> Result<Option<String>, String> {
         let Some(conversation) = destination else {
             return Err("conversation is required".to_string());
@@ -60,7 +60,7 @@ impl Agent {
         self.run(AgentRun {
             destination,
             history_scope: Some(HistoryScope::Conversation(conversation.clone())),
-            invocation_scope: InvocationScope::Conversation(conversation.clone()),
+            context,
             transient_messages: Vec::new(),
             tools: self.tools.all(),
             allowed_tool_names: None,
@@ -91,7 +91,7 @@ impl Agent {
         self.run(AgentRun {
             destination: None,
             history_scope: Some(history_scope),
-            invocation_scope: InvocationScope::ScheduledAutomation { automation_id },
+            context: ExecutionContext::new(InvocationScope::ScheduledAutomation { automation_id }),
             transient_messages: Vec::new(),
             tools,
             allowed_tool_names: Some(tool_names),
@@ -105,7 +105,7 @@ impl Agent {
     /// model input for this run but are not persisted by the agent as user
     /// history.
     async fn run(&self, mut run: AgentRun<'_>) -> Result<Option<String>, String> {
-        let ctx = ExecutionContext::new(run.invocation_scope.clone());
+        let ctx = run.context.clone();
         if let Some(query) = self.latest_user_text(run.history_scope.as_ref())? {
             match self.memory.recall(&query).await {
                 Ok(memories) => run.recalled_memories = memories,
@@ -114,10 +114,14 @@ impl Agent {
         }
         let mut compact_before_next_round = false;
 
-        for round in 0..MAX_TOOL_ROUNDS {
+        let mut round = 0;
+        loop {
+            round += 1;
             if compact_before_next_round {
                 self.compact_history(run.history_scope.as_ref()).await?;
             }
+            run.transient_messages
+                .extend(ctx.drain_tool_budget_messages());
             if let Some(conversation) = run.destination {
                 publish_channel_action(&self.bus, conversation, ChannelAction::Typing);
             }
@@ -125,7 +129,7 @@ impl Agent {
             let model_messages = self.model_messages(&run)?;
             debug_log(format!(
                 "agent: round {} calling chat_completions(messages={}, tools={})",
-                round + 1,
+                round,
                 model_messages.len(),
                 available_tools.len()
             ));
@@ -150,7 +154,7 @@ impl Agent {
             if tool_calls.is_empty() {
                 debug_log(format!(
                     "agent: round {} finished with assistant text",
-                    round + 1
+                    round
                 ));
                 if run.persist_history && text.as_deref().is_some_and(|text| !text.is_empty()) {
                     let scope = run
@@ -166,7 +170,7 @@ impl Agent {
 
             debug_log(format!(
                 "agent: round {} received {} tool call(s)",
-                round + 1,
+                round,
                 tool_calls.len()
             ));
             let mut tool_results = Vec::new();
@@ -207,26 +211,6 @@ impl Agent {
                 }
             }
         }
-
-        let stopped = "stopped after too many tool calls".to_string();
-        if run.persist_history {
-            let scope = run
-                .history_scope
-                .as_ref()
-                .expect("persistent run has scope");
-            self.history.append_scope(
-                scope,
-                &[history_entry(
-                    Message::Assistant {
-                        text: Some(format!("[tool use] {stopped}")),
-                        attachments: Vec::new(),
-                        tool_calls: Vec::new(),
-                    },
-                    Some(scope),
-                )],
-            )?;
-        }
-        Ok(Some(stopped))
     }
 
     fn model_messages(&self, run: &AgentRun<'_>) -> Result<Vec<Message>, String> {
@@ -397,7 +381,7 @@ fn retained_entries(history: &[HistoryEntry]) -> Vec<HistoryEntry> {
 struct AgentRun<'a> {
     destination: Destination<'a>,
     history_scope: Option<HistoryScope>,
-    invocation_scope: InvocationScope,
+    context: ExecutionContext,
     transient_messages: Vec<Message>,
     tools: Vec<Arc<dyn InternalTool>>,
     allowed_tool_names: Option<Vec<String>>,
