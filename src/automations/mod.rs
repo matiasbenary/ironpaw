@@ -1,15 +1,12 @@
 use std::sync::{Arc, RwLock};
 
 use crate::{
-    agent::Agent,
-    bus::{
-        AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, InvocationScope,
-        Sender, SenderKind,
-    },
-    tools::{ExecutionContext, InternalTools},
+    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, SenderKind},
+    tools::ToolRegistry,
 };
 
 mod effect;
+mod invocation;
 mod render_args;
 mod store;
 mod trigger;
@@ -17,94 +14,6 @@ mod trigger;
 pub use effect::AutomationEffect;
 pub use store::SqliteAutomations;
 pub use trigger::Trigger;
-
-enum AutomationEvent<'a> {
-    Bus(&'a Event),
-    Timer {
-        kind: &'static str,
-        automation_name: &'a str,
-    },
-}
-
-impl AutomationEvent<'_> {
-    fn context(&self) -> (ExecutionContext, serde_json::Value) {
-        match self {
-            AutomationEvent::Bus(event) => match event {
-                Event::MessageIn {
-                    sender,
-                    conversation,
-                    message_id,
-                    message,
-                } => {
-                    let text = match message {
-                        crate::message::Message::User { text, .. } => text.clone(),
-                        _ => String::new(),
-                    };
-                    let ctx =
-                        ExecutionContext::new(InvocationScope::Conversation(conversation.clone()));
-                    let event = serde_json::json!({
-                        "type": "message_in",
-                        "channel": &conversation.channel,
-                        "sender": sender_name(sender),
-                        "channel_user_id": sender.channel_user_id(),
-                        "conversation": conversation,
-                        "chat_id": &conversation.chat_id,
-                        "thread_id": &conversation.thread_id,
-                        "message_id": message_id,
-                        "text": text,
-                    });
-                    (ctx, event)
-                }
-                Event::ToolResult {
-                    context,
-                    tool_call_id,
-                    tool_name,
-                    result,
-                } => {
-                    let ctx = context.clone();
-                    let conversation = match &context.invoked_by {
-                        InvocationScope::Conversation(conversation) => Some(conversation),
-                        InvocationScope::ScheduledAutomation { .. } => None,
-                    };
-                    let event = serde_json::json!({
-                        "type": "tool_result",
-                        "channel": conversation.map(|conversation| &conversation.channel),
-                        "conversation": conversation,
-                        "chat_id": conversation.map(|conversation| &conversation.chat_id),
-                        "thread_id": conversation.and_then(|conversation| conversation.thread_id.as_ref()),
-                        "tool_call_id": tool_call_id,
-                        "tool_name": tool_name,
-                        "result": result,
-                    });
-                    (ctx, event)
-                }
-                other => (
-                    ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                        automation_id: "bus-event".to_string(),
-                    }),
-                    serde_json::json!({ "type": format!("{other:?}") }),
-                ),
-            },
-            AutomationEvent::Timer {
-                kind,
-                automation_name,
-            } => (
-                ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                    automation_id: (*automation_name).to_string(),
-                }),
-                serde_json::json!({ "type": kind, "automation": automation_name }),
-            ),
-        }
-    }
-}
-
-fn sender_name(sender: &Sender) -> &'static str {
-    match sender {
-        Sender::User(_) => "user",
-        Sender::Guest(_) => "guest",
-        Sender::System => "system",
-    }
-}
 
 /// An automation is a trigger plus an effect. Effect fields may contain
 /// `{{event.field}}` placeholders, filled from the triggering event.
@@ -126,23 +35,16 @@ pub struct AutomationInfo {
 /// timer task per cron/at automation.
 pub struct Automations {
     bus: Bus,
-    tools: Arc<InternalTools>,
-    agent: Arc<Agent>,
+    tools: Arc<ToolRegistry>,
     automations: RwLock<Vec<Arc<Automation>>>,
     store: Arc<SqliteAutomations>,
 }
 
 impl Automations {
-    pub fn new(
-        bus: Bus,
-        tools: Arc<InternalTools>,
-        agent: Arc<Agent>,
-        store: Arc<SqliteAutomations>,
-    ) -> Self {
+    pub fn new(bus: Bus, tools: Arc<ToolRegistry>, store: Arc<SqliteAutomations>) -> Self {
         Self {
             bus,
             tools,
-            agent,
             automations: RwLock::new(Vec::new()),
             store,
         }
@@ -194,13 +96,16 @@ impl Automations {
         Ok(())
     }
 
-    pub fn recover_stale_channel_auth(self: &Arc<Self>) -> Result<(), String> {
+    pub fn recover_stale_setup(self: &Arc<Self>) -> Result<(), String> {
         let names = self
             .automations
             .read()
             .expect("automations lock")
             .iter()
-            .filter(|automation| automation.name.starts_with("channel_auth:"))
+            .filter(|automation| {
+                automation.name.starts_with("channel_auth:")
+                    || automation.name.starts_with("tool_auth:")
+            })
             .map(|automation| automation.name.clone())
             .collect::<Vec<_>>();
         if names.is_empty() {
@@ -240,26 +145,6 @@ impl Automations {
         self.is_registered(name)
     }
 
-    pub async fn trigger(&self, name: &str) -> Result<serde_json::Value, String> {
-        let automation = self
-            .automations
-            .read()
-            .expect("automations lock")
-            .iter()
-            .find(|automation| automation.name == name)
-            .cloned()
-            .ok_or_else(|| format!("unknown automation: {name}"))?;
-        Ok(self
-            .execute(
-                &automation,
-                AutomationEvent::Timer {
-                    kind: "manual",
-                    automation_name: &automation.name,
-                },
-            )
-            .await)
-    }
-
     pub fn automation_from_spec(&self, spec: AutomationSpec) -> Result<Automation, String> {
         if spec.name.trim().is_empty() {
             return Err("name must not be empty".to_string());
@@ -281,13 +166,13 @@ impl Automations {
                 if tool.trim().is_empty() {
                     return Err("tool must not be empty".to_string());
                 }
-                self.tools.registry.validate_args_for_tool(tool, args)?;
+                self.tools.validate_args_for_tool(tool, args)?;
             }
             AutomationEffect::AgentTask { prompt, tools } => {
                 if prompt.trim().is_empty() {
                     return Err("prompt must not be empty".to_string());
                 }
-                self.tools.registry.named_tools(tools)?;
+                self.tools.named_tools(tools)?;
             }
             AutomationEffect::ContinueConversation => {}
         }
@@ -348,7 +233,7 @@ impl Automations {
         tokio::spawn(async move {
             loop {
                 match events.recv().await {
-                    Ok(event) => this.handle(&event).await,
+                    Ok(event) => this.handle(&event),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -356,13 +241,23 @@ impl Automations {
         })
     }
 
-    async fn handle(self: &Arc<Self>, event: &Event) {
+    fn handle(self: &Arc<Self>, event: &Event) {
         if let Event::Automation { id, action } = event {
             let result = self.handle_action(action.clone());
             self.bus.publish(Event::AutomationResult {
                 id: id.clone(),
                 result,
             });
+            return;
+        }
+        if let Event::AutomationInvocation {
+            execution_id,
+            automation_id,
+            context,
+            trigger,
+        } = event
+        {
+            self.execute_invocation(execution_id, automation_id, context, trigger);
             return;
         }
 
@@ -374,8 +269,11 @@ impl Automations {
             .filter(|automation| automation.trigger.matches(event))
             .cloned()
             .collect();
+        let Some((context, trigger)) = invocation::from_bus(event) else {
+            return;
+        };
         for automation in matching {
-            self.execute(&automation, AutomationEvent::Bus(event)).await;
+            self.dispatch(&automation.name, context.clone(), trigger.clone());
         }
     }
 
@@ -408,6 +306,27 @@ impl Automations {
             AutomationAction::List => {
                 serde_json::to_value(self.list()).map_err(|err| err.to_string())
             }
+            AutomationAction::Trigger { name } => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err("name must not be empty".to_string());
+                }
+                let automation = self
+                    .automations
+                    .read()
+                    .expect("automations lock")
+                    .iter()
+                    .find(|automation| automation.name == name)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown automation: {name}"))?;
+                let (context, trigger) = invocation::from_timer("manual", &automation.name);
+                let execution_id = self.dispatch(&automation.name, context, trigger);
+                Ok(serde_json::json!({
+                    "ok": true,
+                    "name": name,
+                    "execution_id": execution_id,
+                }))
+            }
         }
     }
 
@@ -425,21 +344,8 @@ impl Automations {
             if !this.is_registered(&automation.name) {
                 return;
             }
-            this.execute(
-                &automation,
-                AutomationEvent::Timer {
-                    kind: "at",
-                    automation_name: &automation.name,
-                },
-            )
-            .await;
-            this.remove_runtime(&automation.name);
-            if let Err(err) = this.store.delete(&automation.name) {
-                eprintln!(
-                    "failed to delete one-shot automation '{}': {err}",
-                    automation.name
-                );
-            }
+            let (context, trigger) = invocation::from_timer("at", &automation.name);
+            this.dispatch(&automation.name, context, trigger);
         });
     }
 
@@ -462,39 +368,54 @@ impl Automations {
                 if !this.is_registered(&automation.name) {
                     break;
                 }
-                this.execute(
-                    &automation,
-                    AutomationEvent::Timer {
-                        kind: "cron",
-                        automation_name: &automation.name,
-                    },
-                )
-                .await;
+                let (context, trigger) = invocation::from_timer("cron", &automation.name);
+                this.dispatch(&automation.name, context, trigger);
             }
         });
     }
 
-    async fn execute(
+    fn dispatch(
         &self,
-        automation: &Automation,
-        event: AutomationEvent<'_>,
-    ) -> serde_json::Value {
-        let (ctx, event) = event.context();
-        let result = automation
+        automation_id: &str,
+        context: crate::tools::ExecutionContext,
+        trigger: serde_json::Value,
+    ) -> String {
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        self.bus.publish(Event::AutomationInvocation {
+            execution_id: execution_id.clone(),
+            automation_id: automation_id.to_string(),
+            context,
+            trigger,
+        });
+        execution_id
+    }
+
+    fn execute_invocation(
+        &self,
+        execution_id: &str,
+        automation_id: &str,
+        context: &crate::tools::ExecutionContext,
+        trigger: &serde_json::Value,
+    ) {
+        let automation = self
+            .automations
+            .read()
+            .expect("automations lock")
+            .iter()
+            .find(|automation| automation.name == automation_id)
+            .cloned();
+        let Some(automation) = automation else {
+            eprintln!("automation '{automation_id}' disappeared before execution");
+            return;
+        };
+        automation
             .effect
-            .execute(&self.bus, &self.tools, &self.agent, &ctx, &event)
-            .await;
-        if result.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
-            eprintln!(
-                "automation '{}' failed: {}",
-                automation.name,
-                result
-                    .get("error")
-                    .and_then(|error| error.as_str())
-                    .unwrap_or("unknown error")
-            );
+            .dispatch(&self.bus, execution_id, automation_id, context, trigger);
+        if matches!(automation.trigger, Trigger::At { .. })
+            && let Err(err) = self.delete(automation_id)
+        {
+            eprintln!("failed to delete one-shot automation '{automation_id}': {err}");
         }
-        result
     }
 }
 
@@ -534,11 +455,13 @@ fn trigger_json(trigger: &Trigger) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::{
-        agent::Agent,
-        bus::ConversationKey,
+        bus::{ConversationKey, InvocationScope, Sender},
         history::SqliteHistory,
         message::Message,
-        tools::{InternalTools, messages::SendMessageTool, raw_inference::RawInferenceTool},
+        tools::{
+            ExecutionContext, InternalTools, messages::SendMessageTool,
+            raw_inference::RawInferenceTool,
+        },
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
@@ -571,28 +494,6 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         Arc::new(SqliteAutomations::new(path).expect("store"))
-    }
-
-    fn test_agent(bus: &Bus, tools: &Arc<InternalTools>) -> Arc<Agent> {
-        let secrets = crate::secrets::Secrets::for_tests();
-        let memory = Arc::new(
-            crate::memory::Memory::new(
-                std::env::temp_dir().join(format!(
-                    "warden-automation-test-memory-{}.db",
-                    uuid::Uuid::new_v4()
-                )),
-                secrets.tools.clone(),
-                RawInferenceTool::new(secrets.tools).unwrap(),
-            )
-            .unwrap(),
-        );
-        Arc::new(Agent::new(
-            bus.clone(),
-            Arc::clone(&tools.registry),
-            Arc::clone(&tools.history),
-            tools.raw_inference.clone(),
-            memory,
-        ))
     }
 
     fn send_message_automation(name: &str, trigger: Trigger) -> Automation {
@@ -629,7 +530,8 @@ mod tests {
     #[test]
     fn message_in_event_is_flattened_for_execution() {
         let (ctx, event) =
-            AutomationEvent::Bus(&message_in("tui", Sender::User("local".to_string()))).context();
+            invocation::from_bus(&message_in("tui", Sender::User("local".to_string())))
+                .expect("message invocation");
         assert_eq!(event["type"], "message_in");
         assert_eq!(event["text"], "hi");
         assert_eq!(event["chat_id"], "c1");
@@ -640,6 +542,123 @@ mod tests {
         assert_eq!(conversation.channel, "tui");
     }
 
+    #[tokio::test]
+    async fn message_trigger_dispatches_tool_request_without_waiting() {
+        let bus = Bus::new(16);
+        let tools = test_tools(&bus);
+        let automations = Arc::new(Automations::new(
+            bus.clone(),
+            Arc::clone(&tools.registry),
+            temp_store(),
+        ));
+        automations
+            .add(send_message_automation(
+                "reply",
+                Trigger::MessageIn {
+                    sender: SenderKind::User,
+                    conversation: None,
+                },
+            ))
+            .unwrap();
+        let task = automations.start();
+        let mut events = bus.subscribe();
+
+        bus.publish(message_in("tui", Sender::User("local".to_string())));
+
+        let record_in_history = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Event::ToolRequest {
+                    record_in_history, ..
+                } = events.recv().await.expect("event")
+                {
+                    break record_in_history;
+                }
+            }
+        })
+        .await
+        .expect("tool request");
+        task.abort();
+
+        assert!(!record_in_history);
+    }
+
+    #[tokio::test]
+    async fn trigger_automation_tool_returns_after_dispatch() {
+        let bus = Bus::new(16);
+        let tools = test_tools(&bus);
+        let automations = Arc::new(Automations::new(
+            bus.clone(),
+            Arc::clone(&tools.registry),
+            temp_store(),
+        ));
+        automations
+            .add(send_message_automation(
+                "manual",
+                Trigger::MessageIn {
+                    sender: SenderKind::User,
+                    conversation: None,
+                },
+            ))
+            .unwrap();
+        let task = automations.start();
+        let context = ExecutionContext::new(InvocationScope::ScheduledAutomation {
+            automation_id: "test".to_string(),
+        });
+
+        let result = crate::tools::run_tool(
+            &tools,
+            "trigger_automation",
+            serde_json::json!({ "automation_id": "manual" }),
+            &context,
+        )
+        .await;
+        task.abort();
+
+        assert_eq!(result["ok"], true);
+        assert!(result["execution_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn one_shot_is_deleted_after_dispatch() {
+        let bus = Bus::new(16);
+        let tools = test_tools(&bus);
+        let store = temp_store();
+        let automations = Arc::new(Automations::new(
+            bus.clone(),
+            Arc::clone(&tools.registry),
+            Arc::clone(&store),
+        ));
+        let datetime = (chrono::Local::now() + chrono::Duration::milliseconds(50)).fixed_offset();
+        automations
+            .add(send_message_automation("once", Trigger::At { datetime }))
+            .unwrap();
+        let task = automations.start();
+        let mut events = bus.subscribe();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if matches!(
+                    events.recv().await.expect("event"),
+                    Event::AutomationInvocation { .. }
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("automation invocation");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while automations.contains("once") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("one-shot deletion");
+        assert!(store.load_all().unwrap().is_empty());
+        task.abort();
+    }
+
     #[test]
     fn delete_removes_runtime_and_stored_automation() {
         let bus = Bus::new(4);
@@ -647,8 +666,7 @@ mod tests {
         let tools = test_tools(&bus);
         let automations = Arc::new(Automations::new(
             bus.clone(),
-            Arc::clone(&tools),
-            test_agent(&bus, &tools),
+            Arc::clone(&tools.registry),
             Arc::clone(&store),
         ));
         automations
@@ -673,8 +691,7 @@ mod tests {
         let tools = test_tools(&bus);
         let automations = Arc::new(Automations::new(
             bus.clone(),
-            Arc::clone(&tools),
-            test_agent(&bus, &tools),
+            Arc::clone(&tools.registry),
             temp_store(),
         ));
         automations.add(Automations::handle_conversation()).unwrap();

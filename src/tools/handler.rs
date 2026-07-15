@@ -32,7 +32,8 @@ impl ToolHandler {
                         context,
                         tool_call,
                         args,
-                    }) => this.spawn_tool_request(context, tool_call, args),
+                        record_in_history,
+                    }) => this.spawn_tool_request(context, tool_call, args, record_in_history),
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -46,11 +47,12 @@ impl ToolHandler {
         context: ExecutionContext,
         tool_call: ToolCall,
         args: serde_json::Value,
+        record_in_history: bool,
     ) {
         let bus = self.bus.clone();
         let registry = Arc::clone(&self.registry);
         let history = Arc::clone(&self.history);
-        if let Err(err) = self.persist_tool_call(&context, &tool_call) {
+        if record_in_history && let Err(err) = self.persist_tool_call(&context, &tool_call) {
             bus.publish(Event::ToolResult {
                 context,
                 tool_call_id: tool_call.id,
@@ -68,6 +70,7 @@ impl ToolHandler {
                 tool_call.id,
                 tool_call.name,
                 args,
+                record_in_history,
             )
             .await;
         });

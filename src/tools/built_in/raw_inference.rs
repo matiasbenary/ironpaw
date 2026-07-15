@@ -19,8 +19,6 @@ pub struct RawInferenceRequest {
     pub messages: Vec<Message>,
     #[serde(default)]
     pub tools: Vec<ToolDefinition>,
-    #[serde(default)]
-    pub parallel_tool_calls: bool,
 }
 
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -75,6 +73,15 @@ impl RawInferenceTool {
         &self,
         request: RawInferenceRequest,
     ) -> Result<RawInferenceOutput, String> {
+        self.execute_with_raw_response(request)
+            .await
+            .map(|(output, _)| output)
+    }
+
+    pub(crate) async fn execute_with_raw_response(
+        &self,
+        request: RawInferenceRequest,
+    ) -> Result<(RawInferenceOutput, String), String> {
         let near_api_key = self
             .secrets
             .get("NEAR_API_KEY")
@@ -104,27 +111,7 @@ impl RawInferenceTool {
         let response = serde_json::from_str(&body)
             .map_err(|err| format!("failed to parse chat response JSON: {err}"))?;
 
-        response_to_output(response)
-    }
-
-    pub fn log_agent_run(&self, request: &RawInferenceRequest, output: &RawInferenceOutput) {
-        let Ok(request) = self.chat_request(request) else {
-            return;
-        };
-        log_entry(
-            "agent run",
-            &serde_json::json!({ "request": request, "response": output }),
-        );
-    }
-
-    pub fn log_agent_request(&self, request: &RawInferenceRequest) {
-        let Ok(request) = self.chat_request(request) else {
-            return;
-        };
-        log_entry(
-            "agent run (in progress)",
-            &serde_json::json!({ "request": request }),
-        );
+        Ok((response_to_output(response)?, body))
     }
 
     fn chat_request(&self, request: &RawInferenceRequest) -> Result<serde_json::Value, String> {
@@ -143,7 +130,6 @@ impl RawInferenceTool {
             "model": request.model,
             "messages": self.messages_to_chat(&request.messages)?,
             "tools": tools,
-            "parallel_tool_calls": request.parallel_tool_calls,
         }))
     }
 
@@ -220,26 +206,6 @@ impl RawInferenceTool {
     }
 }
 
-fn log_entry(label: &str, content: &impl serde::Serialize) {
-    let Ok(body) = serde_json::to_string_pretty(content) else {
-        return;
-    };
-    let path = "/Users/gagdiez/tmp/miniclaw/release/llm_requests.log";
-    let header = format!("=== {label} ===");
-    let sep = "=".repeat(header.len());
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)
-        .and_then(|mut f| {
-            use std::io::Write as _;
-            writeln!(f, "{header}")?;
-            writeln!(f, "{body}")?;
-            writeln!(f, "{sep}")
-        });
-}
-
 fn response_to_output(response: serde_json::Value) -> Result<RawInferenceOutput, String> {
     let message = response["choices"]
         .as_array()
@@ -277,6 +243,7 @@ fn chat_tool_call_to_warden(value: &serde_json::Value) -> Result<Option<ToolCall
     let arguments = function["arguments"]
         .as_str()
         .ok_or_else(|| format!("tool call arguments were not a string: {value}"))?;
+    let arguments = normalize_tool_arguments(arguments);
     Ok(Some(ToolCall {
         id: value["id"]
             .as_str()
@@ -286,8 +253,20 @@ fn chat_tool_call_to_warden(value: &serde_json::Value) -> Result<Option<ToolCall
             .as_str()
             .ok_or_else(|| format!("tool call missing function name: {value}"))?
             .to_string(),
-        arguments: arguments.to_string(),
+        arguments,
     }))
+}
+
+fn normalize_tool_arguments(arguments: &str) -> String {
+    // Temporary compatibility patch for DeepSeek-V4-Flash responses served by
+    // NEAR/SGLang that append an empty string after otherwise valid JSON.
+    if let Some(stripped) = arguments.strip_suffix("\"\"")
+        && serde_json::from_str::<serde_json::Value>(arguments).is_err()
+        && serde_json::from_str::<serde_json::Value>(stripped).is_ok()
+    {
+        return stripped.to_string();
+    }
+    arguments.to_string()
 }
 
 fn tool_definition_to_chat_tool(tool: &ToolDefinition) -> serde_json::Value {
@@ -378,4 +357,22 @@ fn env_timeout_secs(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_tool_arguments;
+
+    #[test]
+    fn removes_deepseek_trailing_empty_string_from_valid_json() {
+        assert_eq!(normalize_tool_arguments("{}\"\""), "{}");
+        assert_eq!(
+            normalize_tool_arguments("{\"query\":\"x\"}\"\""),
+            "{\"query\":\"x\"}"
+        );
+        assert_eq!(
+            normalize_tool_arguments("{\"still\":\"broken\""),
+            "{\"still\":\"broken\""
+        );
+    }
 }

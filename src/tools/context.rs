@@ -20,6 +20,7 @@ enum ToolResponderKind {
         context: ExecutionContext,
         tool_call_id: String,
         tool_name: String,
+        record_in_history: bool,
     },
     Capture(Arc<Mutex<Option<serde_json::Value>>>),
 }
@@ -31,6 +32,7 @@ impl ToolResponder {
         context: ExecutionContext,
         tool_call_id: String,
         tool_name: String,
+        record_in_history: bool,
     ) -> Self {
         Self {
             inner: ToolResponderKind::Bus {
@@ -39,6 +41,7 @@ impl ToolResponder {
                 context,
                 tool_call_id,
                 tool_name,
+                record_in_history,
             },
             responded: Arc::new(AtomicBool::new(false)),
         }
@@ -66,13 +69,20 @@ impl ToolResponder {
                 context,
                 tool_call_id,
                 tool_name,
+                record_in_history,
             } => {
                 let message = Message::ToolResult {
                     tool_call_id: tool_call_id.clone(),
                     tool_name: tool_name.clone(),
                     result: result.clone(),
                 };
-                crate::tools::handler::persist_tool_result(history.as_ref(), context, &message)?;
+                if *record_in_history {
+                    crate::tools::handler::persist_tool_result(
+                        history.as_ref(),
+                        context,
+                        &message,
+                    )?;
+                }
                 bus.publish(Event::ToolResult {
                     context: context.clone(),
                     tool_call_id: tool_call_id.clone(),

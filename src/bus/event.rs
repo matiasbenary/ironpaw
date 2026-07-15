@@ -160,6 +160,20 @@ pub enum AutomationAction {
     Delete { name: String },
     Inspect { name: String },
     List,
+    Trigger { name: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum AgentRequest {
+    ContinueConversation {
+        conversation: ConversationKey,
+        context: ExecutionContext,
+    },
+    Task {
+        automation_id: String,
+        prompt: String,
+        tools: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -198,10 +212,25 @@ pub enum Event {
         id: String,
         result: Result<serde_json::Value, String>,
     },
+    AutomationInvocation {
+        execution_id: String,
+        automation_id: String,
+        context: ExecutionContext,
+        trigger: serde_json::Value,
+    },
+    AgentRequest {
+        execution_id: String,
+        request: AgentRequest,
+    },
+    AgentResult {
+        execution_id: String,
+        result: Result<Option<String>, String>,
+    },
     ToolRequest {
         context: ExecutionContext,
         tool_call: ToolCall,
         args: serde_json::Value,
+        record_in_history: bool,
     },
     ToolResult {
         context: ExecutionContext,

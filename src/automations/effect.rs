@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
 use crate::{
-    agent::Agent,
-    bus::{Bus, Event, InvocationScope},
-    tools::{self, ExecutionContext, InternalTools},
+    bus::{AgentRequest, Bus, Event, InvocationScope},
+    message::ToolCall,
+    tools::ExecutionContext,
 };
 
 use super::render_args::render_args;
@@ -23,54 +21,56 @@ pub enum AutomationEffect {
 }
 
 impl AutomationEffect {
-    pub async fn execute(
+    pub fn dispatch(
         &self,
         bus: &Bus,
-        tools: &Arc<InternalTools>,
-        agent: &Agent,
-        ctx: &ExecutionContext,
-        event: &serde_json::Value,
-    ) -> serde_json::Value {
+        execution_id: &str,
+        automation_id: &str,
+        context: &ExecutionContext,
+        trigger: &serde_json::Value,
+    ) {
         match self {
             Self::Tool { tool, args } => {
-                let args = render_args(args, event);
-                tools::run_tool(tools, tool, args, ctx).await
+                let args = render_args(args, trigger);
+                bus.publish(Event::ToolRequest {
+                    context: context.clone(),
+                    tool_call: ToolCall {
+                        id: execution_id.to_string(),
+                        name: tool.clone(),
+                        arguments: args.to_string(),
+                    },
+                    args,
+                    record_in_history: false,
+                });
             }
             Self::AgentTask { prompt, tools } => {
-                let prompt = render_text(prompt, event);
-                let automation_id = match &ctx.invoked_by {
-                    InvocationScope::ScheduledAutomation { automation_id } => automation_id.clone(),
-                    InvocationScope::Conversation(_) => {
-                        return serde_json::json!({
-                            "ok": false,
-                            "error": "agent task automation requires an automation invocation"
-                        });
-                    }
-                };
-                match agent.run_task(automation_id, prompt, tools.clone()).await {
-                    Ok(result) => serde_json::json!({ "ok": true, "result": result }),
-                    Err(err) => serde_json::json!({ "ok": false, "error": err }),
-                }
+                bus.publish(Event::AgentRequest {
+                    execution_id: execution_id.to_string(),
+                    request: AgentRequest::Task {
+                        automation_id: automation_id.to_string(),
+                        prompt: render_text(prompt, trigger),
+                        tools: tools.clone(),
+                    },
+                });
             }
-            Self::ContinueConversation => match &ctx.invoked_by {
+            Self::ContinueConversation => match &context.invoked_by {
                 InvocationScope::Conversation(conversation) => {
-                    match agent
-                        .handle_conversation(Some(conversation), ctx.clone())
-                        .await
-                    {
-                        Ok(result) => {
-                            if let Some(text) = result {
-                                send_to_destination(bus, conversation, text);
-                            }
-                            serde_json::json!({ "ok": true })
-                        }
-                        Err(err) => serde_json::json!({ "ok": false, "error": err }),
-                    }
+                    bus.publish(Event::AgentRequest {
+                        execution_id: execution_id.to_string(),
+                        request: AgentRequest::ContinueConversation {
+                            conversation: conversation.clone(),
+                            context: context.clone(),
+                        },
+                    });
                 }
-                InvocationScope::ScheduledAutomation { automation_id } => serde_json::json!({
-                    "ok": false,
-                    "error": format!("continue_conversation cannot run from scheduled automation '{automation_id}'"),
-                }),
+                InvocationScope::ScheduledAutomation { .. } => {
+                    bus.publish(Event::AgentResult {
+                        execution_id: execution_id.to_string(),
+                        result: Err(
+                            "continue_conversation requires a conversation trigger".to_string()
+                        ),
+                    });
+                }
             },
         }
     }
@@ -82,17 +82,4 @@ fn render_text(template: &str, event: &serde_json::Value) -> String {
         serde_json::Value::String(text) => text,
         other => other.to_string(),
     }
-}
-
-fn send_to_destination(bus: &Bus, conversation: &crate::bus::ConversationKey, text: String) {
-    bus.publish(Event::MessageOut {
-        channel: conversation.channel.clone(),
-        chat_id: Some(conversation.chat_id.clone()),
-        thread_id: conversation.thread_id.clone(),
-        message: crate::message::Message::Assistant {
-            text: Some(text),
-            attachments: Vec::new(),
-            tool_calls: Vec::new(),
-        },
-    });
 }

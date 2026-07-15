@@ -93,9 +93,12 @@ async fn main() -> io::Result<()> {
     );
     let automations = Arc::new(Automations::new(
         bus.clone(),
-        Arc::clone(&tools),
-        Arc::clone(&agent),
+        Arc::clone(&tools.registry),
         automation_store,
+    ));
+    let agent_handler = Arc::new(warden::agent::AgentHandler::new(
+        bus.clone(),
+        Arc::clone(&agent),
     ));
     let boot_events = bus.subscribe();
     tools
@@ -111,6 +114,7 @@ async fn main() -> io::Result<()> {
         .add_transient(UnlockSecretsTool::automation())
         .map_err(std::io::Error::other)?;
     let tool_handler_task = tool_handler.start();
+    let agent_handler_task = agent_handler.start();
     let automations_task = automations.start();
 
     println!("unlock bridge token: {token}");
@@ -193,7 +197,7 @@ async fn main() -> io::Result<()> {
             .map_err(std::io::Error::other)?;
     }
     automations
-        .recover_stale_channel_auth()
+        .recover_stale_setup()
         .map_err(std::io::Error::other)?;
     if stored_count == 0 {
         if secrets.exists("NEAR_API_KEY") {
@@ -234,6 +238,7 @@ async fn main() -> io::Result<()> {
         "warden is running. Use `warden-tui {token}` to send a message. Press Ctrl-C to stop."
     );
     let _tool_handler_task = tool_handler_task;
+    let _agent_handler_task = agent_handler_task;
     let _automations_task = automations_task;
     tokio::signal::ctrl_c().await?;
 

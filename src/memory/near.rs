@@ -80,7 +80,6 @@ impl MemoryInference {
                     },
                 ],
                 tools: Vec::new(),
-                parallel_tool_calls: false,
             })
             .await?;
         let Message::Assistant {

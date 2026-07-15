@@ -125,7 +125,6 @@ impl InspectFileTool {
                 model,
                 messages: input,
                 tools: Vec::new(),
-                parallel_tool_calls: false,
             })
             .await?;
         let Message::Assistant { text, .. } = response.message else {

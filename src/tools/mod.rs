@@ -170,7 +170,8 @@ impl InternalTools {
                 bus.clone(),
                 AutomationToolKind::Inspect,
             )),
-            tool(AutomationTool::new(bus, AutomationToolKind::List)),
+            tool(AutomationTool::new(bus.clone(), AutomationToolKind::List)),
+            tool(AutomationTool::new(bus, AutomationToolKind::Trigger)),
             tool(ListChannelsTool::new(layout.clone(), secrets)),
             Arc::clone(&create_tool) as Arc<dyn InternalTool>,
             tool(SearchHistoryTool::new(Arc::clone(&history))),
@@ -593,6 +594,7 @@ mod tests {
                 arguments: "{}".to_string(),
             },
             args: serde_json::json!({}),
+            record_in_history: true,
         });
 
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -639,6 +641,7 @@ mod tests {
                 arguments: "{}".to_string(),
             },
             args: serde_json::json!({}),
+            record_in_history: true,
         });
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
@@ -685,6 +688,7 @@ mod tests {
                 arguments: "{}".to_string(),
             },
             args: serde_json::json!({}),
+            record_in_history: true,
         });
 
         tokio::time::timeout(std::time::Duration::from_secs(1), async {

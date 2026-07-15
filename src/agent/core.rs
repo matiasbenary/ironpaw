@@ -13,6 +13,7 @@ const DEFAULT_TASK_TOOLS: [&str; 4] = ["list_files", "read_file", "create_file",
 const COMPACT_AT_PROMPT_TOKENS: u64 = 256_000;
 
 use super::{
+    logger,
     preamble::system_preamble,
     utils::{publish_channel_action, publish_progress},
 };
@@ -142,11 +143,15 @@ impl Agent {
                 model: models::text_model(),
                 messages: model_messages,
                 tools: available_tools,
-                parallel_tool_calls: false,
             };
 
-            self.raw_inference.log_agent_request(&request);
-            let inference = self.raw_inference.execute(request.clone()).await?;
+            logger::raw_inference_request_logged(&request);
+            let (inference, raw_response) = self
+                .raw_inference
+                .execute_with_raw_response(request)
+                .await?;
+            logger::raw_http_response_logged(&raw_response);
+            logger::raw_inference_response_logged(&inference);
             compact_before_next_round = inference.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS;
             let output = inference.message.clone();
             let Message::Assistant {
@@ -157,7 +162,6 @@ impl Agent {
             };
             run.transient_messages.clear();
             if tool_calls.is_empty() {
-                self.raw_inference.log_agent_run(&request, &inference);
                 debug_log(format!(
                     "agent: round {} finished with assistant text",
                     round
@@ -180,6 +184,7 @@ impl Agent {
             let mut tool_requests = Vec::new();
             for tool_call in tool_calls {
                 self.publish_tool_progress(run.destination, &tool_call.name);
+                logger::raw_tool_call_logged(&tool_call);
                 match prepare_tool_request(tool_call, run.allowed_tool_names.as_deref()) {
                     PreparedToolCall::Request { tool_call, args } => {
                         tool_requests.push((tool_call, args));
@@ -188,10 +193,12 @@ impl Agent {
                 }
             }
             if !tool_results.is_empty() {
+                logger::raw_tool_results_logged(&tool_results);
                 run.transient_messages
-                    .push(assistant_message_for_history(output));
+                    .push(assistant_message_for_tool_results(output, &tool_results));
                 run.transient_messages.extend(tool_results);
-            } else {
+            }
+            if !tool_requests.is_empty() {
                 let mut events = self.bus.subscribe();
                 let pending = tool_requests
                     .iter()
@@ -202,9 +209,11 @@ impl Agent {
                         context: ctx.clone(),
                         tool_call,
                         args,
+                        record_in_history: true,
                     });
                 }
-                wait_for_tool_results(&mut events, pending).await?;
+                let tool_results = wait_for_tool_results(&mut events, pending).await?;
+                logger::raw_tool_results_logged(&tool_results);
             }
         }
     }
@@ -240,6 +249,10 @@ impl Agent {
             }
             messages.push(message);
         }
+        messages.push(Message::System(format!(
+            "[runtime context] The current local time is {}.",
+            chrono::Local::now().format("%A %Y-%m-%dT%H:%M:%S%:z")
+        )));
         messages.extend(run.transient_messages.clone());
         Ok(messages)
     }
@@ -324,7 +337,6 @@ impl Agent {
                     },
                 ],
                 tools: Vec::new(),
-                parallel_tool_calls: false,
             })
             .await?;
         let Message::Assistant { text, .. } = response.message else {
@@ -359,17 +371,29 @@ fn retained_entries(history: &[HistoryEntry]) -> Vec<HistoryEntry> {
 async fn wait_for_tool_results(
     events: &mut tokio::sync::broadcast::Receiver<Event>,
     mut pending: HashSet<String>,
-) -> Result<(), String> {
+) -> Result<Vec<Message>, String> {
+    let mut results = Vec::new();
     while !pending.is_empty() {
         match events.recv().await {
-            Ok(Event::ToolResult { tool_call_id, .. }) => {
-                pending.remove(&tool_call_id);
+            Ok(Event::ToolResult {
+                tool_call_id,
+                tool_name,
+                result,
+                ..
+            }) => {
+                if pending.remove(&tool_call_id) {
+                    results.push(Message::ToolResult {
+                        tool_call_id,
+                        tool_name,
+                        result,
+                    });
+                }
             }
             Ok(_) => {}
             Err(error) => return Err(format!("failed waiting for tool result: {error}")),
         }
     }
-    Ok(())
+    Ok(results)
 }
 
 struct AgentRun<'a> {
@@ -444,7 +468,7 @@ fn error_result(error: impl Into<String>) -> serde_json::Value {
     serde_json::json!({ "ok": false, "error": error.into() })
 }
 
-fn assistant_message_for_history(message: Message) -> Message {
+fn assistant_message_for_tool_results(message: Message, results: &[Message]) -> Message {
     let Message::Assistant {
         text,
         attachments,
@@ -453,17 +477,19 @@ fn assistant_message_for_history(message: Message) -> Message {
     else {
         return message;
     };
+    let result_ids = results
+        .iter()
+        .filter_map(|message| match message {
+            Message::ToolResult { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     Message::Assistant {
         text,
         attachments,
         tool_calls: tool_calls
             .into_iter()
-            .map(|mut tool_call| {
-                if serde_json::from_str::<serde_json::Value>(&tool_call.arguments).is_err() {
-                    tool_call.arguments = "{}".to_string();
-                }
-                tool_call
-            })
+            .filter(|tool_call| result_ids.contains(tool_call.id.as_str()))
             .collect(),
     }
 }
@@ -477,20 +503,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn malformed_tool_arguments_are_sanitized_for_history() {
+    fn immediate_tool_results_keep_original_arguments_and_matching_calls() {
         let message = Message::Assistant {
             text: None,
             attachments: Vec::new(),
-            tool_calls: vec![ToolCall {
-                id: "call_bad".to_string(),
-                name: "send_message".to_string(),
-                arguments: "{\"channel\":\"telegram\"".to_string(),
-            }],
+            tool_calls: vec![
+                ToolCall {
+                    id: "call_good".to_string(),
+                    name: "list_tools".to_string(),
+                    arguments: "{}".to_string(),
+                },
+                ToolCall {
+                    id: "call_bad".to_string(),
+                    name: "list_channels".to_string(),
+                    arguments: "{}\"\"".to_string(),
+                },
+            ],
         };
+        let results = vec![Message::ToolResult {
+            tool_call_id: "call_bad".to_string(),
+            tool_name: "list_channels".to_string(),
+            result: error_result("invalid arguments"),
+        }];
 
-        let Message::Assistant { tool_calls, .. } = assistant_message_for_history(message) else {
+        let Message::Assistant { tool_calls, .. } =
+            assistant_message_for_tool_results(message, &results)
+        else {
             panic!("expected assistant message");
         };
-        assert_eq!(tool_calls[0].arguments, "{}");
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call_bad");
+        assert_eq!(tool_calls[0].arguments, "{}\"\"");
     }
 }

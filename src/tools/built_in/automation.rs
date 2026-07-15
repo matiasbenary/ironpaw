@@ -50,11 +50,18 @@ pub struct InspectAutomationParams {
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct ListAutomationsParams {}
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct TriggerAutomationParams {
+    /// Exact automation name to trigger.
+    pub automation_id: String,
+}
+
 pub enum AutomationToolKind {
     Create,
     Delete,
     Inspect,
     List,
+    Trigger,
 }
 
 pub struct AutomationTool {
@@ -146,6 +153,7 @@ impl InternalTool for AutomationTool {
             AutomationToolKind::Delete => "delete_automation",
             AutomationToolKind::Inspect => "inspect_automation",
             AutomationToolKind::List => "list_automations",
+            AutomationToolKind::Trigger => "trigger_automation",
         }
     }
 
@@ -166,6 +174,10 @@ impl InternalTool for AutomationTool {
             AutomationToolKind::List => tools::tool_definition::<ListAutomationsParams>(
                 self.name(),
                 "List the currently registered automations.",
+            ),
+            AutomationToolKind::Trigger => tools::tool_definition::<TriggerAutomationParams>(
+                self.name(),
+                "Trigger an existing automation by exact id. Returns once the execution has been dispatched.",
             ),
         }
     }
@@ -197,6 +209,15 @@ impl InternalTool for AutomationTool {
             AutomationToolKind::List => {
                 tools::execute_typed(args, |_params: ListAutomationsParams| async {
                     self.request(AutomationAction::List).await
+                })
+                .await
+            }
+            AutomationToolKind::Trigger => {
+                tools::execute_typed(args, |params: TriggerAutomationParams| async {
+                    self.request(AutomationAction::Trigger {
+                        name: params.automation_id,
+                    })
+                    .await
                 })
                 .await
             }

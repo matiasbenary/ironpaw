@@ -246,7 +246,9 @@ A trigger can be one of:
 - `cron`: a recurring cron expression, evaluated in local time. Five-field expressions are accepted, along with 6/7-field expressions for second-level schedules.
 - `at`: one-shot absolute time.
 
-Once a trigger fires, the automation runs a single pre-defined tool call. The tool call can be any registered tool, including internal and dynamic tools.
+Once a trigger fires, the automation runtime publishes an invocation event. That invocation is translated into a `ToolRequest` or `AgentRequest`; the automation listener never waits for the work to finish. Tool and agent handlers execute those requests in independent tasks and publish their results back to the bus.
+
+One-shot `at` automations are removed from memory and storage immediately after their invocation is dispatched. Cron ticks are dispatched independently and may overlap.
 
 Inbound-message triggers can match all conversations, or a specific `ConversationKey`. Setup flows that temporarily take over replies should scope their trigger to the conversation that started the flow.
 
@@ -263,7 +265,7 @@ MessageIn(User, any conversation)
 
 ## Agent
 
-The agent is the bounded tool loop: history + raw inference + tool execution. It does not subscribe to the bus directly. Automations or tools call it through the `call_agent` tool.
+The agent is the bounded tool loop: history + raw inference + tool execution. `AgentHandler` subscribes to `AgentRequest`, starts each run in an independent task, and publishes `AgentResult`. Conversation runs also publish their final response as `MessageOut`.
 
 Agent runs keep their delivery destination separate from their history scope. A conversation run uses its `ConversationKey` for both, while a scheduled agent task has no implicit delivery destination and uses the automation name as its durable history scope. This lets recurring tasks remember previous runs without pretending that an automation is a channel conversation.
 

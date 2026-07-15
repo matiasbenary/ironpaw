@@ -3,9 +3,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use tokio::time::timeout;
 use warden::{
-    agent::Agent,
+    agent::{Agent, AgentHandler},
     automations::{Automations, SqliteAutomations},
-    bus::{Bus, ConversationKey, Event, Sender},
+    bus::{AutomationAction, Bus, ConversationKey, Event, Sender},
     history::{History, HistoryEntry, HistoryScope, MessageMetadata, SqliteHistory},
     memory::Memory,
     message::{Attachment, Message},
@@ -96,10 +96,10 @@ fn start_warden_config(
         Arc::new(SqliteAutomations::new(automations_db).expect("temp automations db"));
     let automations = Arc::new(Automations::new(
         bus.clone(),
-        Arc::clone(&tools),
-        Arc::clone(&agent),
+        Arc::clone(&tools.registry),
         automation_store,
     ));
+    let agent_handler = Arc::new(AgentHandler::new(bus.clone(), Arc::clone(&agent)));
     install_web_search_for_live_tests(&layout, &tools, &secrets);
     let setup_services = Arc::new(SetupServices::new(
         bus.clone(),
@@ -116,6 +116,7 @@ fn start_warden_config(
         .add(Automations::handle_conversation())
         .expect("stock automation registers");
     let _tool_handler_task = tool_handler.start();
+    let _agent_handler_task = agent_handler.start();
     (automations.start(), history, automations, memory)
 }
 
@@ -1097,20 +1098,49 @@ suggest me one new album to listen every day at 10am, including the band name an
     }
 
     let automation_name = &generated[0].name;
-    let first = automations
-        .trigger(automation_name)
-        .await
-        .expect("trigger album automation first time");
-    let second = automations
-        .trigger(automation_name)
-        .await
-        .expect("trigger album automation second time");
-    eprintln!("[live_test] first recommendation: {first}");
-    eprintln!("[live_test] second recommendation: {second}");
+    let first = trigger_automation_and_wait(&bus, &mut events, automation_name).await;
+    let second = trigger_automation_and_wait(&bus, &mut events, automation_name).await;
+    eprintln!("[live_test] first recommendation: {first:?}");
+    eprintln!("[live_test] second recommendation: {second:?}");
     assert_ne!(
         first, second,
         "album automation repeated its recommendation"
     );
+}
+
+async fn trigger_automation_and_wait(
+    bus: &Bus,
+    events: &mut tokio::sync::broadcast::Receiver<Event>,
+    automation_name: &str,
+) -> Option<String> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    bus.publish(Event::Automation {
+        id: request_id.clone(),
+        action: AutomationAction::Trigger {
+            name: automation_name.to_string(),
+        },
+    });
+    let execution_id = loop {
+        if let Event::AutomationResult { id, result } = events.recv().await.expect("event")
+            && id == request_id
+        {
+            let result = result.expect("trigger automation");
+            break result["execution_id"]
+                .as_str()
+                .expect("execution id")
+                .to_string();
+        }
+    };
+    loop {
+        if let Event::AgentResult {
+            execution_id: result_id,
+            result,
+        } = events.recv().await.expect("event")
+            && result_id == execution_id
+        {
+            return result.expect("automation agent result");
+        }
+    }
 }
 
 /// Verify the full dynamic-tool path: the agent authors a tool that fetches

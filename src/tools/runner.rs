@@ -98,13 +98,21 @@ pub(crate) async fn run_registered_tool_for_context(
     tool_call_id: String,
     tool_name: String,
     args: serde_json::Value,
+    record_in_history: bool,
 ) {
     let tool = registry
         .all()
         .iter()
         .find(|tool| tool.name() == tool_name)
         .cloned();
-    let responder = ToolResponder::bus(bus, history, ctx.clone(), tool_call_id, tool_name.clone());
+    let responder = ToolResponder::bus(
+        bus,
+        history,
+        ctx.clone(),
+        tool_call_id,
+        tool_name.clone(),
+        record_in_history,
+    );
     let Some(tool) = tool else {
         let _ = responder.respond(serde_json::json!({
             "ok": false,

@@ -27,10 +27,6 @@ pub(super) fn system_preamble(destination: Destination<'_>) -> Vec<Message> {
             Use file tools to persist state between executions when needed."
             .to_string(),
     };
-    text.push_str(&format!(
-        " The current local time is {}.",
-        chrono::Local::now().format("%A %Y-%m-%dT%H:%M:%S%:z")
-    ));
     text.push_str(
         " When the user requests a future or recurring action, create an automation. \
         Build a deterministic tool for fixed logic, or create a recurrent agent task when \
