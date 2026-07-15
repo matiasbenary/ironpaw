@@ -203,7 +203,7 @@ impl SetupToolTool {
             ));
         }
 
-        match session.stage {
+        match session.stage.clone() {
             InstallStage::Confirm => {
                 if !is_yes(message) {
                     self.cancel(session, ctx).await?;
@@ -326,6 +326,28 @@ impl SetupToolTool {
         Ok(())
     }
 
+    async fn fail(&self, name: &str, error: &str, ctx: &ExecutionContext) -> Result<(), String> {
+        let session = self
+            .state
+            .session
+            .lock()
+            .expect("install tool session lock")
+            .take();
+        stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
+        publish_tool_result(
+            session
+                .as_ref()
+                .and_then(|session| session.continuation.as_ref()),
+            serde_json::json!({ "ok": false, "tool": name, "error": error }),
+        );
+        send(
+            &self.setup.tools,
+            &format!("The {name} tool could not be installed: {error}"),
+            ctx,
+        )
+        .await
+    }
+
     async fn finish(&self, session: InstallSession, ctx: &ExecutionContext) -> Result<(), String> {
         let name = session.package.name.clone();
         let continuation = session.continuation.clone();
@@ -432,9 +454,16 @@ impl InternalTool for SetupToolTool {
         let params: SetupToolParams =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         let name = normalize_tool_name(&params.name)?;
-        let result = self
+        let result = match self
             .continue_setup(&name, &params.message, params.message_id.as_deref(), ctx)
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                self.fail(&name, &error, ctx).await?;
+                serde_json::json!({ "ok": false, "error": error })
+            }
+        };
         responder.respond(result)?;
         Ok(())
     }

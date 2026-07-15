@@ -6,10 +6,10 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RELEASE_DIR="${WARDEN_RELEASE_DIR:-$REPO_DIR/release}"
 CHANNELS_DIR="$RELEASE_DIR/channels"
 CHANNEL_STORE_DIR="$RELEASE_DIR/channel-store"
+TOOL_STORE_DIR="$RELEASE_DIR/tool-store"
 
 mkdir -p "$CHANNELS_DIR"
-mkdir -p "$CHANNEL_STORE_DIR/telegram"
-rm -f "$CHANNELS_DIR/telegram.wasm" "$CHANNELS_DIR/telegram.config.json" "$CHANNELS_DIR/telegram.config.example.json"
+mkdir -p "$TOOL_STORE_DIR"
 
 echo "building warden"
 cargo build --manifest-path "$SCRIPT_DIR/Cargo.toml" --release --locked
@@ -31,24 +31,40 @@ if command -v codesign >/dev/null 2>&1; then
   codesign --force --sign - "$RELEASE_DIR/warden-tui" >/dev/null 2>&1 || true
 fi
 
-echo "building tui channel"
-cargo build --manifest-path "$SCRIPT_DIR/channels-src/tui/Cargo.toml" --release --target wasm32-wasip2 --locked
-cp "$SCRIPT_DIR/channels-src/tui/target/wasm32-wasip2/release/tui_channel.wasm" "$CHANNELS_DIR/tui.wasm"
+build_wasm_packages() {
+  local source_root="$1"
+  local installed_dir="$2"
+  local store_dir="$3"
 
-echo "building telegram channel"
-cargo build --manifest-path "$SCRIPT_DIR/channels-src/telegram/Cargo.toml" --release --target wasm32-wasip2 --locked
-cp "$SCRIPT_DIR/channels-src/telegram/target/wasm32-wasip2/release/telegram_channel.wasm" "$CHANNEL_STORE_DIR/telegram/telegram.wasm"
+  for source_dir in "$source_root"/*; do
+    [ -f "$source_dir/Cargo.toml" ] || continue
+    local package_name
+    package_name="$(basename "$source_dir")"
+    local crate_name
+    crate_name="$(awk -F'"' '/^name[[:space:]]*=/ { print $2; exit }' "$source_dir/Cargo.toml")"
+    [ -n "$crate_name" ] || { echo "missing package name in $source_dir/Cargo.toml" >&2; exit 1; }
+    local artifact_name="${crate_name//-/_}.wasm"
 
-echo "copying channel configs"
-for config in "$SCRIPT_DIR"/channels-src/tui/*.config.json; do
-  if [ -f "$config" ]; then
-    cp "$config" "$CHANNELS_DIR/"
-  fi
-done
-for package_file in "$SCRIPT_DIR"/channels-src/telegram/telegram.config.example.json "$SCRIPT_DIR"/channels-src/telegram/telegram.install.json; do
-  if [ -f "$package_file" ]; then
-    cp "$package_file" "$CHANNEL_STORE_DIR/telegram/"
-  fi
-done
+    echo "building $package_name package"
+    cargo build --manifest-path "$source_dir/Cargo.toml" --release --target wasm32-wasip2 --locked
+
+    if compgen -G "$source_dir"/*.install.json >/dev/null; then
+      local destination="$store_dir/$package_name"
+      mkdir -p "$destination"
+      cp "$source_dir/target/wasm32-wasip2/release/$artifact_name" "$destination/$package_name.wasm"
+      for package_file in "$source_dir"/*.config.example.json "$source_dir"/*.install.json; do
+        [ -f "$package_file" ] && cp "$package_file" "$destination/"
+      done
+    else
+      cp "$source_dir/target/wasm32-wasip2/release/$artifact_name" "$installed_dir/$package_name.wasm"
+      for config in "$source_dir"/*.config.json; do
+        [ -f "$config" ] && cp "$config" "$installed_dir/"
+      done
+    fi
+  done
+}
+
+build_wasm_packages "$SCRIPT_DIR/channels-src" "$CHANNELS_DIR" "$CHANNEL_STORE_DIR"
+build_wasm_packages "$SCRIPT_DIR/tools-src" "$RELEASE_DIR/tools" "$TOOL_STORE_DIR"
 
 echo "release assembled at $RELEASE_DIR"
