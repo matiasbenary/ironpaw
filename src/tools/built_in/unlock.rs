@@ -100,7 +100,7 @@ impl InternalTool for UnlockSecretsTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<UnlockSecretsParams>(
             self.name(),
-            "Unlock or initialize Warden's encrypted secret store during startup.",
+            "Unlock or initialize Ironpaw's encrypted secret store during startup.",
         )
     }
 
@@ -161,13 +161,13 @@ type UnlockStep = (String, Option<Arc<EncryptedSecretStore>>);
 fn unlock_existing(layout: &RuntimeLayout, message: &str) -> Result<UnlockStep, String> {
     if !phrase_is_valid(message) {
         return Ok(waiting(
-            "Warden is locked. Enter Warden's 6-word unlock phrase.",
+            "Ironpaw is locked. Enter Ironpaw's 6-word unlock phrase.",
         ));
     }
     match EncryptedSecretStore::unlock(layout, message) {
-        Ok(store) => Ok(unlocked("Secrets unlocked. Starting Warden.", store)),
+        Ok(store) => Ok(unlocked("Secrets unlocked. Starting Ironpaw.", store)),
         Err(_) => Ok(waiting(
-            "Warden is locked. Enter Warden's 6-word unlock phrase.",
+            "Ironpaw is locked. Enter Ironpaw's 6-word unlock phrase.",
         )),
     }
 }
@@ -193,7 +193,7 @@ fn verify_new_store(
     }
 
     let store = EncryptedSecretStore::create(layout, phrase)?;
-    Ok(unlocked("Secret store created. Starting Warden.", store))
+    Ok(unlocked("Secret store created. Starting Ironpaw.", store))
 }
 
 fn phrase_checks(phrase: &str) -> Vec<usize> {
@@ -206,7 +206,7 @@ fn phrase_checks(phrase: &str) -> Vec<usize> {
 
 fn phrase_prompt(phrase: &str, first_check: usize) -> String {
     format!(
-        "Warden needs to create an encrypted secret store.\n\nWrite down this 6-word unlock phrase. It will not be stored:\n\n{phrase}\n\nReply with word #{}.",
+        "Ironpaw needs to create an encrypted secret store.\n\nWrite down this 6-word unlock phrase. It will not be stored:\n\n{phrase}\n\nReply with word #{}.",
         first_check + 1
     )
 }

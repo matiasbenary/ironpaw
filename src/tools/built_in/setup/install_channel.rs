@@ -298,7 +298,7 @@ impl InternalTool for ListChannelsTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<ListChannelsParams>(
             self.name(),
-            "List Warden channels, including installed runtime channels and \
+            "List Ironpaw channels, including installed runtime channels and \
              installable local channel packages. Use this before install_channel \
              when the user asks what channels are available.",
         )
@@ -325,7 +325,7 @@ impl InternalTool for RemoveChannelTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<RemoveChannelParams>(
             self.name(),
-            "Remove an installed Warden channel so it can be installed again. \
+            "Remove an installed Ironpaw channel so it can be installed again. \
              Use this when the user asks to uninstall, remove, reset, or reinstall a channel.",
         )
     }
@@ -426,7 +426,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_warden_install_manifest() {
+    fn parses_ironpaw_install_manifest() {
         let manifest = install_channel_package::parse_install_manifest(
             r#"{
               "name": "telegram",

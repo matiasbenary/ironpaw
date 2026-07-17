@@ -98,12 +98,12 @@ pub async fn run_server(listener: TcpListener, addr: &str, state: BridgeState) -
     let outbound_registry = Arc::clone(&state.registry);
     tokio::spawn(async move {
         let _ =
-            outbound::message_warden_to_channel(outbound_bus, outbound_history, outbound_registry)
+            outbound::message_ironpaw_to_channel(outbound_bus, outbound_history, outbound_registry)
                 .await;
     });
 
     let app = Router::new()
-        .route("/{*path}", post(inbound::message_channel_to_warden))
+        .route("/{*path}", post(inbound::message_channel_to_ironpaw))
         .with_state(state);
 
     println!("channel bridge listening on http://{addr}");

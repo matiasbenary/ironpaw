@@ -15,13 +15,13 @@ pub struct HistoryEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct MessageMetadata {
-    /// Warden-owned stable id for this history entry.
+    /// Ironpaw-owned stable id for this history entry.
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<ConversationKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation_id: Option<String>,
-    /// Provider-owned message id when Warden knows it.
+    /// Provider-owned message id when Ironpaw knows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
 }

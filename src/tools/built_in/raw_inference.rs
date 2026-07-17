@@ -217,7 +217,7 @@ fn response_to_output(response: serde_json::Value) -> Result<RawInferenceOutput,
         .as_array()
         .into_iter()
         .flatten()
-        .map(chat_tool_call_to_warden)
+        .map(chat_tool_call_to_ironpaw)
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .flatten()
@@ -233,7 +233,7 @@ fn response_to_output(response: serde_json::Value) -> Result<RawInferenceOutput,
     })
 }
 
-fn chat_tool_call_to_warden(value: &serde_json::Value) -> Result<Option<ToolCall>, String> {
+fn chat_tool_call_to_ironpaw(value: &serde_json::Value) -> Result<Option<ToolCall>, String> {
     if value["type"].as_str() != Some("function") {
         return Ok(None);
     }
@@ -314,7 +314,7 @@ impl InternalTool for RawInferenceTool {
     fn tool_definition(&self) -> crate::message::ToolDefinition {
         tools::tool_definition::<RawInferenceRequest>(
             self.name(),
-            "Call a model directly with Warden-native messages: one completion, \
+            "Call a model directly with Ironpaw-native messages: one completion, \
              no history, no tool execution. Use it to delegate a task to a \
              specific model (e.g. a vision or audio model).",
         )

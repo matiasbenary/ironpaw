@@ -17,7 +17,7 @@ use crate::{
     message::{Attachment, Message},
 };
 
-pub(super) async fn message_channel_to_warden(
+pub(super) async fn message_channel_to_ironpaw(
     State(state): State<BridgeState>,
     Path(path): Path<String>,
     headers: HeaderMap,

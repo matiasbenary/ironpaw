@@ -9,7 +9,7 @@ use crate::{
     message::{Attachment, Message, ToolCall},
 };
 
-pub(super) async fn message_warden_to_channel(
+pub(super) async fn message_ironpaw_to_channel(
     bus: Bus,
     history: Arc<dyn History>,
     registry: Arc<ChannelRegistry>,

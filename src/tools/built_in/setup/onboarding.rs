@@ -68,7 +68,7 @@ impl OnboardingTool {
                 self.set_stage(Stage::WaitingForNearKey);
                 send(
                     &self.setup.tools,
-                    "Welcome to Warden. Let's set up the API key I need. Paste your NEAR API key.",
+                    "Welcome to Ironpaw. Let's set up the API key I need. Paste your NEAR API key.",
                     ctx,
                 )
                 .await?;
@@ -142,7 +142,7 @@ impl OnboardingTool {
             .add(Automations::handle_conversation())?;
         send(
             &self.setup.tools,
-            "Warden is set up. From now on, I will answer your messages normally.",
+            "Ironpaw is set up. From now on, I will answer your messages normally.",
             ctx,
         )
         .await
@@ -170,7 +170,7 @@ impl InternalTool for OnboardingTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<OnboardingParams>(
             self.name(),
-            "First-run Warden setup. Greets the user, collects NEAR_API_KEY, \
+            "First-run Ironpaw setup. Greets the user, collects NEAR_API_KEY, \
              stores it encrypted, tests raw_inference, then enables the normal \
              handle-conversation automation.",
         )

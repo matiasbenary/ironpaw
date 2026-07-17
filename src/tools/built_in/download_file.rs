@@ -121,7 +121,7 @@ impl InternalTool for DownloadFileTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<DownloadFileParams>(
             self.name(),
-            "Download a public URL into Warden's managed download directory and return a file_id. Public Google Sheets, Docs, and Slides editor links are exported as CSV, text, and PDF. Use inspect_file with the file_id to query contents without putting the whole download into conversation history.",
+            "Download a public URL into Ironpaw's managed download directory and return a file_id. Public Google Sheets, Docs, and Slides editor links are exported as CSV, text, and PDF. Use inspect_file with the file_id to query contents without putting the whole download into conversation history.",
         )
     }
 

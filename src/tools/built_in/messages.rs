@@ -68,7 +68,7 @@ impl InternalTool for SendMessageTool {
     fn tool_definition(&self) -> crate::message::ToolDefinition {
         tools::tool_definition::<SendMessageToolInput>(
             self.name(),
-            "Send a message to the user through one of Warden's channels. \
+            "Send a message to the user through one of Ironpaw's channels. \
              Use this only to reach a different channel or conversation than \
              the current one, or to deliver a file: your final reply is \
              delivered to the current conversation automatically.",

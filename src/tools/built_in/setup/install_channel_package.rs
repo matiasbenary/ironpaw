@@ -210,7 +210,7 @@ pub(super) fn required_secrets(
         secrets.push(SetupSecret {
             name: NGROK_SECRET.to_string(),
             prompt: Some(
-                "Paste your ngrok auth token so Warden can expose webhook channels.".to_string(),
+                "Paste your ngrok auth token so Ironpaw can expose webhook channels.".to_string(),
             ),
             optional: false,
             auto_generate: None,

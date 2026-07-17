@@ -380,7 +380,7 @@ impl InternalTool for ListToolsTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<ListToolsParams>(
             self.name(),
-            "List Warden external WASM tools, including installed runtime tools \
+            "List Ironpaw external WASM tools, including installed runtime tools \
              and installable local tool packages. Use this before install_tool \
              when the user asks what tools are available.",
         )

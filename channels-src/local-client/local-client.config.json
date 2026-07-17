@@ -1,0 +1,6 @@
+{
+  "path": "/channel/local-client/message",
+  "auth": {
+    "type": "bearer"
+  }
+}

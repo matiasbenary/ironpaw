@@ -11,7 +11,7 @@ use crate::{
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchHistoryParams {
-    /// Text to search for in Warden's stored history.
+    /// Text to search for in Ironpaw's stored history.
     pub query: String,
 }
 
@@ -45,7 +45,7 @@ impl InternalTool for SearchHistoryTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<SearchHistoryParams>(
             self.name(),
-            "Search Warden's stored history across all conversations.",
+            "Search Ironpaw's stored history across all conversations.",
         )
     }
 

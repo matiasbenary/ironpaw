@@ -506,7 +506,7 @@ impl InternalTool for BrowserUpdateTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<serde_json::Value>(
             self.name(),
-            "Internal maintenance tool that updates Warden's managed Chrome runtime.",
+            "Internal maintenance tool that updates Ironpaw's managed Chrome runtime.",
         )
     }
 

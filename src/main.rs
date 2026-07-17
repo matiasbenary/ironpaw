@@ -48,7 +48,7 @@ async fn main() -> io::Result<()> {
         .map_err(std::io::Error::other)?,
     );
     channel_runtime
-        .load_only_channels(&["tui".to_string()])
+        .load_only_channels(&["local-client".to_string()])
         .await
         .map_err(std::io::Error::other)?;
 
@@ -119,7 +119,7 @@ async fn main() -> io::Result<()> {
 
     println!("unlock bridge token: {token}");
     println!("runtime root: {}", layout.root().display());
-    println!("Use `ironpaw-tui {token}` to unlock Warden.");
+    println!("Use `ironpaw-tui {token}` to unlock Ironpaw.");
 
     wait_for_unlocked_store(boot_events).await?;
     automations.remove_transient(UNLOCK_AUTOMATION);

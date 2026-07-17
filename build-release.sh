@@ -22,8 +22,8 @@ if command -v codesign >/dev/null 2>&1; then
 fi
 
 echo "building ironpaw-tui"
-cargo build --manifest-path "$REPO_DIR/ironpaw-tui/Cargo.toml" --release --locked
-cp "$REPO_DIR/ironpaw-tui/target/release/ironpaw-tui" "$RELEASE_DIR/ironpaw-tui"
+cargo build --manifest-path "$SCRIPT_DIR/local-clients-src/ironpaw-tui/Cargo.toml" --release --locked
+cp "$SCRIPT_DIR/local-clients-src/ironpaw-tui/target/release/ironpaw-tui" "$RELEASE_DIR/ironpaw-tui"
 if command -v xattr >/dev/null 2>&1; then
   xattr -c "$RELEASE_DIR/ironpaw-tui" || true
 fi

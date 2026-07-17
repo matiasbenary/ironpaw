@@ -3,7 +3,7 @@ wit_bindgen::generate!({
     path: "../../wit/channel.wit",
 });
 
-use std::cell::Cell;
+use std::{cell::Cell, net::Ipv4Addr};
 
 use serde::Deserialize;
 
@@ -24,9 +24,31 @@ fn next_message_id() -> u32 {
     })
 }
 
-struct TuiChannel;
+fn validate_callback_url(callback_url: &str) -> Result<(), String> {
+    let Some(address) = callback_url.strip_prefix("http://") else {
+        return Err("callback URL must use http".to_string());
+    };
+    let Some((host, port)) = address.rsplit_once(':') else {
+        return Err("callback URL must include a port".to_string());
+    };
+    let host: Ipv4Addr = host
+        .parse()
+        .map_err(|_| "callback URL host must be an IPv4 address".to_string())?;
+    if !host.is_loopback() {
+        return Err("callback URL host must be loopback".to_string());
+    }
+    let port: u16 = port
+        .parse()
+        .map_err(|_| "callback URL port must be valid".to_string())?;
+    if port == 0 {
+        return Err("callback URL port must be non-zero".to_string());
+    }
+    Ok(())
+}
 
-impl Guest for TuiChannel {
+struct LocalClientChannel;
+
+impl Guest for LocalClientChannel {
     fn on_start(_config_json: String) -> Result<(), String> {
         Ok(())
     }
@@ -38,12 +60,13 @@ impl Guest for TuiChannel {
         if incoming.content.trim().is_empty() {
             return Err("message content cannot be empty".to_string());
         }
+        validate_callback_url(&incoming.callback_url)?;
 
         let event = serde_json::json!({
-            "channel": "tui",
+            "channel": "local-client",
             "channel_user_id": "local",
             "conversation": {
-                "channel": "tui",
+                "channel": "local-client",
                 "chat_id": incoming.callback_url,
                 "thread_id": null
             },
@@ -71,9 +94,9 @@ impl Guest for TuiChannel {
                 message,
             } => {
                 let Some(conversation) = conversation else {
-                    return Err("tui message out did not include conversation".to_string());
+                    return Err("local-client message out did not include conversation".to_string());
                 };
-                let WardenMessage::Assistant(message) = message else {
+                let IronpawMessage::Assistant(message) = message else {
                     return Ok(None);
                 };
                 let id = next_message_id().to_string();
@@ -125,7 +148,7 @@ impl Guest for TuiChannel {
 enum OutboundEvent {
     MessageOut {
         conversation: Option<ConversationKey>,
-        message: WardenMessage,
+        message: IronpawMessage,
     },
     DeleteMessage {
         message: MessageRef,
@@ -142,7 +165,7 @@ enum OutboundEvent {
 
 #[derive(Deserialize)]
 #[allow(dead_code)]
-enum WardenMessage {
+enum IronpawMessage {
     Assistant(AssistantMessage),
     System(serde_json::Value),
     User(serde_json::Value),
@@ -198,4 +221,21 @@ where
     serializer.serialize_str(content.as_deref().unwrap_or_default())
 }
 
-export!(TuiChannel);
+export!(LocalClientChannel);
+
+#[cfg(test)]
+mod tests {
+    use super::validate_callback_url;
+
+    #[test]
+    fn accepts_loopback_http_callback_url() {
+        assert!(validate_callback_url("http://127.0.0.1:7878").is_ok());
+    }
+
+    #[test]
+    fn rejects_non_loopback_callback_url() {
+        assert!(validate_callback_url("http://example.com:7878").is_err());
+        assert!(validate_callback_url("http://192.168.1.1:7878").is_err());
+        assert!(validate_callback_url("https://127.0.0.1:7878").is_err());
+    }
+}
