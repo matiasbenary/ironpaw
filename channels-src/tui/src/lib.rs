@@ -7,7 +7,7 @@ use std::cell::Cell;
 
 use serde::Deserialize;
 
-use crate::warden::channel::channel_host;
+use crate::ironpaw::channel::channel_host;
 
 thread_local! {
     /// Sequential id assigned to each outbound assistant message so it can

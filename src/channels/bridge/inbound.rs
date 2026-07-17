@@ -274,6 +274,6 @@ mod tests {
     }
 
     fn unique_test_files_dir() -> PathBuf {
-        std::env::temp_dir().join(format!("warden-bridge-test-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("ironpaw-bridge-test-{}", uuid::Uuid::new_v4()))
     }
 }

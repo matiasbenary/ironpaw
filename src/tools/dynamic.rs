@@ -285,13 +285,13 @@ mod tests {
     fn bound_create_tool() -> (Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf) {
         let bus = Bus::new(4);
         let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
-            "warden-create-tool-test-runtime-{}",
+            "ironpaw-create-tool-test-runtime-{}",
             uuid::Uuid::new_v4()
         )));
         let files_dir = layout.files_dir();
         std::fs::create_dir_all(&files_dir).unwrap();
         let history = std::env::temp_dir().join(format!(
-            "warden-create-tool-test-history-{}.db",
+            "ironpaw-create-tool-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
         let secrets = crate::secrets::Secrets::for_tests();

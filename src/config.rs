@@ -10,7 +10,7 @@ pub struct RuntimeLayout {
 
 impl RuntimeLayout {
     pub fn discover() -> Self {
-        let root = env::var_os("WARDEN_HOME")
+        let root = env::var_os("IRONPAW_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(default_runtime_root);
         Self { root }

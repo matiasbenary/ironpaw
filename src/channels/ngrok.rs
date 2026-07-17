@@ -46,10 +46,10 @@ pub async fn start_if_configured(
     secrets: &ChannelSecrets,
     local_addr: &str,
 ) -> Result<Option<ActiveNgrok>, NgrokError> {
-    let Some(auth_token) = secrets.get("WARDEN_NGROK_TOKEN") else {
+    let Some(auth_token) = secrets.get("IRONPAW_NGROK_TOKEN") else {
         return Ok(None);
     };
-    let domain = secrets.get("WARDEN_NGROK_DOMAIN");
+    let domain = secrets.get("IRONPAW_NGROK_DOMAIN");
     start(runtime_root, local_addr, auth_token, domain)
         .await
         .map(Some)

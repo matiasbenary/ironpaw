@@ -22,7 +22,7 @@ use crate::{
     },
 };
 
-pub(super) const NGROK_SECRET: &str = "WARDEN_NGROK_TOKEN";
+pub(super) const NGROK_SECRET: &str = "IRONPAW_NGROK_TOKEN";
 use install_channel_package::{
     BUILTIN_CHANNELS, ChannelPackage, installed_package_exists, locate_channel_package,
     normalize_channel_name, remove_channel_files, required_secrets,

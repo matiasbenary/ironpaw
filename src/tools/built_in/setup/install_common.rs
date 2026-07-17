@@ -130,7 +130,7 @@ pub fn config_value(config: &SetupConfig, message: &str) -> Result<serde_json::V
 }
 
 pub fn stored_secret_name(name: &str) -> String {
-    if name.starts_with("WARDEN_") {
+    if name.starts_with("IRONPAW_") {
         name.to_string()
     } else {
         name.to_ascii_uppercase()

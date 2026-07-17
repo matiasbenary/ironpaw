@@ -1651,6 +1651,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
+name = "ironpaw"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "async-trait",
+ "axum",
+ "base64",
+ "bip39",
+ "chacha20poly1305",
+ "chromiumoxide",
+ "chrono",
+ "cron",
+ "dotenvy",
+ "futures",
+ "hkdf",
+ "imap",
+ "lettre",
+ "pdf-extract",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "rquickjs",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "uuid",
+ "wasmtime",
+ "wasmtime-wasi",
+ "zip",
+]
+
+[[package]]
 name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3475,40 +3509,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
 dependencies = [
  "try-lock",
-]
-
-[[package]]
-name = "warden"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "async-trait",
- "axum",
- "base64",
- "bip39",
- "chacha20poly1305",
- "chromiumoxide",
- "chrono",
- "cron",
- "dotenvy",
- "futures",
- "hkdf",
- "imap",
- "lettre",
- "pdf-extract",
- "rand 0.8.6",
- "reqwest 0.12.28",
- "rquickjs",
- "rusqlite",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "uuid",
- "wasmtime",
- "wasmtime-wasi",
- "zip",
 ]
 
 [[package]]

@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn text_search_preserves_exact_identifiers() {
-        let path = std::env::temp_dir().join(format!("warden-memory-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("ironpaw-memory-{}.db", uuid::Uuid::new_v4()));
         let store = SqliteMemory::new(path).unwrap();
         store
             .insert(&[MemoryRecord {

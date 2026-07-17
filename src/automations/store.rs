@@ -151,7 +151,7 @@ mod tests {
 
     fn temp_store() -> SqliteAutomations {
         let path = std::env::temp_dir().join(format!(
-            "warden-automations-test-{}.db",
+            "ironpaw-automations-test-{}.db",
             uuid::Uuid::new_v4()
         ));
         SqliteAutomations::new(path).expect("store")

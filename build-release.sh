@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RELEASE_DIR="${WARDEN_RELEASE_DIR:-$REPO_DIR/release}"
+RELEASE_DIR="${IRONPAW_RELEASE_DIR:-$REPO_DIR/release}"
 CHANNELS_DIR="$RELEASE_DIR/channels"
 CHANNEL_STORE_DIR="$RELEASE_DIR/channel-store"
 TOOL_STORE_DIR="$RELEASE_DIR/tool-store"
@@ -11,24 +11,24 @@ TOOL_STORE_DIR="$RELEASE_DIR/tool-store"
 mkdir -p "$CHANNELS_DIR"
 mkdir -p "$TOOL_STORE_DIR"
 
-echo "building warden"
+echo "building ironpaw"
 cargo build --manifest-path "$SCRIPT_DIR/Cargo.toml" --release --locked
-cp "$SCRIPT_DIR/target/release/warden" "$RELEASE_DIR/warden"
+cp "$SCRIPT_DIR/target/release/ironpaw" "$RELEASE_DIR/ironpaw"
 if command -v xattr >/dev/null 2>&1; then
-  xattr -c "$RELEASE_DIR/warden" || true
+  xattr -c "$RELEASE_DIR/ironpaw" || true
 fi
 if command -v codesign >/dev/null 2>&1; then
-  codesign --force --sign - "$RELEASE_DIR/warden" >/dev/null 2>&1 || true
+  codesign --force --sign - "$RELEASE_DIR/ironpaw" >/dev/null 2>&1 || true
 fi
 
-echo "building warden-tui"
-cargo build --manifest-path "$REPO_DIR/warden-tui/Cargo.toml" --release --locked
-cp "$REPO_DIR/warden-tui/target/release/warden-tui" "$RELEASE_DIR/warden-tui"
+echo "building ironpaw-tui"
+cargo build --manifest-path "$REPO_DIR/ironpaw-tui/Cargo.toml" --release --locked
+cp "$REPO_DIR/ironpaw-tui/target/release/ironpaw-tui" "$RELEASE_DIR/ironpaw-tui"
 if command -v xattr >/dev/null 2>&1; then
-  xattr -c "$RELEASE_DIR/warden-tui" || true
+  xattr -c "$RELEASE_DIR/ironpaw-tui" || true
 fi
 if command -v codesign >/dev/null 2>&1; then
-  codesign --force --sign - "$RELEASE_DIR/warden-tui" >/dev/null 2>&1 || true
+  codesign --force --sign - "$RELEASE_DIR/ironpaw-tui" >/dev/null 2>&1 || true
 fi
 
 build_wasm_packages() {

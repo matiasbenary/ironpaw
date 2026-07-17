@@ -438,13 +438,13 @@ mod tests {
     fn test_tools() -> InternalTools {
         let bus = crate::bus::Bus::new(4);
         let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
-            "warden-tools-test-runtime-{}",
+            "ironpaw-tools-test-runtime-{}",
             uuid::Uuid::new_v4()
         )));
         let files_dir = layout.files_dir();
         std::fs::create_dir_all(&files_dir).unwrap();
         let history = std::env::temp_dir().join(format!(
-            "warden-tools-test-history-{}.db",
+            "ironpaw-tools-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
         let secrets = crate::secrets::Secrets::for_tests();
@@ -579,7 +579,7 @@ mod tests {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());
         registry.add(Arc::new(FakeTool("fake"))).expect("add");
-        let history = temp_history("warden-tool-handler-test");
+        let history = temp_history("ironpaw-tool-handler-test");
         let handler = Arc::new(ToolHandler::new(bus.clone(), registry, history));
         let task = handler.start();
         let mut events = bus.subscribe();
@@ -624,7 +624,7 @@ mod tests {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());
         registry.add(Arc::new(FakeTool("fake"))).expect("add");
-        let history = temp_history("warden-tool-handler-automation-history");
+        let history = temp_history("ironpaw-tool-handler-automation-history");
         let handler = Arc::new(ToolHandler::new(bus.clone(), registry, history.clone()));
         let task = handler.start();
         let mut events = bus.subscribe();
@@ -674,7 +674,7 @@ mod tests {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());
         registry.add(Arc::new(FakeTool("fake"))).expect("add");
-        let history = temp_history("warden-tool-handler-bus-history");
+        let history = temp_history("ironpaw-tool-handler-bus-history");
         let handler = Arc::new(ToolHandler::new(bus.clone(), registry, history.clone()));
         let task = handler.start();
         let mut events = bus.subscribe();

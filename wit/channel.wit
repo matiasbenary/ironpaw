@@ -1,4 +1,4 @@
-package warden:channel;
+package ironpaw:channel;
 
 interface channel-host {
     http-request: func(method: string, url: string, body-json: string) -> result<string, string>;

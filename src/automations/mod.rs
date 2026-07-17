@@ -466,13 +466,13 @@ mod tests {
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
         let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
-            "warden-automation-test-runtime-{}",
+            "ironpaw-automation-test-runtime-{}",
             uuid::Uuid::new_v4()
         )));
         let files_dir = layout.files_dir();
         std::fs::create_dir_all(&files_dir).unwrap();
         let history = std::env::temp_dir().join(format!(
-            "warden-automation-test-history-{}.db",
+            "ironpaw-automation-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
         let secrets = crate::secrets::Secrets::for_tests();
@@ -490,7 +490,7 @@ mod tests {
 
     fn temp_store() -> Arc<SqliteAutomations> {
         let path = std::env::temp_dir().join(format!(
-            "warden-automations-runtime-test-{}.db",
+            "ironpaw-automations-runtime-test-{}.db",
             uuid::Uuid::new_v4()
         ));
         Arc::new(SqliteAutomations::new(path).expect("store"))

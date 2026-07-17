@@ -234,7 +234,7 @@ mod tests {
             socket.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/csv\r\ncontent-length: 17\r\nconnection: close\r\n\r\nartist,album\nA,B\n").await.unwrap();
         });
         let dir =
-            std::env::temp_dir().join(format!("warden-download-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("ironpaw-download-test-{}", uuid::Uuid::new_v4()));
         let downloaded = DownloadFileTool::new(dir.clone())
             .download(DownloadFileParams { url })
             .await

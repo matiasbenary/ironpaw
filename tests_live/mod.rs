@@ -2,7 +2,7 @@ use std::{collections::HashSet, time::Duration};
 use std::{path::PathBuf, sync::Arc};
 
 use tokio::time::timeout;
-use warden::{
+use ironpaw::{
     agent::{Agent, AgentHandler},
     automations::{Automations, SqliteAutomations},
     bus::{AutomationAction, Bus, ConversationKey, Event, Sender},
@@ -46,10 +46,10 @@ fn start_warden_config(
 ) {
     reset_raw_inference_log();
     let history = temp_history();
-    let layout = warden::config::RuntimeLayout::from_root(
-        std::env::temp_dir().join(format!("warden-live-test-runtime-{}", uuid::Uuid::new_v4())),
+    let layout = ironpaw::config::RuntimeLayout::from_root(
+        std::env::temp_dir().join(format!("ironpaw-live-test-runtime-{}", uuid::Uuid::new_v4())),
     );
-    let secrets = warden::secrets::Secrets::for_tests();
+    let secrets = ironpaw::secrets::Secrets::for_tests();
     if let Ok(near_api_key) = std::env::var("NEAR_API_KEY") {
         secrets.set("NEAR_API_KEY", &near_api_key).unwrap();
     }
@@ -89,7 +89,7 @@ fn start_warden_config(
     );
     let agent = Arc::new(agent);
     let automations_db = std::env::temp_dir().join(format!(
-        "warden-live-test-automations-{}.db",
+        "ironpaw-live-test-automations-{}.db",
         uuid::Uuid::new_v4()
     ));
     let automation_store =
@@ -126,9 +126,9 @@ fn reset_raw_inference_log() {
 }
 
 fn install_web_search_for_live_tests(
-    layout: &warden::config::RuntimeLayout,
+    layout: &ironpaw::config::RuntimeLayout,
     tools: &Arc<InternalTools>,
-    secrets: &warden::secrets::Secrets,
+    secrets: &ironpaw::secrets::Secrets,
 ) {
     if !secrets.exists("BRAVE_SEARCH_API") {
         return;
@@ -163,7 +163,7 @@ fn install_web_search_for_live_tests(
 
 fn temp_history() -> Arc<dyn History> {
     let path =
-        std::env::temp_dir().join(format!("warden-test-history-{}.db", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("ironpaw-test-history-{}.db", uuid::Uuid::new_v4()));
     Arc::new(SqliteHistory::new(path).expect("temp history"))
 }
 
@@ -315,8 +315,8 @@ async fn memory_native_eval() {
     let _ = dotenvy::dotenv();
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
     let fixture = memory_eval_fixture();
-    let probe_filter = std::env::var("WARDEN_MEMORY_EVAL_PROBE").ok();
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let probe_filter = std::env::var("IRONPAW_MEMORY_EVAL_PROBE").ok();
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
     let bus = Bus::new(64);
     let mut events = bus.subscribe();
@@ -390,7 +390,7 @@ async fn agent_replies_to_hi() {
     let _ = dotenvy::dotenv();
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);
@@ -446,7 +446,7 @@ async fn send_message_routes_to_telegram() {
     let _ = dotenvy::dotenv();
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);
@@ -494,7 +494,7 @@ async fn image_generation_routes_to_telegram() {
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
     // Temp dir with a stub image the mock generator will serve.
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
     std::fs::write(files_dir.join("1780086002.png"), b"stub-png").unwrap();
 
@@ -552,7 +552,7 @@ async fn agent_reads_pdf_content() {
     let _ = dotenvy::dotenv();
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);
@@ -627,7 +627,7 @@ async fn agent_identifies_dog_image() {
     let _ = dotenvy::dotenv();
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);
@@ -699,7 +699,7 @@ async fn agent_uses_web_search_for_wikipedia() {
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
     std::env::var("BRAVE_SEARCH_API").expect("BRAVE_SEARCH_API must be set");
 
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);
@@ -765,7 +765,7 @@ async fn agent_checks_first_partner_stock() {
     let _ = dotenvy::dotenv();
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);
@@ -810,7 +810,7 @@ async fn delayed_message_automation() {
     let _ = dotenvy::dotenv();
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);
@@ -870,7 +870,7 @@ async fn scheduled_message_at_wall_clock_time() {
     let _ = dotenvy::dotenv();
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);
@@ -931,7 +931,7 @@ async fn lottery_automation() {
     let _ = dotenvy::dotenv();
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);
@@ -1021,7 +1021,7 @@ async fn album_recommendation_automation() {
     let _ = dotenvy::dotenv();
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);
@@ -1154,7 +1154,7 @@ async fn hacker_news_automation() {
     let _ = dotenvy::dotenv();
     std::env::var("NEAR_API_KEY").expect("NEAR_API_KEY must be set");
 
-    let files_dir = std::env::temp_dir().join("warden-live-test-files");
+    let files_dir = std::env::temp_dir().join("ironpaw-live-test-files");
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);

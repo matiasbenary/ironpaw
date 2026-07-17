@@ -275,7 +275,7 @@ async fn snapshot_tree(page: &Page) -> Result<BrowserNode, String> {
     let script = r#"(() => {
       let next = 1;
       let count = 0;
-      for (const element of document.querySelectorAll('[data-warden-ref]')) element.removeAttribute('data-warden-ref');
+      for (const element of document.querySelectorAll('[data-ironpaw-ref]')) element.removeAttribute('data-ironpaw-ref');
       const visible = (element) => {
         const style = getComputedStyle(element);
         return style.display !== 'none' && style.visibility !== 'hidden' && !!element.getClientRects().length;
@@ -311,7 +311,7 @@ async fn snapshot_tree(page: &Page) -> Result<BrowserNode, String> {
         count += 1;
         const isInteractive = interactive(element, nodeRole);
         const reference = isInteractive ? `e${next++}` : null;
-        if (reference) element.setAttribute('data-warden-ref', reference);
+        if (reference) element.setAttribute('data-ironpaw-ref', reference);
         const options = element.tagName === 'SELECT'
           ? Array.from(element.options).slice(0, 100).map((option) => ({ name: option.text.trim(), value: option.value }))
           : [];
@@ -343,7 +343,7 @@ async fn act(
     if !reference.starts_with('e') || reference[1..].parse::<usize>().is_err() {
         return Err("reference must come from the most recent browser snapshot".to_string());
     }
-    let selector = serde_json::to_string(&format!(r#"[data-warden-ref="{reference}"]"#))
+    let selector = serde_json::to_string(&format!(r#"[data-ironpaw-ref="{reference}"]"#))
         .map_err(|err| err.to_string())?;
     match kind {
         BrowserAct::Click => {

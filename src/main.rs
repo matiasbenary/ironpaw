@@ -1,6 +1,6 @@
 use std::{io, sync::Arc};
 
-use warden::{
+use ironpaw::{
     agent::Agent,
     automations::{Automations, SqliteAutomations},
     bus::{Bus, Event},
@@ -29,9 +29,9 @@ async fn main() -> io::Result<()> {
     let layout = RuntimeLayout::discover();
     let _ = dotenvy::from_path(layout.root().join(".env"));
     let token = uuid::Uuid::new_v4().to_string();
-    let addr = std::env::var("WARDEN_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
+    let addr = std::env::var("IRONPAW_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
     let bus = Bus::new(16);
-    let secrets = warden::secrets::Secrets::locked();
+    let secrets = ironpaw::secrets::Secrets::locked();
     let history: Arc<dyn History> = Arc::new(
         SqliteHistory::new(layout.data_dir().join("history.db")).map_err(std::io::Error::other)?,
     );
@@ -96,7 +96,7 @@ async fn main() -> io::Result<()> {
         Arc::clone(&tools.registry),
         automation_store,
     ));
-    let agent_handler = Arc::new(warden::agent::AgentHandler::new(
+    let agent_handler = Arc::new(ironpaw::agent::AgentHandler::new(
         bus.clone(),
         Arc::clone(&agent),
     ));
@@ -119,7 +119,7 @@ async fn main() -> io::Result<()> {
 
     println!("unlock bridge token: {token}");
     println!("runtime root: {}", layout.root().display());
-    println!("Use `warden-tui {token}` to unlock Warden.");
+    println!("Use `ironpaw-tui {token}` to unlock Warden.");
 
     wait_for_unlocked_store(boot_events).await?;
     automations.remove_transient(UNLOCK_AUTOMATION);
@@ -133,7 +133,7 @@ async fn main() -> io::Result<()> {
             .add(Arc::new(tool))
             .map_err(std::io::Error::other)?;
     }
-    for manifest in warden::tools::wasm::discover(&layout).map_err(std::io::Error::other)? {
+    for manifest in ironpaw::tools::wasm::discover(&layout).map_err(std::io::Error::other)? {
         let name = manifest.name.clone();
         let tool = WasmTool::from_manifest(manifest, secrets.tools.clone())
             .map_err(std::io::Error::other)?;
@@ -190,7 +190,7 @@ async fn main() -> io::Result<()> {
     if !automations
         .list()
         .iter()
-        .any(|automation| automation.name == warden::tools::browser::UPDATE_AUTOMATION_NAME)
+        .any(|automation| automation.name == ironpaw::tools::browser::UPDATE_AUTOMATION_NAME)
     {
         automations
             .add_transient(BrowserUpdateTool::automation())
@@ -235,7 +235,7 @@ async fn main() -> io::Result<()> {
         }
     }
     println!(
-        "warden is running. Use `warden-tui {token}` to send a message. Press Ctrl-C to stop."
+        "ironpaw is running. Use `ironpaw-tui {token}` to send a message. Press Ctrl-C to stop."
     );
     let _tool_handler_task = tool_handler_task;
     let _agent_handler_task = agent_handler_task;

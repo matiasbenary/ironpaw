@@ -83,7 +83,7 @@ fn execute_inner(args_json: &str) -> Result<String, String> {
         EmailParams::List { folder, limit } => {
             let folder = folder_or_inbox(folder);
             let limit = limit.unwrap_or(10).clamp(1, 50);
-            warden::tool::tool_host::email_list(&folder, limit)
+            ironpaw::tool::tool_host::email_list(&folder, limit)
                 .map_err(|err| format!("email list failed: {err}"))
         }
         EmailParams::Read { folder, uid } => {
@@ -91,7 +91,7 @@ fn execute_inner(args_json: &str) -> Result<String, String> {
                 return Err("'uid' must not be empty".to_string());
             }
             let folder = folder_or_inbox(folder);
-            warden::tool::tool_host::email_read(&folder, &uid)
+            ironpaw::tool::tool_host::email_read(&folder, &uid)
                 .map_err(|err| format!("email read failed: {err}"))
         }
         EmailParams::Send {
@@ -117,7 +117,7 @@ fn execute_inner(args_json: &str) -> Result<String, String> {
                 from,
             };
             let message_json = serde_json::to_string(&outbound).map_err(|err| err.to_string())?;
-            warden::tool::tool_host::email_send(&message_json)
+            ironpaw::tool::tool_host::email_send(&message_json)
                 .map_err(|err| format!("email send failed: {err}"))
         }
     }

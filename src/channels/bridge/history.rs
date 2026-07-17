@@ -26,7 +26,7 @@ mod tests {
 
     fn temp_history() -> SqliteHistory {
         let path =
-            std::env::temp_dir().join(format!("warden-bridge-history-{}.db", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("ironpaw-bridge-history-{}.db", uuid::Uuid::new_v4()));
         SqliteHistory::new(path).unwrap()
     }
 

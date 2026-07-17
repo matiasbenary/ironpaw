@@ -84,7 +84,7 @@ fn execute_inner(args_json: &str) -> Result<String, String> {
 
     let count = params.count.unwrap_or(DEFAULT_COUNT).clamp(1, MAX_COUNT);
     let url = build_search_url(&params, count);
-    let body = warden::tool::tool_host::http_request("GET", &url, "{}")
+    let body = ironpaw::tool::tool_host::http_request("GET", &url, "{}")
         .map_err(|err| format!("Brave request failed: {err}"))?;
     let response: BraveSearchResponse = serde_json::from_str(&body)
         .map_err(|err| format!("failed to parse Brave response: {err}"))?;

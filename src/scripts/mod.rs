@@ -173,14 +173,14 @@ mod tests {
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
         let root = std::env::temp_dir().join(format!(
-            "warden-script-test-runtime-{}",
+            "ironpaw-script-test-runtime-{}",
             uuid::Uuid::new_v4()
         ));
         let layout = crate::config::RuntimeLayout::from_root(root);
         let files_dir = layout.files_dir();
         std::fs::create_dir_all(&files_dir).unwrap();
         let history = std::env::temp_dir().join(format!(
-            "warden-script-test-history-{}.db",
+            "ironpaw-script-test-history-{}.db",
             uuid::Uuid::new_v4()
         ));
         let secrets = crate::secrets::Secrets::for_tests();

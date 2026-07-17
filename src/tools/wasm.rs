@@ -315,7 +315,7 @@ struct StoreData {
     email: EmailHost,
 }
 
-impl warden::tool::tool_host::Host for StoreData {
+impl ironpaw::tool::tool_host::Host for StoreData {
     fn http_request(
         &mut self,
         method: String,

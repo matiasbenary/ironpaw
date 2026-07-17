@@ -23,7 +23,7 @@ const KDF_MEMORY_KIB: u32 = 65_536;
 const KDF_MEMORY_KIB: u32 = 1_024;
 const KDF_ITERATIONS: u32 = 3;
 const KDF_PARALLELISM: u32 = 1;
-const DOMAIN: &[u8] = b"warden/secrets/v1";
+const DOMAIN: &[u8] = b"ironpaw/secrets/v1";
 const PHRASE_WORDS: usize = 6;
 
 #[derive(Clone)]
@@ -84,7 +84,7 @@ impl Secrets {
 
     pub fn for_tests() -> Self {
         let layout = RuntimeLayout::from_root(
-            std::env::temp_dir().join(format!("warden-test-secrets-{}", uuid::Uuid::new_v4())),
+            std::env::temp_dir().join(format!("ironpaw-test-secrets-{}", uuid::Uuid::new_v4())),
         );
         let store = EncryptedSecretStore::create(&layout, "alpha bravo charlie delta echo foxtrot")
             .expect("test secrets");
@@ -414,7 +414,7 @@ mod tests {
 
     fn layout() -> RuntimeLayout {
         RuntimeLayout::from_root(
-            std::env::temp_dir().join(format!("warden-secrets-test-{}", uuid::Uuid::new_v4())),
+            std::env::temp_dir().join(format!("ironpaw-secrets-test-{}", uuid::Uuid::new_v4())),
         )
     }
 

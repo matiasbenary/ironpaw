@@ -116,7 +116,7 @@ struct StoreData {
     emitted_messages: Vec<String>,
 }
 
-impl warden::channel::channel_host::Host for StoreData {
+impl ironpaw::channel::channel_host::Host for StoreData {
     fn http_request(
         &mut self,
         method: String,

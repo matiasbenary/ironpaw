@@ -125,7 +125,7 @@ impl ChannelRuntime {
             ngrok::start_if_configured(self.layout.root(), &self.secrets, &self.addr)
                 .await
                 .map_err(|err| err.to_string())?
-                .ok_or_else(|| "external channel requires WARDEN_NGROK_TOKEN".to_string())?;
+                .ok_or_else(|| "external channel requires IRONPAW_NGROK_TOKEN".to_string())?;
         let public_url = active_ngrok.public_url.clone();
         *self.ngrok.lock().await = Some(active_ngrok);
         Ok(Some(public_url))

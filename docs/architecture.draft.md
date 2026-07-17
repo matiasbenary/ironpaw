@@ -1,7 +1,7 @@
 ## Secure Agent Architecture
 
-We will be creating `warden`, a system that enables hosting a personal agent
-on a personal (small) server. `warden` is complex in functionality, but
+We will be creating `ironpaw`, a system that enables hosting a personal agent
+on a personal (small) server. `ironpaw` is complex in functionality, but
 incredibly simple in architecture. Designed to be extensible and secure,
 fast to compile and run.
 
@@ -10,18 +10,18 @@ fast to compile and run.
 
 ## User Goals
 
-The main goals of `warden` from the user's perspective are:
+The main goals of `ironpaw` from the user's perspective are:
 
-- I can interact with `warden` through a terminal UI, Telegram and Discord
+- I can interact with `ironpaw` through a terminal UI, Telegram and Discord
   (no web interface for now).
-- I can ask `warden` to create `cron` and `reactive` automations, e.g.
+- I can ask `ironpaw` to create `cron` and `reactive` automations, e.g.
   "every day at 8am..." or "when I receive a message in Telegram...".
-- `warden` can search things for me on the internet.
-- `warden` can interact with GitHub, e.g. create issues, pull requests,
+- `ironpaw` can search things for me on the internet.
+- `ironpaw` can interact with GitHub, e.g. create issues, pull requests,
   and react to events (e.g. "when somebody opens an issue in my repo").
-- `warden` can interact with my local files, e.g. "search for this file",
+- `ironpaw` can interact with my local files, e.g. "search for this file",
   "read this file", "write this file".
-- `warden` has memory of past interactions and can use it to answer
+- `ironpaw` has memory of past interactions and can use it to answer
   questions like "what did I ask you yesterday?" or "what did I ask
   you about X?".
 
@@ -29,7 +29,7 @@ The main goals of `warden` from the user's perspective are:
 
 ## Technical Goals
 
-As developers, we want to design `warden` in a way that is:
+As developers, we want to design `ironpaw` in a way that is:
 
 - Written in **Rust**.
 - Fast to compile and run, so we can iterate quickly.
@@ -49,22 +49,22 @@ As developers, we want to design `warden` in a way that is:
 
 ## Technical Assumptions
 
-- `warden` runs on its own server / computer; it is not a library that
+- `ironpaw` runs on its own server / computer; it is not a library that
   other applications import. We don't have to worry about cross-platform
   edge cases beyond Linux + macOS, and we don't have to worry about being
   embeddable.
-- `warden` is a long-running process. We can store some state in memory
+- `ironpaw` is a long-running process. We can store some state in memory
   and don't have to design for statelessness.
-- `warden` is used by a single user. We don't have to worry about
+- `ironpaw` is used by a single user. We don't have to worry about
   multi-user concerns, permissions across users, etc. (for now).
 
 ---
 
 ## Threat Model
 
-`warden` is a **private** personal agent, not a hardened multi-tenant
+`ironpaw` is a **private** personal agent, not a hardened multi-tenant
 system. We are not defending against a fully compromised local user
-account — at that point, the user has bigger problems than warden's
+account — at that point, the user has bigger problems than ironpaw's
 secrets. We *are* defending against:
 
 1. **Prompt injection from incoming content.** A Telegram message, a
@@ -89,10 +89,10 @@ of compromise; we have to defend the agent from itself."
 
 ## High-Level Architecture
 
-The high-level architecture of `warden` consists of:
+The high-level architecture of `ironpaw` consists of:
 
 - **Channels** — bridges between the user (and the outside world) and
-  warden.
+  ironpaw.
 - **The Bus** — a typed event stream connecting all components.
 - **Automations** — declarative trigger → action records.
 - **The AI Engine** — the LLM-interaction layer.
@@ -103,10 +103,10 @@ The high-level architecture of `warden` consists of:
 
 #### Channels
 
-Channels are the bridge between the user and `warden`. They receive
+Channels are the bridge between the user and `ironpaw`. They receive
 input from the outside (a Telegram message, a Discord DM, a webhook,
-the user typing into the TUI) and expose a way for warden to push
-messages back. Importantly, warden can push messages *proactively*,
+the user typing into the TUI) and expose a way for ironpaw to push
+messages back. Importantly, ironpaw can push messages *proactively*,
 not only in response to user input — a cron automation should be able
 to ping you on Telegram unprompted.
 
@@ -117,7 +117,7 @@ Examples: Terminal UI, Telegram, Discord, HTTP webhooks.
 
 <summary> A note on the TUI </summary>
 Terminal UI being at the same level as Telegram/Discord means the TUI
-doesn't need to start when `warden` starts. `warden` is a long-running
+doesn't need to start when `ironpaw` starts. `ironpaw` is a long-running
 process; the TUI is just one client/channel that connects to it.
 <details>
 
@@ -180,7 +180,7 @@ enum Action {
 }
 ```
 
-The executor is `warden` itself. It pattern-matches on `Action` and
+The executor is `ironpaw` itself. It pattern-matches on `Action` and
 dispatches. 
 
 <details>
@@ -237,12 +237,12 @@ separated because they have different threat profiles.
 ##### HTTP tools
 
 An HTTP tool is a **WASM module** that talks to an API. The LLM shapes
-the request (method, path, body); warden's WASM host injects credentials
+the request (method, path, body); ironpaw's WASM host injects credentials
 at the HTTP boundary, *not* inside the module. The module never sees the
 token in its linear memory.
 
 Same pattern as ironclaw — we copy it directly. The implementation hook
-is the `wasi:http/outgoing-request` host import: warden implements it,
+is the `wasi:http/outgoing-request` host import: ironpaw implements it,
 adds the appropriate `Authorization` header on the way out based on the
 tool's installed credential mapping, then forwards.
 
@@ -263,7 +263,7 @@ that have no usable HTTP equivalent).
 **Installing a shell tool:**
 
 - Downloads a binary (does not execute it).
-- Registers the binary as an invocable command in warden's tool
+- Registers the binary as an invocable command in ironpaw's tool
   registry. Resolves to an absolute path at install time so `$PATH`
   manipulation by the LLM later is irrelevant.
 - Declares: env vars injected at exec, network endpoints the tool
@@ -287,7 +287,7 @@ that have no usable HTTP equivalent).
     network namespace.
   - macOS: sandbox profile with `(deny network-outbound)`.
 - If the manifest declares network endpoints, the child is forced
-  through warden's local HTTPS proxy. The proxy reads the SNI from
+  through ironpaw's local HTTPS proxy. The proxy reads the SNI from
   the TLS ClientHello and enforces an allowlist by hostname. The
   binary sees `HTTPS_PROXY` set in its env for cooperative routing,
   but the kernel-level denial of all other egress is what makes the
@@ -338,14 +338,14 @@ Every event on the bus carries an identity tag:
 enum Sender {
     User,            // single-user system — no AccountId needed yet
     Guest,           // channel-scoped; e.g. TelegramUserId, GithubLogin
-    System,          // cron, internal automations, warden itself
+    System,          // cron, internal automations, ironpaw itself
 }
 ```
 
 Channels stamp this tag at ingress: incoming Telegram messages whose
 `tg_user_id` matches the channel's `owner_id` are `User`; everyone else
 is `Guest`. The TUI is always `User`. Cron firings and
-warden-internal events are `System`.
+ironpaw-internal events are `System`.
 
 Automations live in a `Space`:
 
@@ -367,9 +367,9 @@ The structural rule:
 
 ### At rest
 
-Secrets are stored encrypted in a single file under `~/.warden/`. The
+Secrets are stored encrypted in a single file under `~/.ironpaw/`. The
 encryption key is derived from a passphrase the user enters when
-`warden` starts (Argon2id KDF). The passphrase lives only in warden's
+`ironpaw` starts (Argon2id KDF). The passphrase lives only in ironpaw's
 memory; we never persist it.
 
 Implication: after a reboot, proactive automations stop firing until
@@ -378,7 +378,7 @@ agent on a VPS should not auto-unlock its secret store without a human.
 
 ### In use
 
-Decrypted secrets live in warden's process memory. The `zeroize` crate
+Decrypted secrets live in ironpaw's process memory. The `zeroize` crate
 zeroes plaintext buffers when they go out of scope. Don't write
 plaintext to swap (`mlock` the secret pages on Linux; equivalent on
 macOS).
@@ -407,7 +407,7 @@ close the cheap attack surface.
 
 ## Tools
 
-We need to have a registry of installed tools, since tools might be `wasm` modules, or `skills + manifest` then we can simply use a local `~/.warden/tools/` directory with one subdir per tool, and a manifest file inside each tool's subdir describing its capabilities and metadata.
+We need to have a registry of installed tools, since tools might be `wasm` modules, or `skills + manifest` then we can simply use a local `~/.ironpaw/tools/` directory with one subdir per tool, and a manifest file inside each tool's subdir describing its capabilities and metadata.
 
 help me brainstorm this:
 - we have secrets, which we said we want to centralize in some secrets manager [done]
@@ -437,14 +437,14 @@ having it externally means that we need to make sure its execution is safe, but 
 
 ## User Flow
 
-The first time the user runs the binary (`warden`), an interactive setup
+The first time the user runs the binary (`ironpaw`), an interactive setup
 runs:
 
 1. Prompt for the NEAR AI key.
 2. Prompt for a passphrase to encrypt the local secret store.
-3. Persist the encrypted store under `~/.warden/`.
+3. Persist the encrypted store under `~/.ironpaw/`.
 
-On subsequent starts, `warden` prompts for the passphrase, unlocks the
+On subsequent starts, `ironpaw` prompts for the passphrase, unlocks the
 store, and runs as a background process.
 
 The TUI is one possible channel/client that connects to the running process.
@@ -462,7 +462,7 @@ Engine has memory per-User, not per-channel.
 
 ## Technical Flow
 
-1. The user opens `./warden`
+1. The user opens `./ironpaw`
 2. A NON-AI module requests for the passphrase, derives the encryption key, and unlocks the secret store.
 3. If the API for NEAR AI is missing, we prompt the user to enter it and save it in the secret store.
 4. The main modules (Bus, AI Engine, Automation Executor) start up and subscribe to the bus.
@@ -485,7 +485,7 @@ Engine has memory per-User, not per-channel.
 
 ## Main Interface
 
-`warden` is the local agent runtime. It starts the bus, channels, tools, and
+`ironpaw` is the local agent runtime. It starts the bus, channels, tools, and
 automation executor. User-facing setup and management should happen through
 channels and tools.
 

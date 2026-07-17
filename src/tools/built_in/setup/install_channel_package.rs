@@ -169,7 +169,7 @@ fn installed_channel_names(layout: &RuntimeLayout) -> Result<Vec<String>, String
 
 fn channel_source_dirs(layout: &RuntimeLayout) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    if let Ok(path) = std::env::var("WARDEN_CHANNELS_SRC") {
+    if let Ok(path) = std::env::var("IRONPAW_CHANNELS_SRC") {
         dirs.push(PathBuf::from(path));
     }
     dirs.push(layout.root().join("channel-store"));

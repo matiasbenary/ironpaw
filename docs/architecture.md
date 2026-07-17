@@ -1,6 +1,6 @@
 # Warden Architecture
 
-`warden` is a long-running personal agent daemon. It receives messages from
+`ironpaw` is a long-running personal agent daemon. It receives messages from
 channels (terminal, Telegram, etc...), runs work through small system
 components, lets the model call tools, and sends responses back through
 channels.
@@ -30,15 +30,15 @@ This document is made for humans to read, meaning that we need to write sentence
 
 Always make sure to introduce the thing you are talking about and, importantly, the why, not the how.
 
-You cannot simply say "The default `answer-the-user` path is also an automation", because nobody knows what `answer-the-user` is. It is better to be clear and highlight the relevancy of why we are talking about it. In this case, the relevant part is that, by default, warden reacts to inbound messages and sends them to the AI Agent through an automation. This means that automations are not "just a part" of the system, they are the core component that makes `warden` act and react. The fact that it is called `answer-the-user` is irrelevant.
+You cannot simply say "The default `answer-the-user` path is also an automation", because nobody knows what `answer-the-user` is. It is better to be clear and highlight the relevancy of why we are talking about it. In this case, the relevant part is that, by default, ironpaw reacts to inbound messages and sends them to the AI Agent through an automation. This means that automations are not "just a part" of the system, they are the core component that makes `ironpaw` act and react. The fact that it is called `answer-the-user` is irrelevant.
 
 ---
 
 ## Main
 
-`src/main.rs` owns the startup lifecycle. It unlocks or initializes the encrypted secret store first; only after secrets are unlocked does it wire the agent, tools, automations, and channels. It also creates the per-start bridge token printed to stdout for local clients such as `warden-tui`.
+`src/main.rs` owns the startup lifecycle. It unlocks or initializes the encrypted secret store first; only after secrets are unlocked does it wire the agent, tools, automations, and channels. It also creates the per-start bridge token printed to stdout for local clients such as `ironpaw-tui`.
 
-The default runtime root is the directory containing the `warden` binary unless `WARDEN_HOME` is set. Runtime data lives under:
+The default runtime root is the directory containing the `ironpaw` binary unless `IRONPAW_HOME` is set. Runtime data lives under:
 
 ```text
 <runtime-root>/channels
@@ -228,7 +228,7 @@ The generic `web_fetch` tool is read-only and unauthenticated. It rejects plain 
 
 ## Automations
 
-Automations are the cornerstone of Warden's behavior. They are small, declarative rules that explain how `warden` reacts to internal (`cron`) or external (`event`) triggers.
+Automations are the cornerstone of Warden's behavior. They are small, declarative rules that explain how `ironpaw` reacts to internal (`cron`) or external (`event`) triggers.
 
 Technically, an automation is defined as a triggering condition plus a tool call (be that an internal or dynamic tool). When the condition is met, the tool is called with pre-defined arguments that can contain information from the triggering event.
 
@@ -254,7 +254,7 @@ Inbound-message triggers can match all conversations, or a specific `Conversatio
 
 ### Examples
 
-When `warden` starts, it installs a default automation that reacts to inbound user messages with an `onboarding` tool. This tool asks the user for the NEAR API key needed for AI inference, then installs the default `answer-the-user` automation, which reacts to inbound user messages by calling the agent and sending the final answer back to the user.
+When `ironpaw` starts, it installs a default automation that reacts to inbound user messages with an `onboarding` tool. This tool asks the user for the NEAR API key needed for AI inference, then installs the default `answer-the-user` automation, which reacts to inbound user messages by calling the agent and sending the final answer back to the user.
 
 ```text answer-the-user
 MessageIn(User, any conversation)
@@ -371,7 +371,7 @@ Implemented internal tools include:
 
 ### Shell Tools
 
-We want `warden` to be able to run shell commands as tools, but we do not want to expose a tool for arbitrary shell execution, instead we want to have different tools, and each tool will have a specific set of commands that it can run.
+We want `ironpaw` to be able to run shell commands as tools, but we do not want to expose a tool for arbitrary shell execution, instead we want to have different tools, and each tool will have a specific set of commands that it can run.
 
 
 ### External WASM Tools
@@ -389,7 +389,7 @@ At startup, Warden discovers installed WASM tools from the runtime tools directo
 
 External tools do not receive raw secrets directly. They use host-provided imports for external effects. HTTP tools call `http_request`, which the host wraps with `HttpTool<ToolSecrets>` so the installed tool config decides which hosts are allowed and where credentials are injected. Email tools call IMAP/SMTP-specific host imports, so the host owns the configured mail server connections and injects credentials without exposing passwords to WASM.
 
-The install flow is implemented through `list_tools`, `install_tool`, and `setup_tool`. `install_tool` discovers local packages from `WARDEN_TOOLS_SRC`, `<runtime-root>/tool-store`, and the built-in `tools-src` directory, then registers a temporary automation scoped to the starting conversation. That automation calls `setup_tool` for follow-up replies. `setup_tool` asks deterministic setup questions, stores required secrets in the encrypted secret store, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers the tool immediately.
+The install flow is implemented through `list_tools`, `install_tool`, and `setup_tool`. `install_tool` discovers local packages from `IRONPAW_TOOLS_SRC`, `<runtime-root>/tool-store`, and the built-in `tools-src` directory, then registers a temporary automation scoped to the starting conversation. That automation calls `setup_tool` for follow-up replies. `setup_tool` asks deterministic setup questions, stores required secrets in the encrypted secret store, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers the tool immediately.
 
 The first external WASM tool is `web_search`. It searches Brave Search through `https://api.search.brave.com/res/v1/web/search`, while the `BRAVE_SEARCH_API` key is injected by the host as `X-Subscription-Token`. The `email` tool demonstrates a non-HTTP external tool: it can list and read messages through the configured IMAP server, and send plain-text mail through the configured SMTP server.
 
@@ -426,7 +426,7 @@ This example assumes the Telegram chat id is known.
    send me a message on telegram
    ```
 
-2. `warden-tui` posts the message to the local channel bridge using bearer auth.
+2. `ironpaw-tui` posts the message to the local channel bridge using bearer auth.
 
 3. The bridge routes the HTTP request to the TUI WASM channel:
 
@@ -514,7 +514,7 @@ This flow is the intended uniform shape: TUI and Telegram are both channels, and
 - Decide whether runtime reload/file watching is needed.
 - Decide whether some internal tools should eventually move to packaged WASM tools with declared capabilities and secret requirements.
 - Add durable tool execution audit logs.
-- I asked warden to install a channel, and it said "ok, I need your token to do that" instead of starting the install flow!
+- I asked ironpaw to install a channel, and it said "ok, I need your token to do that" instead of starting the install flow!
 
 ### Better Config UX
 
@@ -522,7 +522,7 @@ Channel config files currently work, and channel installation can handle some se
 
 ### Web / Browser Channel
 
-The current architecture can support a web UI as another channel, but there is no `warden-browser` or web channel implementation yet.
+The current architecture can support a web UI as another channel, but there is no `ironpaw-browser` or web channel implementation yet.
 
 ### Tool Permissions
 

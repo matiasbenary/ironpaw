@@ -315,7 +315,7 @@ mod tests {
     #[tokio::test]
     async fn paths_are_isolated_by_scope() {
         let files = ScopedFiles::new(
-            std::env::temp_dir().join(format!("warden-file-tool-test-{}", uuid::Uuid::new_v4())),
+            std::env::temp_dir().join(format!("ironpaw-file-tool-test-{}", uuid::Uuid::new_v4())),
         );
         let user = ExecutionContext::new(InvocationScope::ScheduledAutomation {
             automation_id: "morning".to_string(),
@@ -357,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn create_and_update_stay_in_the_automation_workspace() {
         let root =
-            std::env::temp_dir().join(format!("warden-file-tool-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("ironpaw-file-tool-test-{}", uuid::Uuid::new_v4()));
         let create = CreateFileTool::new(root.clone());
         let update = UpdateFileTool::new(root.clone());
         let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {

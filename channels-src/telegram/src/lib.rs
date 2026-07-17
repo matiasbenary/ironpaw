@@ -5,7 +5,7 @@ wit_bindgen::generate!({
 
 use serde::Deserialize;
 
-use crate::warden::channel::channel_host;
+use crate::ironpaw::channel::channel_host;
 
 struct TelegramChannel;
 
