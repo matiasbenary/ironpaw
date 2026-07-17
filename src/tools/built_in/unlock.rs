@@ -71,19 +71,29 @@ impl UnlockSecretsTool {
         params: UnlockSecretsParams,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
-        let (message, unlocked) = {
+        let step = {
             let mut session = self.session.lock().expect("unlock session lock");
             session.handle(&self.layout, &params.message)?
         };
-        send(&self.tools, &message, ctx).await?;
-        delete_current_message(
-            &self.tools,
-            ctx,
-            params.message_id.as_deref(),
-            "unlock_secrets",
-        )
-        .await;
-        if let Some(store) = unlocked {
+        if step.delete_current_message {
+            delete_current_message(
+                &self.tools,
+                ctx,
+                params.message_id.as_deref(),
+                "unlock_secrets",
+            )
+            .await;
+        }
+        if let Some(message_id) = &step.delete_outbound_message_id {
+            delete_outbound_message(&self.tools, ctx, message_id).await?;
+        }
+        for message in &step.messages {
+            send_unlock_message(&self.tools, message, ctx).await?;
+        }
+        if step.ask_written_down {
+            request_written_down_confirmation(&self.tools, ctx).await?;
+        }
+        if let Some(store) = step.unlocked {
             self.secrets.unlock(store);
             self.bus.publish(Event::SecretsUnlocked);
         }
@@ -122,6 +132,11 @@ impl InternalTool for UnlockSecretsTool {
 
 enum UnlockSession {
     Locked,
+    AwaitingWrittenDownConfirmation {
+        phrase: String,
+        checks: Vec<usize>,
+        phrase_message_id: String,
+    },
     Creating {
         phrase: String,
         checks: Vec<usize>,
@@ -136,27 +151,90 @@ impl UnlockSession {
         }
 
         match self {
-            Self::Locked => {
-                let phrase = generate_phrase();
-                let checks = phrase_checks(&phrase);
-                let prompt = phrase_prompt(&phrase, checks[0]);
-                *self = Self::Creating {
-                    phrase,
-                    checks,
-                    confirmed: 0,
-                };
-                Ok(waiting(prompt))
+            Self::Locked => Ok(self.start_new_phrase()),
+            Self::AwaitingWrittenDownConfirmation {
+                phrase,
+                checks,
+                phrase_message_id,
+            } => {
+                if message.trim().eq_ignore_ascii_case("yes") {
+                    let phrase = phrase.clone();
+                    let checks = checks.clone();
+                    let phrase_message_id = phrase_message_id.clone();
+                    let first_check = checks[0];
+                    *self = Self::Creating {
+                        phrase,
+                        checks,
+                        confirmed: 0,
+                    };
+                    Ok(waiting(format!("Word #{}.", first_check + 1))
+                        .delete_outbound_message(phrase_message_id))
+                } else {
+                    Ok(waiting_for_confirmation(
+                        "Select Yes after you have written down the unlock phrase.",
+                    ))
+                }
             }
             Self::Creating {
                 phrase,
                 checks,
                 confirmed,
-            } => verify_new_store(layout, phrase, checks, confirmed, message),
+            } => {
+                let step = verify_new_store(layout, phrase, checks, confirmed, message)?;
+                if step.restart {
+                    Ok(self.start_new_phrase())
+                } else {
+                    Ok(step)
+                }
+            }
         }
+    }
+
+    fn start_new_phrase(&mut self) -> UnlockStep {
+        let phrase = generate_phrase();
+        let checks = phrase_checks(&phrase);
+        let phrase_message_id = format!("unlock-phrase-{}", uuid::Uuid::new_v4());
+        *self = Self::AwaitingWrittenDownConfirmation {
+            phrase: phrase.clone(),
+            checks,
+            phrase_message_id: phrase_message_id.clone(),
+        };
+        waiting_for_confirmation_messages(vec![
+            UnlockMessage::plain("Write down this 6-word unlock phrase. It will not be stored."),
+            UnlockMessage::with_id(phrase, phrase_message_id),
+        ])
     }
 }
 
-type UnlockStep = (String, Option<Arc<EncryptedSecretStore>>);
+struct UnlockStep {
+    messages: Vec<UnlockMessage>,
+    ask_written_down: bool,
+    restart: bool,
+    delete_current_message: bool,
+    delete_outbound_message_id: Option<String>,
+    unlocked: Option<Arc<EncryptedSecretStore>>,
+}
+
+struct UnlockMessage {
+    content: String,
+    message_id: Option<String>,
+}
+
+impl UnlockMessage {
+    fn plain(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            message_id: None,
+        }
+    }
+
+    fn with_id(content: impl Into<String>, message_id: String) -> Self {
+        Self {
+            content: content.into(),
+            message_id: Some(message_id),
+        }
+    }
+}
 
 fn unlock_existing(layout: &RuntimeLayout, message: &str) -> Result<UnlockStep, String> {
     if !phrase_is_valid(message) {
@@ -182,10 +260,7 @@ fn verify_new_store(
     let words = phrase_words(phrase);
     let position = checks[*confirmed];
     if message.trim().to_ascii_lowercase() != words[position] {
-        return Ok(waiting(format!(
-            "That did not match word #{}. Try again.",
-            position + 1
-        )));
+        return Ok(restart());
     }
     *confirmed += 1;
     if let Some(position) = checks.get(*confirmed) {
@@ -204,17 +279,202 @@ fn phrase_checks(phrase: &str) -> Vec<usize> {
     checks
 }
 
-fn phrase_prompt(phrase: &str, first_check: usize) -> String {
-    format!(
-        "Ironpaw needs to create an encrypted secret store.\n\nWrite down this 6-word unlock phrase. It will not be stored:\n\n{phrase}\n\nReply with word #{}.",
-        first_check + 1
-    )
+fn waiting(message: impl Into<String>) -> UnlockStep {
+    UnlockStep {
+        messages: vec![UnlockMessage::plain(message)],
+        ask_written_down: false,
+        restart: false,
+        delete_current_message: true,
+        delete_outbound_message_id: None,
+        unlocked: None,
+    }
 }
 
-fn waiting(message: impl Into<String>) -> UnlockStep {
-    (message.into(), None)
+fn waiting_for_confirmation(message: impl Into<String>) -> UnlockStep {
+    waiting_for_confirmation_messages(vec![UnlockMessage::plain(message)])
+}
+
+fn waiting_for_confirmation_messages(messages: Vec<UnlockMessage>) -> UnlockStep {
+    UnlockStep {
+        messages,
+        ask_written_down: true,
+        restart: false,
+        delete_current_message: false,
+        delete_outbound_message_id: None,
+        unlocked: None,
+    }
+}
+
+fn restart() -> UnlockStep {
+    UnlockStep {
+        messages: Vec::new(),
+        ask_written_down: false,
+        restart: true,
+        delete_current_message: true,
+        delete_outbound_message_id: None,
+        unlocked: None,
+    }
 }
 
 fn unlocked(message: impl Into<String>, store: Arc<EncryptedSecretStore>) -> UnlockStep {
-    (message.into(), Some(store))
+    UnlockStep {
+        messages: vec![UnlockMessage::plain(message)],
+        ask_written_down: false,
+        restart: false,
+        delete_current_message: true,
+        delete_outbound_message_id: None,
+        unlocked: Some(store),
+    }
+}
+
+impl UnlockStep {
+    fn delete_outbound_message(mut self, message_id: String) -> Self {
+        self.delete_current_message = false;
+        self.delete_outbound_message_id = Some(message_id);
+        self
+    }
+}
+
+async fn request_written_down_confirmation(
+    tools: &InternalTools,
+    ctx: &ExecutionContext,
+) -> Result<(), String> {
+    let result = tools::run_tool(
+        tools,
+        "request_user_input",
+        serde_json::json!({
+            "question": "Did you write it down?",
+            "options": [{ "label": "Yes", "value": "yes" }],
+        }),
+        ctx,
+    )
+    .await;
+    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
+        return Err(result["error"]
+            .as_str()
+            .unwrap_or("could not request confirmation")
+            .to_string());
+    }
+    Ok(())
+}
+
+async fn send_unlock_message(
+    tools: &InternalTools,
+    message: &UnlockMessage,
+    ctx: &ExecutionContext,
+) -> Result<(), String> {
+    let Some(message_id) = &message.message_id else {
+        return send(tools, &message.content, ctx).await;
+    };
+    let crate::bus::InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
+        return Err("unlock messages require a conversation".to_string());
+    };
+    let result = tools::run_tool(
+        tools,
+        "send_message",
+        serde_json::json!({
+            "channel": conversation.channel,
+            "chat_id": conversation.chat_id,
+            "thread_id": conversation.thread_id,
+            "content": message.content,
+            "message_id": message_id,
+        }),
+        ctx,
+    )
+    .await;
+    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
+        return Err(result["error"]
+            .as_str()
+            .unwrap_or("send failed")
+            .to_string());
+    }
+    Ok(())
+}
+
+async fn delete_outbound_message(
+    tools: &InternalTools,
+    ctx: &ExecutionContext,
+    message_id: &str,
+) -> Result<(), String> {
+    let result = tools::run_tool(
+        tools,
+        "delete_message",
+        serde_json::json!({ "message_id": message_id }),
+        ctx,
+    )
+    .await;
+    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
+        return Err(result["error"]
+            .as_str()
+            .unwrap_or("delete failed")
+            .to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layout() -> RuntimeLayout {
+        RuntimeLayout::from_root(
+            std::env::temp_dir().join(format!("ironpaw-unlock-test-{}", uuid::Uuid::new_v4())),
+        )
+    }
+
+    #[test]
+    fn new_phrase_is_shown_separately_before_confirmation() {
+        let mut session = UnlockSession::Locked;
+
+        let step = session.handle(&layout(), "start").unwrap();
+
+        assert_eq!(
+            step.messages[0].content,
+            "Write down this 6-word unlock phrase. It will not be stored."
+        );
+        assert_eq!(phrase_words(&step.messages[1].content).len(), 6);
+        assert!(step.ask_written_down);
+        assert!(step.unlocked.is_none());
+    }
+
+    #[test]
+    fn yes_starts_word_confirmation() {
+        let mut session = UnlockSession::AwaitingWrittenDownConfirmation {
+            phrase: "alpha bravo charlie delta echo foxtrot".to_string(),
+            checks: vec![2, 4, 5],
+            phrase_message_id: "unlock-phrase-test".to_string(),
+        };
+
+        let step = session.handle(&layout(), "yes").unwrap();
+
+        assert_eq!(step.messages[0].content, "Word #3.");
+        assert!(!step.ask_written_down);
+        assert_eq!(
+            step.delete_outbound_message_id.as_deref(),
+            Some("unlock-phrase-test")
+        );
+        assert!(matches!(session, UnlockSession::Creating { .. }));
+    }
+
+    #[test]
+    fn wrong_word_restarts_with_a_new_phrase() {
+        let mut session = UnlockSession::Creating {
+            phrase: "alpha bravo charlie delta echo foxtrot".to_string(),
+            checks: vec![0],
+            confirmed: 0,
+        };
+
+        let step = session.handle(&layout(), "not-the-word").unwrap();
+
+        assert_eq!(
+            step.messages[0].content,
+            "Write down this 6-word unlock phrase. It will not be stored."
+        );
+        assert_eq!(phrase_words(&step.messages[1].content).len(), 6);
+        assert!(step.ask_written_down);
+        assert!(matches!(
+            session,
+            UnlockSession::AwaitingWrittenDownConfirmation { .. }
+        ));
+    }
 }
