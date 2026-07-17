@@ -212,7 +212,7 @@ fn response_to_output(response: serde_json::Value) -> Result<RawInferenceOutput,
         .and_then(|choices| choices.first())
         .and_then(|choice| choice.get("message"))
         .ok_or_else(|| format!("chat response missing choices[0].message: {response}"))?;
-    let text = message["content"].as_str().map(str::to_string);
+    let text = message["content"].as_str().map(strip_thinking);
     let tool_calls = message["tool_calls"]
         .as_array()
         .into_iter()
@@ -231,6 +231,13 @@ fn response_to_output(response: serde_json::Value) -> Result<RawInferenceOutput,
         },
         usage,
     })
+}
+
+fn strip_thinking(text: &str) -> String {
+    text.rsplit_once("</think>").map_or_else(
+        || text.to_string(),
+        |(_, answer)| answer.trim_start().to_string(),
+    )
 }
 
 fn chat_tool_call_to_ironpaw(value: &serde_json::Value) -> Result<Option<ToolCall>, String> {

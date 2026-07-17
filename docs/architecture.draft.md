@@ -451,7 +451,7 @@ The TUI is one possible channel/client that connects to the running process.
 Users can open it, close it, and reconnect at will without affecting cron
 automations or active channels.
 
-If the user wants to connect a new channel (e.g. Telegram), Warden should guide
+If the user wants to connect a new channel (e.g. Telegram), Ironpaw should guide
 that setup through chat-visible onboarding/tool flows.
 
 The same conversation thread is shared across channels: starting a chat

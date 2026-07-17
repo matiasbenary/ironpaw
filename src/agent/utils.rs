@@ -8,6 +8,7 @@ pub(super) fn publish_progress(bus: &Bus, conversation: &ConversationKey, conten
         channel: conversation.channel.clone(),
         chat_id: Some(conversation.chat_id.clone()),
         thread_id: conversation.thread_id.clone(),
+        message_id: None,
         message: Message::Assistant {
             text: Some(content),
             attachments: Vec::new(),

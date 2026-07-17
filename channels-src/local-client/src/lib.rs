@@ -91,6 +91,7 @@ impl Guest for LocalClientChannel {
         match event {
             OutboundEvent::MessageOut {
                 conversation,
+                message_id,
                 message,
             } => {
                 let Some(conversation) = conversation else {
@@ -99,7 +100,7 @@ impl Guest for LocalClientChannel {
                 let IronpawMessage::Assistant(message) = message else {
                     return Ok(None);
                 };
-                let id = next_message_id().to_string();
+                let id = message_id.unwrap_or_else(|| next_message_id().to_string());
                 let mut envelope = serde_json::to_value(&message).map_err(|err| err.to_string())?;
                 envelope["kind"] = serde_json::json!("message");
                 envelope["id"] = serde_json::json!(id);
@@ -148,6 +149,8 @@ impl Guest for LocalClientChannel {
 enum OutboundEvent {
     MessageOut {
         conversation: Option<ConversationKey>,
+        #[serde(default)]
+        message_id: Option<String>,
         message: IronpawMessage,
     },
     DeleteMessage {

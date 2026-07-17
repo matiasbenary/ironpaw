@@ -51,6 +51,7 @@ impl AgentHandler {
                             channel: conversation.channel.clone(),
                             chat_id: Some(conversation.chat_id.clone()),
                             thread_id: conversation.thread_id.clone(),
+                            message_id: None,
                             message: Message::Assistant {
                                 text: Some(text.clone()),
                                 attachments: Vec::new(),

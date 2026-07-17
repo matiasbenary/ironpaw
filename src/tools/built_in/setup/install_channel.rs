@@ -12,7 +12,7 @@ mod install_channel_setup;
 
 use crate::{
     automations::{Automation, AutomationEffect, Trigger},
-    bus::{InvocationScope, SenderKind},
+    bus::{ConversationKey, InvocationScope, SenderKind},
     config::RuntimeLayout,
     message::ToolDefinition,
     secrets::Secrets,
@@ -131,12 +131,23 @@ impl InstallChannelTool {
         }
     }
 
-    fn automation(channel_name: &str) -> Automation {
+    fn automation(
+        channel_name: &str,
+        sender: SenderKind,
+        conversation: Option<ConversationKey>,
+    ) -> Automation {
         Automation {
-            name: format!("channel_auth:{channel_name}"),
+            name: format!(
+                "channel_auth:{channel_name}:{}",
+                match sender {
+                    SenderKind::User => "user",
+                    SenderKind::Guest => "guest",
+                    SenderKind::System => "system",
+                }
+            ),
             trigger: Trigger::MessageIn {
-                sender: SenderKind::Guest,
-                conversation: None,
+                sender,
+                conversation,
             },
             effect: AutomationEffect::Tool {
                 tool: "setup_channel".to_string(),
@@ -187,6 +198,10 @@ impl InstallChannelTool {
             }));
         }
         let secrets = required_secrets(&package, &self.setup.secrets);
+        let user_conversation = match &ctx.invoked_by {
+            InvocationScope::Conversation(conversation) => Some(conversation.clone()),
+            InvocationScope::ScheduledAutomation { .. } => None,
+        };
         *self
             .state
             .session
@@ -200,7 +215,7 @@ impl InstallChannelTool {
             continuation: Some(responder),
         });
         pause_conversation(automations)?;
-        automations.add(Self::automation(name))?;
+        automations.add(Self::automation(name, SenderKind::User, user_conversation))?;
         send(
             tools,
             &format!("Install the {name} channel? Reply yes to continue, or no to cancel."),
@@ -450,7 +465,7 @@ mod tests {
 
     #[test]
     fn setup_automation_calls_setup_channel() {
-        let automation = InstallChannelTool::automation("telegram");
+        let automation = InstallChannelTool::automation("telegram", SenderKind::User, None);
 
         let AutomationEffect::Tool { tool, args } = automation.effect else {
             panic!("expected tool effect");
@@ -461,5 +476,31 @@ mod tests {
         assert_eq!(args["channel_user_id"], "{{event.channel_user_id}}");
         assert_eq!(args["message"], "{{event.text}}");
         assert_eq!(args["message_id"], "{{event.message_id}}");
+    }
+
+    #[test]
+    fn setup_automations_accept_local_and_channel_replies() {
+        let conversation = ConversationKey {
+            channel: "local-client".to_string(),
+            chat_id: "local".to_string(),
+            thread_id: None,
+        };
+        let user = InstallChannelTool::automation(
+            "telegram",
+            SenderKind::User,
+            Some(conversation.clone()),
+        );
+        let guest = InstallChannelTool::automation("telegram", SenderKind::Guest, None);
+
+        assert_eq!(user.name, "channel_auth:telegram:user");
+        assert_eq!(guest.name, "channel_auth:telegram:guest");
+        let Trigger::MessageIn {
+            conversation: user_conversation,
+            ..
+        } = user.trigger
+        else {
+            panic!("expected message trigger");
+        };
+        assert_eq!(user_conversation, Some(conversation));
     }
 }

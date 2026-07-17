@@ -191,6 +191,8 @@ pub enum Event {
         chat_id: Option<String>,
         #[serde(default)]
         thread_id: Option<String>,
+        #[serde(default)]
+        message_id: Option<String>,
         message: Message,
     },
     DeleteMessage {

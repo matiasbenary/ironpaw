@@ -1,7 +1,6 @@
 use std::{collections::HashSet, time::Duration};
 use std::{path::PathBuf, sync::Arc};
 
-use tokio::time::timeout;
 use ironpaw::{
     agent::{Agent, AgentHandler},
     automations::{Automations, SqliteAutomations},
@@ -17,13 +16,14 @@ use ironpaw::{
         wasm::{self, WasmTool},
     },
 };
+use tokio::time::timeout;
 
-fn start_warden(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, Arc<dyn History>) {
-    let (task, history, _) = start_warden_with_automations(bus, files_dir);
+fn start_ironpaw(bus: &Bus, files_dir: PathBuf) -> (tokio::task::JoinHandle<()>, Arc<dyn History>) {
+    let (task, history, _) = start_ironpaw_with_automations(bus, files_dir);
     (task, history)
 }
 
-fn start_warden_with_automations(
+fn start_ironpaw_with_automations(
     bus: &Bus,
     files_dir: PathBuf,
 ) -> (
@@ -31,11 +31,11 @@ fn start_warden_with_automations(
     Arc<dyn History>,
     Arc<Automations>,
 ) {
-    let (task, history, automations, _) = start_warden_config(bus, files_dir);
+    let (task, history, automations, _) = start_ironpaw_config(bus, files_dir);
     (task, history, automations)
 }
 
-fn start_warden_config(
+fn start_ironpaw_config(
     bus: &Bus,
     files_dir: PathBuf,
 ) -> (
@@ -46,9 +46,10 @@ fn start_warden_config(
 ) {
     reset_raw_inference_log();
     let history = temp_history();
-    let layout = ironpaw::config::RuntimeLayout::from_root(
-        std::env::temp_dir().join(format!("ironpaw-live-test-runtime-{}", uuid::Uuid::new_v4())),
-    );
+    let layout = ironpaw::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
+        "ironpaw-live-test-runtime-{}",
+        uuid::Uuid::new_v4()
+    )));
     let secrets = ironpaw::secrets::Secrets::for_tests();
     if let Ok(near_api_key) = std::env::var("NEAR_API_KEY") {
         secrets.set("NEAR_API_KEY", &near_api_key).unwrap();
@@ -305,7 +306,7 @@ async fn ingest_fixture(memory: &Memory, messages: &[MemoryFixtureMessage]) {
     }
 }
 
-/// Run the cold-history scenarios with Warden's native automatic memory recall.
+/// Run the cold-history scenarios with Ironpaw's native automatic memory recall.
 ///
 /// Run with:
 ///   cargo test --test live_tests -- --ignored --nocapture --test-threads=1 memory_native_eval
@@ -320,7 +321,7 @@ async fn memory_native_eval() {
     std::fs::create_dir_all(&files_dir).unwrap();
     let bus = Bus::new(64);
     let mut events = bus.subscribe();
-    let (_task, history, _, memory) = start_warden_config(&bus, files_dir);
+    let (_task, history, _, memory) = start_ironpaw_config(&bus, files_dir);
     let mut passed = 0;
     let mut evaluated = 0;
     ingest_fixture(&memory, &fixture.messages).await;
@@ -395,7 +396,7 @@ async fn agent_replies_to_hi() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history) = start_warden(&bus, files_dir);
+    let (_task, history) = start_ironpaw(&bus, files_dir);
 
     let message = user_message("hi");
 
@@ -451,7 +452,7 @@ async fn send_message_routes_to_telegram() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history) = start_warden(&bus, files_dir);
+    let (_task, history) = start_ironpaw(&bus, files_dir);
 
     let conversation = ConversationKey {
         channel: "tui".to_string(),
@@ -500,7 +501,7 @@ async fn image_generation_routes_to_telegram() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history) = start_warden(&bus, files_dir);
+    let (_task, history) = start_ironpaw(&bus, files_dir);
 
     let conversation = ConversationKey {
         channel: "tui".to_string(),
@@ -557,7 +558,7 @@ async fn agent_reads_pdf_content() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history) = start_warden(&bus, files_dir.clone());
+    let (_task, history) = start_ironpaw(&bus, files_dir.clone());
 
     let conversation = ConversationKey {
         channel: "tui".to_string(),
@@ -632,7 +633,7 @@ async fn agent_identifies_dog_image() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history) = start_warden(&bus, files_dir.clone());
+    let (_task, history) = start_ironpaw(&bus, files_dir.clone());
 
     let image_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests_live/files/test.jpg");
     let file_id = 123456789u32;
@@ -704,7 +705,7 @@ async fn agent_uses_web_search_for_wikipedia() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history) = start_warden(&bus, files_dir);
+    let (_task, history) = start_ironpaw(&bus, files_dir);
 
     let message = user_message(
         "Use web_search to search the web for Illia Polosukhin Wikipedia. \
@@ -770,7 +771,7 @@ async fn agent_checks_first_partner_stock() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history) = start_warden(&bus, files_dir);
+    let (_task, history) = start_ironpaw(&bus, files_dir);
     let conversation = ConversationKey {
         channel: "tui".to_string(),
         chat_id: "live-test-first-partner-stock".to_string(),
@@ -815,7 +816,7 @@ async fn delayed_message_automation() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history) = start_warden(&bus, files_dir);
+    let (_task, history) = start_ironpaw(&bus, files_dir);
 
     let message = user_message(
         "In 3 seconds, send me a message that says exactly: BANANA. \
@@ -875,7 +876,7 @@ async fn scheduled_message_at_wall_clock_time() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history) = start_warden(&bus, files_dir);
+    let (_task, history) = start_ironpaw(&bus, files_dir);
 
     let target = chrono::Local::now() + chrono::Duration::seconds(8);
     let message = user_message(&format!(
@@ -935,7 +936,7 @@ async fn lottery_automation() {
     std::fs::create_dir_all(&files_dir).unwrap();
 
     let bus = Bus::new(32);
-    let (_task, history, automations) = start_warden_with_automations(&bus, files_dir);
+    let (_task, history, automations) = start_ironpaw_with_automations(&bus, files_dir);
     let existing = automations
         .list()
         .into_iter()
@@ -1026,7 +1027,7 @@ async fn album_recommendation_automation() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history, automations) = start_warden_with_automations(&bus, files_dir);
+    let (_task, history, automations) = start_ironpaw_with_automations(&bus, files_dir);
     let existing = automations
         .list()
         .into_iter()
@@ -1159,7 +1160,7 @@ async fn hacker_news_automation() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history) = start_warden(&bus, files_dir);
+    let (_task, history) = start_ironpaw(&bus, files_dir);
 
     let message = user_message(
         "Create a tool that fetches the titles of the current top 5 Hacker News \

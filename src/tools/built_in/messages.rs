@@ -49,12 +49,14 @@ impl SendMessageTool {
             channel: input.channel.clone(),
             chat_id: Some(input.chat_id.clone()),
             thread_id: input.thread_id,
+            message_id: input.message_id.clone(),
             message,
         });
         Ok(serde_json::json!({
             "ok": true,
             "channel": input.channel,
             "chat_id": input.chat_id,
+            "message_id": input.message_id,
         }))
     }
 }
@@ -104,6 +106,9 @@ pub struct SendMessageToolInput {
         description = "Optional message text to send. Omit this when sending only a generated file."
     )]
     pub content: Option<String>,
+    /// Optional provider message id to use for this outbound message.
+    #[serde(default)]
+    pub message_id: Option<String>,
     /// Destination chat id within the channel.
     pub chat_id: String,
     #[serde(default)]
@@ -251,6 +256,7 @@ mod tests {
             content: Some("hi".to_string()),
             chat_id: "chat-1".to_string(),
             thread_id: Some("thread-1".to_string()),
+            message_id: None,
         })
         .unwrap();
 

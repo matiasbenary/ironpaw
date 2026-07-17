@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     automations::Automations,
+    bus::SenderKind,
     config::RuntimeLayout,
     tools::{
         ExecutionContext, InternalTools,
@@ -129,7 +130,7 @@ impl SetupChannelTool {
                     };
                     set_channel_owner_id(layout, &session.package, channel_user_id)?;
                     self.activate_package(&session.package).await?;
-                    self.finish(session, tools, automations, ctx).await?;
+                    self.finish(session, tools, automations, ctx, true).await?;
                     return Ok(serde_json::json!({ "ok": true, "verified": true }));
                 }
 
@@ -145,7 +146,7 @@ impl SetupChannelTool {
                         self.retry(session, tools, ctx).await?;
                     }
                     "continue" if activated => {
-                        self.finish(session, tools, automations, ctx).await?;
+                        self.finish(session, tools, automations, ctx, false).await?;
                     }
                     "continue" => {
                         send(
@@ -225,6 +226,13 @@ impl SetupChannelTool {
                     code: code.clone(),
                 };
                 self.save_session(session.clone());
+                self.setup
+                    .automations
+                    .add(super::InstallChannelTool::automation(
+                        &session.package.name,
+                        SenderKind::Guest,
+                        None,
+                    ))?;
                 send(
                     tools,
                     &format!(
@@ -261,6 +269,7 @@ impl SetupChannelTool {
         tools: &InternalTools,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
+        remove_guest_setup_automation(&self.setup.automations, &session.package.name)?;
         session.config_values.clear();
         if session.secrets.is_empty() {
             let configs = required_config(&session.package);
@@ -299,10 +308,7 @@ impl SetupChannelTool {
             .session
             .lock()
             .expect("install channel session lock") = None;
-        stop_setup_automation(
-            automations,
-            &format!("channel_auth:{}", session.package.name),
-        )?;
+        stop_setup_automations(automations, &session.package.name)?;
         send(
             tools,
             &format!(
@@ -333,7 +339,7 @@ impl SetupChannelTool {
             .session
             .lock()
             .expect("install channel session lock") = None;
-        stop_setup_automation(automations, &format!("channel_auth:{name}"))?;
+        stop_setup_automations(automations, &name)?;
         send(
             tools,
             "Channel installation cancelled. I will answer normally again.",
@@ -353,6 +359,7 @@ impl SetupChannelTool {
         tools: &InternalTools,
         automations: &Arc<Automations>,
         ctx: &ExecutionContext,
+        verified: bool,
     ) -> Result<(), String> {
         let name = session.package.name.clone();
         let continuation = session.continuation.clone();
@@ -361,16 +368,24 @@ impl SetupChannelTool {
             .session
             .lock()
             .expect("install channel session lock") = None;
-        stop_setup_automation(automations, &format!("channel_auth:{name}"))?;
+        stop_setup_automations(automations, &name)?;
         send(
             tools,
-            &format!("The {name} channel is installed and running."),
+            &format!("The {name} channel is installed, configured, and ready to use."),
             ctx,
         )
         .await?;
         publish_tool_result(
             continuation.as_ref(),
-            serde_json::json!({ "ok": true, "channel": name, "installed": true }),
+            serde_json::json!({
+                "ok": true,
+                "channel": name,
+                "installed": true,
+                "configured": true,
+                "verification": if verified { "confirmed" } else { "skipped" },
+                "status": "ready",
+                "message": format!("The {name} channel is installed, configured, and ready to use.")
+            }),
         );
         Ok(())
     }
@@ -381,4 +396,22 @@ impl SetupChannelTool {
             .activate_installed_channel(&package.name, package.manifest.external)
             .await
     }
+}
+
+fn stop_setup_automations(automations: &Arc<Automations>, name: &str) -> Result<(), String> {
+    for sender in ["user", "guest"] {
+        let automation = format!("channel_auth:{name}:{sender}");
+        if automations.contains(&automation) {
+            stop_setup_automation(automations, &automation)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_guest_setup_automation(automations: &Arc<Automations>, name: &str) -> Result<(), String> {
+    let automation = format!("channel_auth:{name}:guest");
+    if automations.contains(&automation) {
+        stop_setup_automation(automations, &automation)?;
+    }
+    Ok(())
 }

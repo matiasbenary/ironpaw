@@ -21,6 +21,7 @@ pub(super) async fn message_ironpaw_to_channel(
                 channel,
                 chat_id,
                 thread_id,
+                message_id,
                 message,
             }) => {
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
@@ -47,6 +48,7 @@ pub(super) async fn message_ironpaw_to_channel(
                     channel: channel.clone(),
                     chat_id: Some(conversation.chat_id.clone()),
                     thread_id: conversation.thread_id.clone(),
+                    message_id,
                     message: message.clone(),
                 };
                 let result = dispatch_channel_event(
@@ -138,6 +140,8 @@ enum ChannelOutboundEvent {
     MessageOut {
         channel: String,
         conversation: Option<ConversationKey>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
         message: ChannelOutboundMessage,
     },
     DeleteMessage {
@@ -244,6 +248,7 @@ fn channel_outbound_event_json(event: &Event) -> Result<String, String> {
             channel,
             chat_id,
             thread_id,
+            message_id,
             message:
                 Message::Assistant {
                     text,
@@ -257,6 +262,7 @@ fn channel_outbound_event_json(event: &Event) -> Result<String, String> {
                 chat_id: chat_id.clone(),
                 thread_id: thread_id.clone(),
             }),
+            message_id: message_id.clone(),
             message: ChannelOutboundMessage::Assistant {
                 text: text.clone(),
                 attachments: attachments
@@ -325,6 +331,7 @@ mod tests {
             channel: "telegram".to_string(),
             chat_id: Some("chat".to_string()),
             thread_id: None,
+            message_id: None,
             message: Message::Assistant {
                 text: Some("hi".to_string()),
                 attachments: vec![Attachment {

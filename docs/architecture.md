@@ -1,4 +1,4 @@
-# Warden Architecture
+# Ironpaw Architecture
 
 `ironpaw` is a long-running personal agent daemon. It receives messages from
 channels (terminal, Telegram, etc...), runs work through small system
@@ -49,9 +49,9 @@ The default runtime root is the directory containing the `ironpaw` binary unless
 <runtime-root>/secrets
 ```
 
-On a fresh install, Warden starts the bus, loads the TUI channel, runs the boot unlock automation, generates a six-word unlock phrase, asks the user to verify selected words through normal channel messages, and creates an encrypted local secret store. On later starts, Warden asks for the phrase through the same message/automation path and does not load normal tools, extra channels, or stored automations until the store unlocks. Unlock is handled by an internal tool and asks the active channel to delete sensitive inbound messages after they are consumed.
+On a fresh install, Ironpaw starts the bus, loads the TUI channel, runs the boot unlock automation, generates a six-word unlock phrase, asks the user to verify selected words through normal channel messages, and creates an encrypted local secret store. On later starts, Ironpaw asks for the phrase through the same message/automation path and does not load normal tools, extra channels, or stored automations until the store unlocks. Unlock is handled by an internal tool and asks the active channel to delete sensitive inbound messages after they are consumed.
 
-Once unlocked, Warden installs a default onboarding automation if required setup secrets such as `NEAR_API_KEY` are missing.
+Once unlocked, Ironpaw installs a default onboarding automation if required setup secrets such as `NEAR_API_KEY` are missing.
 
 After onboarding, it sets `answer-the-user` as the default automation, which routes inbound messages to the agent and sends answers back to the user through the same channel. Web search is implemented as an external WASM tool, so it is available after the `web_search` tool package has been installed into the runtime tools directory.
 
@@ -59,7 +59,7 @@ After onboarding, it sets `answer-the-user` as the default automation, which rou
 
 ## Bus
 
-The bus is the smallest shared coordination primitive in Warden. It is a thin wrapper around a Tokio broadcast channel, which allows multiple subscribers to receive the same events.
+The bus is the smallest shared coordination primitive in Ironpaw. It is a thin wrapper around a Tokio broadcast channel, which allows multiple subscribers to receive the same events.
 
 It exposes two main methods:
 
@@ -82,7 +82,7 @@ Implemented event types are:
 
 ### Message Types
 
-Warden's bus, history, and agent use Warden-owned message types:
+Ironpaw's bus, history, and agent use Ironpaw-owned message types:
 
 ```rust
 enum Message {
@@ -97,9 +97,9 @@ Attachments are local files identified by `file_id`, with metadata such as MIME 
 
 #### Image and File Management
 
-Warden handles files as first-class message attachments: images, PDFs, text files, and eventually other documents. The core agent sees the same shape regardless of whether a file came from Telegram, TUI, image generation, or another channel.
+Ironpaw handles files as first-class message attachments: images, PDFs, text files, and eventually other documents. The core agent sees the same shape regardless of whether a file came from Telegram, TUI, image generation, or another channel.
 
-Warden stores files locally and passes around typed attachments containing a numeric `file_id`, MIME type, optional filename, and source path. User messages and assistant messages both use the same attachment type on the bus; channels translate their provider-specific payloads into attachments on the way in, and the bridge translates attachments back into provider-ready outbound payloads on the way out.
+Ironpaw stores files locally and passes around typed attachments containing a numeric `file_id`, MIME type, optional filename, and source path. User messages and assistant messages both use the same attachment type on the bus; channels translate their provider-specific payloads into attachments on the way in, and the bridge translates attachments back into provider-ready outbound payloads on the way out.
 
 The model interacts with stored files through tools. `download_file(url)` stores a public URL under the runtime `download` directory and returns a `file_id` without placing the response body in conversation history. It recognizes public Google Sheets, Docs, and Slides editor links and exports them as CSV, text, and PDF respectively. `inspect_file(file_id, query)` can inspect downloaded files and message attachments, passing bounded raw text to a text model, extracting text from PDFs, or calling a vision model for images. `image_generation` stores the generated image locally and returns a `file_id`; `send_message` can then publish an assistant message with that attachment for channel delivery.
 
@@ -142,7 +142,7 @@ Channel installation is partly implemented inside the agent through `list_channe
 
 <summary> Conversations And Messages </summary>
 
-Channels tend to have some concept of a chat, room, DM, or thread where the user talks with Warden. Warden calls that a conversation.
+Channels tend to have some concept of a chat, room, DM, or thread where the user talks with Ironpaw. Ironpaw calls that a conversation.
 
 Conversation identity is deliberately separate from message identity. A conversation is the chat-like place where a transcript lives:
 
@@ -173,8 +173,8 @@ This keeps impossible states out of the bus. Sending a message targets a convers
 
 The bridge has two directional halves:
 
-- `message_channel_to_warden`: HTTP request from a channel provider/client into Warden.
-- `message_warden_to_channel`: outbound bus events from Warden into a channel WASM component.
+- `message_channel_to_ironpaw`: HTTP request from a channel provider/client into Ironpaw.
+- `message_ironpaw_to_channel`: outbound bus events from Ironpaw into a channel WASM component.
 
 #### Inbound flow
 
@@ -228,7 +228,7 @@ The generic `web_fetch` tool is read-only and unauthenticated. It rejects plain 
 
 ## Automations
 
-Automations are the cornerstone of Warden's behavior. They are small, declarative rules that explain how `ironpaw` reacts to internal (`cron`) or external (`event`) triggers.
+Automations are the cornerstone of Ironpaw's behavior. They are small, declarative rules that explain how `ironpaw` reacts to internal (`cron`) or external (`event`) triggers.
 
 Technically, an automation is defined as a triggering condition plus a tool call (be that an internal or dynamic tool). When the condition is met, the tool is called with pre-defined arguments that can contain information from the triggering event.
 
@@ -286,7 +286,7 @@ When a run has a destination, the agent also publishes typing and progress event
 
 ## History
 
-Warden stores durable conversation and automation history in SQLite:
+Ironpaw stores durable conversation and automation history in SQLite:
 
 ```text
 <runtime-root>/data/history.db
@@ -300,7 +300,7 @@ History is partitioned by an explicit scope: either a `ConversationKey` or an au
 - `compact(conversation, summary)` - replace active items with a summary while retaining originals for search.
 - `search(query) -> Vec<HistoryEntry>`
 
-Each history entry stores a Warden message plus metadata: a Warden id, its conversation or automation owner, and an optional provider-owned external message id.
+Each history entry stores a Ironpaw message plus metadata: a Ironpaw id, its conversation or automation owner, and an optional provider-owned external message id.
 
 Inbound user messages and outbound channel messages are persisted by the bridge. Tool transcript entries, meaning assistant tool calls and tool results, are persisted by the tool handler. Final assistant text is persisted by the agent in the active conversation or automation scope.
 
@@ -310,18 +310,18 @@ Scheduled agent tasks persist their rendered prompt, tool transcript, and final 
 
 ## Memory
 
-History is Warden's complete record of what happened. Memory is a smaller,
+History is Ironpaw's complete record of what happened. Memory is a smaller,
 derived collection of facts that may be useful again across conversations. It
 does not replace history and can be rebuilt from it.
 
-After a conversation turn finishes, Warden gives the recent messages and the
+After a conversation turn finishes, Ironpaw gives the recent messages and the
 ten most relevant existing memories to the text model. The model extracts
 self-contained memories such as preferences, relationships, exact identifiers,
-decisions, and outcomes. Warden embeds the extracted text with NEAR AI, removes
+decisions, and outcomes. Ironpaw embeds the extracted text with NEAR AI, removes
 exact duplicates, and stores the memories and their embeddings in
 `<runtime-root>/data/memory.db`.
 
-Before a conversation run, Warden searches the latest verbatim user message
+Before a conversation run, Ironpaw searches the latest verbatim user message
 with both dense similarity and SQLite FTS5/BM25. Reciprocal rank fusion combines
 the two rankings without mixing their incompatible raw scores, and the ten best
 memories are added to the model input as recalled context. Recall is automatic:
@@ -332,13 +332,13 @@ evidence.
 The first implementation deliberately has no vector server. Embeddings are
 stored as SQLite blobs and compared in process because a personal agent is
 expected to have a modest number of memories. Memory failures do not prevent
-Warden from answering; durable history remains the fallback and source of truth.
+Ironpaw from answering; durable history remains the fallback and source of truth.
 
 ---
 
 ## Tools
 
-In Warden we currently distinguish between internal tools, external WASM tools, and dynamic ones.
+In Ironpaw we currently distinguish between internal tools, external WASM tools, and dynamic ones.
 
 ### Internal Tools
 
@@ -385,7 +385,7 @@ They live in:
 <runtime-root>/tools/<name>.config.json
 ```
 
-At startup, Warden discovers installed WASM tools from the runtime tools directory and registers them in the same tool registry as internal and dynamic tools. The WASM component exports its name, description, parameter schema, and execute function through `wit/tool.wit`.
+At startup, Ironpaw discovers installed WASM tools from the runtime tools directory and registers them in the same tool registry as internal and dynamic tools. The WASM component exports its name, description, parameter schema, and execute function through `wit/tool.wit`.
 
 External tools do not receive raw secrets directly. They use host-provided imports for external effects. HTTP tools call `http_request`, which the host wraps with `HttpTool<ToolSecrets>` so the installed tool config decides which hosts are allowed and where credentials are injected. Email tools call IMAP/SMTP-specific host imports, so the host owns the configured mail server connections and injects credentials without exposing passwords to WASM.
 
@@ -404,7 +404,7 @@ They live in:
 <runtime-root>/tools/<name>.config.json
 ```
 
-At startup, Warden discovers `.js` files in the tools directory and registers them in the same tool registry as internal tools.
+At startup, Ironpaw discovers `.js` files in the tools directory and registers them in the same tool registry as internal tools.
 
 Scripts have no ambient filesystem or network access. They receive:
 
@@ -431,7 +431,7 @@ This example assumes the Telegram chat id is known.
 3. The bridge routes the HTTP request to the TUI WASM channel:
 
    ```text
-   message_channel_to_warden
+   message_channel_to_ironpaw
    -> tui.handle_http(...)
    ```
 

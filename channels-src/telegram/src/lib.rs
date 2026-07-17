@@ -78,7 +78,7 @@ impl Guest for TelegramChannel {
         if text.is_empty() && attachments.is_empty() {
             return Ok(());
         }
-        let content = warden_user_content(text, attachments, &config)?;
+        let content = ironpaw_user_content(text, attachments, &config)?;
 
         let event = serde_json::json!({
             "channel": "telegram",
@@ -115,7 +115,7 @@ impl Guest for TelegramChannel {
                 let Some(conversation) = conversation else {
                     return Err("telegram message out did not include conversation".to_string());
                 };
-                let WardenMessage::Assistant(message) = message else {
+                let IronpawMessage::Assistant(message) = message else {
                     return Ok(None);
                 };
                 (conversation, message)
@@ -178,7 +178,7 @@ impl Guest for TelegramChannel {
 enum OutboundEvent {
     MessageOut {
         conversation: Option<ConversationKey>,
-        message: WardenMessage,
+        message: IronpawMessage,
     },
     DeleteMessage {
         message: MessageRef,
@@ -201,7 +201,7 @@ enum ChannelAction {
 
 #[derive(Deserialize)]
 #[allow(dead_code)]
-enum WardenMessage {
+enum IronpawMessage {
     Assistant(AssistantMessage),
     System(serde_json::Value),
     User(serde_json::Value),
@@ -579,7 +579,7 @@ fn send_chat_action(
     Ok(())
 }
 
-fn warden_user_content(
+fn ironpaw_user_content(
     text: String,
     attachments: Vec<TelegramAttachment>,
     config: &RuntimeConfig,
