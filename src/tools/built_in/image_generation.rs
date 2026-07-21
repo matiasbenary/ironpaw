@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crate::{
     models,
     secrets::ToolSecrets,
-    tools::{self, InternalTool},
+    tools::{self, InternalTool, ToolError},
 };
 
 pub struct ImageGenerationTool {
@@ -56,14 +56,14 @@ impl ImageGenerationTool {
             .json(&body)
             .send()
             .await
-            .map_err(|e| e.without_url().to_string())?;
+            .map_err(|e| format!("request: {}", e.without_url()))?;
         let status = response.status();
         let text = response
             .text()
             .await
-            .map_err(|e| e.without_url().to_string())?;
+            .map_err(|e| format!("request: {}", e.without_url()))?;
         if !status.is_success() {
-            return Err(format!("image generation failed with {status}: {text}"));
+            return Err(format!("request failed with {status}: {text}"));
         }
         let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
         value["data"][0]["b64_json"]
@@ -97,23 +97,23 @@ impl InternalTool for ImageGenerationTool {
         args: serde_json::Value,
         _ctx: &crate::tools::ExecutionContext,
         responder: crate::tools::ToolResponder,
-    ) -> Result<(), String> {
-        let params: ImageGenerationParams =
-            serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let data_base64 = self.generate(&params.prompt).await?;
+    ) {
+        let result = async {
+        let params: ImageGenerationParams = serde_json::from_value(args).map_err(|err| ToolError::new(err.to_string()))?;
+        let data_base64 = self.generate(&params.prompt).await.map_err(ToolError::new)?;
         let file_id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as u32;
-        std::fs::create_dir_all(&self.files_dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&self.files_dir).map_err(|e| ToolError::new(e.to_string()))?;
         let path = self.files_dir.join(format!("{file_id}.png"));
-        let bytes = base64_decode(&data_base64)?;
-        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-        responder.respond(serde_json::json!({
-            "status": "ok",
+        let bytes = base64_decode(&data_base64).map_err(ToolError::new)?;
+        std::fs::write(&path, bytes).map_err(|e| ToolError::new(e.to_string()))?;
+        Ok(serde_json::json!({
             "file_id": file_id,
-        }))?;
-        Ok(())
+        }))
+        }.await;
+        responder.respond(result);
     }
 }
 

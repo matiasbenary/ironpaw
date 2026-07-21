@@ -33,33 +33,28 @@ impl InternalTool for RequestUserInputTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let input: RequestUserInputParams =
-            serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let conversation = match &ctx.invoked_by {
-            InvocationScope::Conversation(conversation) => conversation.clone(),
-            InvocationScope::ScheduledAutomation { .. } => {
+    ) {
+        let result = (|| {
+            let input: RequestUserInputParams =
+                serde_json::from_value(args).map_err(|err| err.to_string())?;
+            let InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
                 return Err("request_user_input requires an active conversation".to_string());
-            }
-        };
-        validate(&input)?;
-
-        self.bus.publish(Event::UserInputRequested {
-            conversation,
-            request: UserInputRequest {
-                question: input.question,
-                options: input
-                    .options
-                    .into_iter()
-                    .map(|option| UserInputOption {
+            };
+            validate(&input)?;
+            self.bus.publish(Event::UserInputRequested {
+                conversation: conversation.clone(),
+                request: UserInputRequest {
+                    question: input.question,
+                    options: input.options.into_iter().map(|option| UserInputOption {
                         label: option.label,
                         value: option.value,
-                    })
-                    .collect(),
-            },
-        });
-        responder.respond(serde_json::json!({ "ok": true, "status": "question_sent" }))?;
-        Ok(())
+                    }).collect(),
+                },
+            });
+            Ok(serde_json::json!({ "status": "question_sent" }))
+        })()
+        .map_err(crate::tools::ToolError::new);
+        responder.respond(result);
     }
 }
 
@@ -131,7 +126,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(result["status"], "question_sent");
+        assert_eq!(result.unwrap()["status"], "question_sent");
         let Event::UserInputRequested {
             conversation,
             request,

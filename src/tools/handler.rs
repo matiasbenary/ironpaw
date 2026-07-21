@@ -4,7 +4,7 @@ use crate::{
     bus::{Bus, Event, InvocationScope},
     history::{History, HistoryEntry, HistoryScope, MessageMetadata},
     message::{Message, ToolCall},
-    tools::{ExecutionContext, ToolRegistry, run_registered_tool_for_context},
+    tools::{ExecutionContext, ToolError, ToolRegistry, run_registered_tool_for_context},
 };
 
 pub struct ToolHandler {
@@ -57,7 +57,7 @@ impl ToolHandler {
                 context,
                 tool_call_id: tool_call.id,
                 tool_name: tool_call.name,
-                result: serde_json::json!({ "ok": false, "error": err }),
+                result: Err(ToolError::new(err)),
             });
             return;
         }

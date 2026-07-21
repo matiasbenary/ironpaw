@@ -44,6 +44,10 @@ impl RuntimeLayout {
         self.root.join("data")
     }
 
+    pub fn tools_state_path(&self) -> PathBuf {
+        self.data_dir().join("tools.json")
+    }
+
     pub fn bin_dir(&self) -> PathBuf {
         self.root.join("bin")
     }

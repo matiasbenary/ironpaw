@@ -19,7 +19,7 @@ use crate::{
     http::{CredentialInjection, HttpTool},
     message::ToolDefinition,
     secrets::ToolSecrets,
-    tools::{ExecutionContext, InternalTool, ToolResponder},
+    tools::{ExecutionContext, InternalTool, ToolError, ToolResponder},
 };
 
 wasmtime::component::bindgen!({
@@ -87,7 +87,8 @@ impl InternalTool for WasmTool {
         args: serde_json::Value,
         _ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
+    ) {
+        let result: Result<serde_json::Value, String> = async {
         let args_json = serde_json::to_string(&args).map_err(|err| err.to_string())?;
         let wasm_path = self.wasm_path.clone();
         let secrets = self.secrets.clone();
@@ -99,10 +100,9 @@ impl InternalTool for WasmTool {
         })
         .await
         .map_err(|err| err.to_string())??;
-        let output = serde_json::from_str(&output)
-            .map_err(|err| format!("invalid WASM tool output: {err}"))?;
-        responder.respond(output)?;
-        Ok(())
+        Ok(output)
+        }.await;
+        responder.respond(result.map_err(ToolError::new));
     }
 }
 
@@ -300,11 +300,16 @@ impl LoadedTool {
             .map_err(|err| err.to_string())
     }
 
-    fn execute(&mut self, args_json: &str, config_json: &str) -> Result<String, String> {
-        self.bindings
+    fn execute(
+        &mut self,
+        args_json: &str,
+        config_json: &str,
+    ) -> Result<serde_json::Value, String> {
+        let output = self.bindings
             .call_execute(&mut self.store, args_json, config_json)
             .map_err(|err| err.to_string())?
-            .map_err(|err| format!("WASM tool error: {err}"))
+            .map_err(|err| format!("WASM tool error: {err}"))?;
+        serde_json::from_str(&output).map_err(|err| format!("invalid WASM tool output: {err}"))
     }
 }
 

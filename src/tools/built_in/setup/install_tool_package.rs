@@ -74,6 +74,10 @@ pub fn install_packaged_tool(
 
 impl ListToolsTool {
     pub(super) async fn execute(&self) -> Result<serde_json::Value, String> {
+        self.inventory()
+    }
+
+    fn inventory(&self) -> Result<serde_json::Value, String> {
         let installed = installed_tool_names(&self.layout)?
             .into_iter()
             .collect::<BTreeSet<_>>();

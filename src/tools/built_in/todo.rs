@@ -78,7 +78,8 @@ impl InternalTool for TodoTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
+    ) {
+        let result = (|| {
         let input: TodoInput = serde_json::from_value(args).map_err(|e| e.to_string())?;
         let key = match &ctx.invoked_by {
             InvocationScope::Conversation(conversation) => conversation.storage_key(),
@@ -123,13 +124,13 @@ impl InternalTool for TodoTool {
             lines.push("All tasks completed.".to_string());
         }
 
-        responder.respond(serde_json::json!({
-            "ok": true,
+        Ok::<_, String>(serde_json::json!({
             "old_todos": old_todos,
             "new_todos": input.todos,
             "result": lines.join("\n")
-        }))?;
-        Ok(())
+        }))
+        })().map_err(crate::tools::ToolError::new);
+        responder.respond(result);
     }
 }
 
@@ -157,7 +158,7 @@ mod tests {
             &ctx,
         )
         .await;
-        assert_eq!(first["old_todos"], serde_json::json!([]));
+        assert_eq!(first.unwrap()["old_todos"], serde_json::json!([]));
 
         let second = tools::run_internal_tool(
             Arc::clone(&tool) as Arc<dyn InternalTool>,
@@ -166,7 +167,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            second["old_todos"],
+            second.unwrap()["old_todos"],
             serde_json::json!([{ "description": "Plan", "status": "in_progress" }])
         );
     }
@@ -181,13 +182,13 @@ mod tests {
                 thread_id: None,
             }));
 
-        tools::run_internal_tool(
+        let _ = tools::run_internal_tool(
             Arc::clone(&tool) as Arc<dyn InternalTool>,
             serde_json::json!({ "todos": [item("Plan", TodoStatus::InProgress)] }),
             &ctx,
         )
         .await;
-        tools::run_internal_tool(
+        let _ = tools::run_internal_tool(
             Arc::clone(&tool) as Arc<dyn InternalTool>,
             serde_json::json!({ "todos": [item("Plan", TodoStatus::Completed)] }),
             &ctx,
@@ -200,6 +201,6 @@ mod tests {
         )
         .await;
 
-        assert_eq!(next["old_todos"], serde_json::json!([]));
+        assert_eq!(next.unwrap()["old_todos"], serde_json::json!([]));
     }
 }

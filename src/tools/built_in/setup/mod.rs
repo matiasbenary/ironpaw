@@ -53,13 +53,7 @@ pub(super) async fn send(
         ctx,
     )
     .await;
-    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-        return Err(result["error"]
-            .as_str()
-            .unwrap_or("send failed")
-            .to_string());
-    }
-    Ok(())
+    result.map(|_| ()).map_err(|error| error.message)
 }
 
 pub(super) async fn delete_current_message(
@@ -79,17 +73,14 @@ pub(super) async fn delete_current_message(
         ctx,
     )
     .await;
-    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-        eprintln!(
-            "{label} could not delete inbound setup message: {}",
-            result["error"].as_str().unwrap_or("unknown error")
-        );
+    if let Err(error) = result {
+        eprintln!("{label} could not delete inbound setup message: {}", error.message);
     }
 }
 
-fn publish_tool_result(continuation: Option<&ToolResponder>, result: serde_json::Value) {
+fn publish_tool_result(continuation: Option<&ToolResponder>, result: crate::tools::ToolResult) {
     let Some(continuation) = continuation else {
         return;
     };
-    let _ = continuation.respond(result);
+    continuation.respond(result);
 }

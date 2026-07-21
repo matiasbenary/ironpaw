@@ -16,9 +16,9 @@ use ironpaw::{
         messages::{DeleteMessageTool, SendMessageTool},
         raw_inference::RawInferenceTool,
         setup::{
-            InstallChannelTool, InstallToolTool, ListToolsTool, OnboardingTool, RemoveChannelTool,
-            SetupServices,
+            InstallChannelTool, InstallToolTool, OnboardingTool, RemoveChannelTool, SetupServices,
         },
+        state::EnabledTools,
         unlock::{AUTOMATION_NAME as UNLOCK_AUTOMATION, UnlockSecretsTool},
         wasm::WasmTool,
     },
@@ -123,6 +123,7 @@ async fn main() -> io::Result<()> {
 
     wait_for_unlocked_store(boot_events).await?;
     automations.remove_transient(UNLOCK_AUTOMATION);
+    let tool_state = EnabledTools::new(layout.tools_state_path());
 
     let scripts = Arc::clone(&tools.scripts);
     for tool in DynamicTool::discover(&layout.tools_dir(), Arc::clone(&scripts))
@@ -135,6 +136,12 @@ async fn main() -> io::Result<()> {
     }
     for manifest in ironpaw::tools::wasm::discover(&layout).map_err(std::io::Error::other)? {
         let name = manifest.name.clone();
+        if !tool_state
+            .is_enabled(&name)
+            .map_err(std::io::Error::other)?
+        {
+            continue;
+        }
         let tool = WasmTool::from_manifest(manifest, secrets.tools.clone())
             .map_err(std::io::Error::other)?;
         tools
@@ -150,6 +157,7 @@ async fn main() -> io::Result<()> {
         Arc::clone(&automations),
         layout.clone(),
         secrets.clone(),
+        tool_state,
     ));
     tools
         .registry
@@ -169,13 +177,6 @@ async fn main() -> io::Result<()> {
         .add(Arc::new(RemoveChannelTool::new(Arc::clone(
             &setup_services,
         ))))
-        .map_err(std::io::Error::other)?;
-    tools
-        .registry
-        .add(Arc::new(ListToolsTool::new(
-            layout.clone(),
-            secrets.clone(),
-        )))
         .map_err(std::io::Error::other)?;
     let install_tool = Arc::new(InstallToolTool::new(Arc::clone(&setup_services)));
     tools

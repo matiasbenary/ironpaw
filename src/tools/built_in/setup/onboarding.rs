@@ -105,7 +105,7 @@ impl OnboardingTool {
                         ctx,
                     )
                     .await?;
-                    return Ok(serde_json::json!({ "ok": false, "error": err }));
+                    return Ok(serde_json::json!({ "verified": false, "error": err }));
                 }
                 self.finish(ctx).await?;
             }
@@ -125,14 +125,7 @@ impl OnboardingTool {
             ctx,
         )
         .await;
-        if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-            Err(result["error"]
-                .as_str()
-                .unwrap_or("tool failed")
-                .to_string())
-        } else {
-            Ok(())
-        }
+        result.map(|_| ()).map_err(|error| error.message)
     }
 
     async fn finish(&self, ctx: &ExecutionContext) -> Result<(), String> {
@@ -181,12 +174,9 @@ impl InternalTool for OnboardingTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let output = tools::execute_typed(args, |params: OnboardingParams| async {
+    ) {
+        responder.respond(tools::execute_typed(args, |params: OnboardingParams| async {
             OnboardingTool::execute(self, params, ctx).await
-        })
-        .await?;
-        responder.respond(output)?;
-        Ok(())
+        }).await);
     }
 }

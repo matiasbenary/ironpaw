@@ -6,7 +6,7 @@ use crate::{
     memory::Memory,
     message::{Message, ToolCall, ToolDefinition},
     models,
-    tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolRegistry},
+    tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolRegistry, tool_result_json},
 };
 
 const DEFAULT_TASK_TOOLS: [&str; 4] = ["list_files", "read_file", "create_file", "update_file"];
@@ -61,12 +61,7 @@ impl Agent {
             history_scope: HistoryScope::Conversation(conversation.clone()),
             context,
             transient_messages: Vec::new(),
-            tools: self
-                .tools
-                .all()
-                .into_iter()
-                .filter(|tool| tool.agent_visible())
-                .collect(),
+            tools: self.tools.all(),
             allowed_tool_names: None,
             recalled_memories: Vec::new(),
         })
@@ -146,11 +141,7 @@ impl Agent {
             };
 
             logger::raw_inference_request_logged(&request);
-            let (inference, raw_response) = self
-                .raw_inference
-                .execute_with_raw_response(request)
-                .await?;
-            logger::raw_http_response_logged(&raw_response);
+            let inference = self.raw_inference.execute(request).await?;
             logger::raw_inference_response_logged(&inference);
             compact_before_next_round = inference.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS;
             let output = inference.message.clone();
@@ -385,7 +376,7 @@ async fn wait_for_tool_results(
                     results.push(Message::ToolResult {
                         tool_call_id,
                         tool_name,
-                        result,
+                        result: tool_result_json(&result),
                     });
                 }
             }
@@ -465,7 +456,7 @@ fn prepare_tool_request(
 }
 
 fn error_result(error: impl Into<String>) -> serde_json::Value {
-    serde_json::json!({ "ok": false, "error": error.into() })
+    tool_result_json(&Err(tools::ToolError::new(error.into())))
 }
 
 fn assistant_message_for_tool_results(message: Message, results: &[Message]) -> Message {

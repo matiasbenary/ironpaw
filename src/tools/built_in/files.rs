@@ -113,9 +113,9 @@ impl InternalTool for ListFilesTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let params: ListFilesParams =
-            serde_json::from_value(args).map_err(|err| err.to_string())?;
+    ) {
+        let result: Result<serde_json::Value, String> = async {
+        let params: ListFilesParams = serde_json::from_value(args).map_err(|err| err.to_string())?;
         let path = self
             .0
             .path(ctx, params.path.as_deref().unwrap_or("."))
@@ -143,8 +143,9 @@ impl InternalTool for ListFilesTool {
             }));
         }
         entries.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
-        responder.respond(serde_json::json!({ "ok": true, "entries": entries }))?;
-        Ok(())
+        Ok(serde_json::json!({ "entries": entries }))
+        }.await;
+        responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 
@@ -180,14 +181,16 @@ impl InternalTool for ReadFileTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
+    ) {
+        let result: Result<serde_json::Value, String> = async {
         let params: ReadFileParams = serde_json::from_value(args).map_err(|err| err.to_string())?;
         let path = self.0.path(ctx, &params.path).await?;
         let content = fs::read_to_string(path)
             .await
             .map_err(|err| err.to_string())?;
-        responder.respond(serde_json::json!({ "ok": true, "content": content }))?;
-        Ok(())
+        Ok(serde_json::json!({ "content": content }))
+        }.await;
+        responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 
@@ -224,7 +227,8 @@ impl InternalTool for CreateFileTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
+    ) {
+        let result: Result<serde_json::Value, String> = async {
         let params: CreateFileParams =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         let path = self.0.path(ctx, &params.path).await?;
@@ -242,8 +246,9 @@ impl InternalTool for CreateFileTool {
             .write_all(params.content.as_bytes())
             .await
             .map_err(|err| err.to_string())?;
-        responder.respond(serde_json::json!({ "ok": true }))?;
-        Ok(())
+        Ok(serde_json::json!({}))
+        }.await;
+        responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 
@@ -283,7 +288,8 @@ impl InternalTool for UpdateFileTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
+    ) {
+        let result: Result<serde_json::Value, String> = async {
         let params: UpdateFileParams =
             serde_json::from_value(args).map_err(|err| err.to_string())?;
         if params.old_content.is_empty() {
@@ -302,8 +308,9 @@ impl InternalTool for UpdateFileTool {
         )
         .await
         .map_err(|err| err.to_string())?;
-        responder.respond(serde_json::json!({ "ok": true }))?;
-        Ok(())
+        Ok(serde_json::json!({}))
+        }.await;
+        responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 
@@ -371,8 +378,7 @@ mod tests {
                 &ctx,
                 responder,
             )
-            .await
-            .unwrap();
+            .await;
         let (responder, _) = ToolResponder::capture();
         update
             .execute(
@@ -384,8 +390,7 @@ mod tests {
                 &ctx,
                 responder,
             )
-            .await
-            .unwrap();
+            .await;
 
         assert_eq!(
             fs::read_to_string(root.join("automations/6d6f726e696e67/state/today.txt"))

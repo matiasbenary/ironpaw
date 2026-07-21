@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use crate::bus::{Bus, Event, ExecutionContext};
-use crate::{history::History, message::Message};
+use crate::{history::History, message::Message, tools::{ToolResult, tool_result_json}};
 
 #[derive(Clone)]
 pub struct ToolResponder {
@@ -22,7 +22,7 @@ enum ToolResponderKind {
         tool_name: String,
         record_in_history: bool,
     },
-    Capture(Arc<Mutex<Option<serde_json::Value>>>),
+    Capture(Arc<Mutex<Option<ToolResult>>>)
 }
 
 impl ToolResponder {
@@ -47,7 +47,7 @@ impl ToolResponder {
         }
     }
 
-    pub(crate) fn capture() -> (Self, Arc<Mutex<Option<serde_json::Value>>>) {
+    pub(crate) fn capture() -> (Self, Arc<Mutex<Option<ToolResult>>>) {
         let result = Arc::new(Mutex::new(None));
         (
             Self {
@@ -58,9 +58,10 @@ impl ToolResponder {
         )
     }
 
-    pub fn respond(&self, result: serde_json::Value) -> Result<(), String> {
+    pub fn respond(&self, result: ToolResult) {
         if self.responded.swap(true, Ordering::SeqCst) {
-            return Err("tool already responded".to_string());
+            eprintln!("tool responder received a duplicate response");
+            return;
         }
         match &self.inner {
             ToolResponderKind::Bus {
@@ -71,17 +72,20 @@ impl ToolResponder {
                 tool_name,
                 record_in_history,
             } => {
+                let result_json = tool_result_json(&result);
                 let message = Message::ToolResult {
                     tool_call_id: tool_call_id.clone(),
                     tool_name: tool_name.clone(),
-                    result: result.clone(),
+                    result: result_json,
                 };
                 if *record_in_history {
-                    crate::tools::handler::persist_tool_result(
+                    if let Err(error) = crate::tools::handler::persist_tool_result(
                         history.as_ref(),
                         context,
                         &message,
-                    )?;
+                    ) {
+                        eprintln!("could not persist tool result: {error}");
+                    }
                 }
                 bus.publish(Event::ToolResult {
                     context: context.clone(),
@@ -94,10 +98,6 @@ impl ToolResponder {
                 *captured.lock().expect("tool response lock") = Some(result);
             }
         }
-        Ok(())
     }
 
-    pub(crate) fn has_responded(&self) -> bool {
-        self.responded.load(Ordering::SeqCst)
-    }
 }

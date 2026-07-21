@@ -474,10 +474,9 @@ impl InternalTool for BrowserTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<BrowserParams>(
             self.name(),
-            "Use a private, managed local browser for rendered, JavaScript-heavy, \
-             or interactive pages. For a known public URL that only needs a plain \
-             read, prefer web_fetch. Navigate with goto, inspect with snapshot, \
-             then interact through act using refs returned by the latest snapshot.",
+            "Navigate a website and interact with its HTML components. Use goto \
+             to open a page, snapshot to inspect it, then act with refs returned \
+             by the latest snapshot.",
         )
     }
     async fn execute(
@@ -485,11 +484,14 @@ impl InternalTool for BrowserTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let output = self.execute(params, ctx).await?;
-        responder.respond(serde_json::to_value(output).map_err(|err| err.to_string())?)?;
-        Ok(())
+    ) {
+        let result = async {
+            let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
+            let output = self.execute(params, ctx).await?;
+            serde_json::to_value(output).map_err(|err| err.to_string())
+        }
+        .await;
+        responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 
@@ -497,10 +499,6 @@ impl InternalTool for BrowserTool {
 impl InternalTool for BrowserUpdateTool {
     fn name(&self) -> &str {
         "browser_update"
-    }
-
-    fn agent_visible(&self) -> bool {
-        false
     }
 
     fn tool_definition(&self) -> ToolDefinition {
@@ -515,9 +513,11 @@ impl InternalTool for BrowserUpdateTool {
         _args: serde_json::Value,
         _ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let path = ensure_chrome_async(self.layout.clone()).await?;
-        responder.respond(serde_json::json!({ "path": path }))?;
-        Ok(())
+    ) {
+        let result = ensure_chrome_async(self.layout.clone())
+            .await
+            .map(|path| serde_json::json!({ "path": path }))
+            .map_err(crate::tools::ToolError::new);
+        responder.respond(result);
     }
 }

@@ -238,7 +238,7 @@ pub enum Event {
         context: ExecutionContext,
         tool_call_id: String,
         tool_name: String,
-        result: serde_json::Value,
+        result: crate::tools::ToolResult,
     },
     #[serde(skip)]
     SecretsUnlocked,

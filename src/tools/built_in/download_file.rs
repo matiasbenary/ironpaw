@@ -130,10 +130,8 @@ impl InternalTool for DownloadFileTool {
         args: serde_json::Value,
         _ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let output = tools::execute_typed(args, |params| self.download(params)).await?;
-        responder.respond(output)?;
-        Ok(())
+    ) {
+        responder.respond(tools::execute_typed(args, |params| self.download(params)).await);
     }
 }
 

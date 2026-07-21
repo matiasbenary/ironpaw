@@ -1,8 +1,12 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::{
-    automations::Automations, bus::Bus, channels, config::RuntimeLayout, secrets::Secrets,
-    tools::InternalTools,
+    automations::Automations,
+    bus::Bus,
+    channels,
+    config::RuntimeLayout,
+    secrets::Secrets,
+    tools::{InternalTools, state::EnabledTools},
 };
 
 pub struct SetupServices {
@@ -11,6 +15,7 @@ pub struct SetupServices {
     pub automations: Arc<Automations>,
     pub layout: RuntimeLayout,
     pub secrets: Secrets,
+    pub tool_state: EnabledTools,
     channel_runtime: OnceLock<Arc<channels::ChannelRuntime>>,
 }
 
@@ -21,6 +26,7 @@ impl SetupServices {
         automations: Arc<Automations>,
         layout: RuntimeLayout,
         secrets: Secrets,
+        tool_state: EnabledTools,
     ) -> Self {
         Self {
             bus,
@@ -28,6 +34,7 @@ impl SetupServices {
             automations,
             layout,
             secrets,
+            tool_state,
             channel_runtime: OnceLock::new(),
         }
     }

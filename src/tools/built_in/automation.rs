@@ -187,7 +187,7 @@ impl InternalTool for AutomationTool {
         args: serde_json::Value,
         _ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
+    ) {
         let output = match self.kind {
             AutomationToolKind::Create => {
                 tools::execute_typed(args, |params| self.create_automation(params)).await
@@ -221,8 +221,7 @@ impl InternalTool for AutomationTool {
                 })
                 .await
             }
-        }?;
-        responder.respond(output)?;
-        Ok(())
+        };
+        responder.respond(output);
     }
 }

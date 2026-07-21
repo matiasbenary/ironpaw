@@ -9,7 +9,7 @@ use crate::{
     message::{Attachment, Message, ToolCall, ToolDefinition},
     models,
     secrets::ToolSecrets,
-    tools::{self, InternalTool},
+    tools::{self, InternalTool, ToolError},
 };
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
@@ -73,15 +73,6 @@ impl RawInferenceTool {
         &self,
         request: RawInferenceRequest,
     ) -> Result<RawInferenceOutput, String> {
-        self.execute_with_raw_response(request)
-            .await
-            .map(|(output, _)| output)
-    }
-
-    pub(crate) async fn execute_with_raw_response(
-        &self,
-        request: RawInferenceRequest,
-    ) -> Result<(RawInferenceOutput, String), String> {
         let near_api_key = self
             .secrets
             .get("NEAR_API_KEY")
@@ -111,7 +102,7 @@ impl RawInferenceTool {
         let response = serde_json::from_str(&body)
             .map_err(|err| format!("failed to parse chat response JSON: {err}"))?;
 
-        Ok((response_to_output(response)?, body))
+        response_to_output(response)
     }
 
     fn chat_request(&self, request: &RawInferenceRequest) -> Result<serde_json::Value, String> {
@@ -332,13 +323,13 @@ impl InternalTool for RawInferenceTool {
         args: serde_json::Value,
         _ctx: &tools::ExecutionContext,
         responder: tools::ToolResponder,
-    ) -> Result<(), String> {
-        let output = tools::execute_typed(args, |request: RawInferenceRequest| async {
-            RawInferenceTool::execute(self, request).await
-        })
-        .await?;
-        responder.respond(output)?;
-        Ok(())
+    ) {
+        let result = async {
+            let request = serde_json::from_value(args).map_err(|error| ToolError::new(error.to_string()))?;
+            let output = RawInferenceTool::execute(self, request).await.map_err(ToolError::new)?;
+            serde_json::to_value(output).map_err(|error| ToolError::new(error.to_string()))
+        }.await;
+        responder.respond(result);
     }
 }
 

@@ -103,11 +103,11 @@ impl InternalTool for CreateToolTool {
         args: serde_json::Value,
         _ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let output = CreateToolTool::execute(self, params)?;
-        responder.respond(output)?;
-        Ok(())
+    ) {
+        let result = serde_json::from_value(args)
+            .map_err(|err| err.to_string())
+            .and_then(|params| CreateToolTool::execute(self, params));
+        responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 
@@ -263,13 +263,12 @@ impl InternalTool for DynamicTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
+    ) {
         let result = self
             .scripts
             .run(self.script.clone(), ctx.clone(), args)
-            .await?;
-        responder.respond(result)?;
-        Ok(())
+            .await;
+        responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 

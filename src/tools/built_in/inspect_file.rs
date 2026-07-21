@@ -6,7 +6,7 @@ use crate::{
     message::{Attachment, Message},
     models,
     tools::{
-        self, InternalTool, ToolOutput,
+        self, InternalTool,
         raw_inference::{RawInferenceRequest, RawInferenceTool},
     },
 };
@@ -54,7 +54,8 @@ impl InternalTool for InspectFileTool {
         args: serde_json::Value,
         _ctx: &crate::tools::ExecutionContext,
         responder: crate::tools::ToolResponder,
-    ) -> Result<(), String> {
+    ) {
+        let result: Result<serde_json::Value, String> = async {
         let params: InspectFileParams = serde_json::from_value(args).map_err(|e| e.to_string())?;
 
         let attachment = self
@@ -76,8 +77,7 @@ impl InternalTool for InspectFileTool {
 
         if attachment.mime_type.starts_with("image/") {
             let answer = self.inspect_image(attachment, query).await?;
-            responder.respond(inspection_output(params.file_id, query, answer))?;
-            return Ok(());
+            return Ok(inspection_output(params.file_id, query, answer));
         }
 
         let text = if ext == "pdf" {
@@ -90,8 +90,9 @@ impl InternalTool for InspectFileTool {
         };
 
         let answer = self.inspect_text(&text, query).await?;
-        responder.respond(inspection_output(params.file_id, query, answer))?;
-        Ok(())
+        Ok(inspection_output(params.file_id, query, answer))
+        }.await;
+        responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 
@@ -151,7 +152,7 @@ fn text_item(text: String) -> Message {
     }
 }
 
-fn inspection_output(_file_id: u32, _query: &str, answer: String) -> ToolOutput {
+fn inspection_output(_file_id: u32, _query: &str, answer: String) -> serde_json::Value {
     serde_json::Value::String(answer)
 }
 

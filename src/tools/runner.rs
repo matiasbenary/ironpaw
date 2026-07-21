@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     bus::Bus,
     history::History,
-    tools::{ExecutionContext, InternalTool, InternalTools, ToolRegistry, ToolResponder},
+    tools::{ExecutionContext, InternalTool, InternalTools, ToolError, ToolRegistry, ToolResponder, ToolResult},
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can
@@ -40,7 +40,7 @@ pub async fn run_tool(
     name: &str,
     args: serde_json::Value,
     ctx: &ExecutionContext,
-) -> serde_json::Value {
+) -> ToolResult {
     run_registered_tool(&tools.registry, name, args, ctx).await
 }
 
@@ -49,14 +49,14 @@ pub async fn run_registered_tool(
     name: &str,
     args: serde_json::Value,
     ctx: &ExecutionContext,
-) -> serde_json::Value {
+) -> ToolResult {
     let tool = registry
         .all()
         .iter()
         .find(|tool| tool.name() == name)
         .cloned();
     let Some(tool) = tool else {
-        return serde_json::json!({ "ok": false, "error": format!("unknown tool: {name}") });
+        return Err(ToolError::new(format!("unknown tool: {name}")));
     };
     run_internal_tool(tool, args, ctx).await
 }
@@ -65,29 +65,24 @@ pub async fn run_internal_tool(
     tool: Arc<dyn InternalTool>,
     args: serde_json::Value,
     ctx: &ExecutionContext,
-) -> serde_json::Value {
+) -> ToolResult {
     if let Err(error) = reserve_tool_call(ctx) {
-        return serde_json::json!({ "ok": false, "error": error });
+        return Err(ToolError::new(error));
     }
     if ctx.depth >= MAX_TOOL_DEPTH {
-        return serde_json::json!({
-            "ok": false,
-            "error": format!("tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"),
-        });
+        return Err(ToolError::new(format!(
+            "tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"
+        )));
     }
     let (responder, captured) = ToolResponder::capture();
     let mut ctx = ctx.with_tool(tool.name().to_string());
     ctx.depth += 1;
-    match tool.execute(args, &ctx, responder).await {
-        Ok(()) => captured
-            .lock()
-            .expect("tool response lock")
-            .take()
-            .unwrap_or_else(
-                || serde_json::json!({ "ok": false, "error": "tool finished without responding" }),
-            ),
-        Err(err) => serde_json::json!({ "ok": false, "error": err }),
-    }
+    tool.execute(args, &ctx, responder).await;
+    captured
+        .lock()
+        .expect("tool response lock")
+        .take()
+        .unwrap_or_else(|| Err(ToolError::new("tool finished without responding")))
 }
 
 pub(crate) async fn run_registered_tool_for_context(
@@ -100,11 +95,6 @@ pub(crate) async fn run_registered_tool_for_context(
     args: serde_json::Value,
     record_in_history: bool,
 ) {
-    let tool = registry
-        .all()
-        .iter()
-        .find(|tool| tool.name() == tool_name)
-        .cloned();
     let responder = ToolResponder::bus(
         bus,
         history,
@@ -113,27 +103,26 @@ pub(crate) async fn run_registered_tool_for_context(
         tool_name.clone(),
         record_in_history,
     );
+    let tool = registry
+        .all()
+        .iter()
+        .find(|tool| tool.name() == tool_name)
+        .cloned();
     let Some(tool) = tool else {
-        let _ = responder.respond(serde_json::json!({
-            "ok": false,
-            "error": format!("unknown tool: {tool_name}"),
-        }));
+        responder.respond(Err(ToolError::new(format!("unknown tool: {tool_name}"))));
         return;
     };
-    let result = if let Err(error) = reserve_tool_call(ctx) {
-        Err(error)
+    if let Err(error) = reserve_tool_call(ctx) {
+        responder.respond(Err(ToolError::new(error)));
+        return;
     } else if ctx.depth >= MAX_TOOL_DEPTH {
-        Err(format!(
+        responder.respond(Err(ToolError::new(format!(
             "tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"
-        ))
+        ))));
+        return;
     } else {
         let mut tool_ctx = ctx.with_tool(tool.name().to_string());
         tool_ctx.depth += 1;
-        tool.execute(args, &tool_ctx, responder.clone()).await
-    };
-    if let Err(err) = result
-        && !responder.has_responded()
-    {
-        let _ = responder.respond(serde_json::json!({ "ok": false, "error": err }));
+        tool.execute(args, &tool_ctx, responder).await;
     }
 }

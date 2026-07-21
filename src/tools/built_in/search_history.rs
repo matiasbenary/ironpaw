@@ -54,10 +54,11 @@ impl InternalTool for SearchHistoryTool {
         args: serde_json::Value,
         _ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let output = SearchHistoryTool::execute(self, params)?;
-        responder.respond(output)?;
-        Ok(())
+    ) {
+        let result = serde_json::from_value(args)
+            .map_err(|err| err.to_string())
+            .and_then(|params| SearchHistoryTool::execute(self, params))
+            .map_err(crate::tools::ToolError::new);
+        responder.respond(result);
     }
 }

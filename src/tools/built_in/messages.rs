@@ -82,12 +82,12 @@ impl InternalTool for SendMessageTool {
         args: serde_json::Value,
         _ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let input: SendMessageToolInput =
-            serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let output = SendMessageTool::execute(self, input)?;
-        responder.respond(output)?;
-        Ok(())
+    ) {
+        let result = serde_json::from_value(args)
+            .map_err(|err| err.to_string())
+            .and_then(|input| SendMessageTool::execute(self, input))
+            .map_err(crate::tools::ToolError::new);
+        responder.respond(result);
     }
 }
 
@@ -174,13 +174,15 @@ impl InternalTool for DeleteMessageTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let mut input: DeleteMessageToolInput =
-            serde_json::from_value(args).map_err(|err| err.to_string())?;
-        input.fill_current_message(ctx);
-        let output = DeleteMessageTool::execute(self, input)?;
-        responder.respond(output)?;
-        Ok(())
+    ) {
+        let result = serde_json::from_value(args)
+            .map_err(|err| err.to_string())
+            .and_then(|mut input: DeleteMessageToolInput| {
+                input.fill_current_message(ctx);
+                DeleteMessageTool::execute(self, input)
+            })
+            .map_err(crate::tools::ToolError::new);
+        responder.respond(result);
     }
 }
 
@@ -290,7 +292,7 @@ mod tests {
             thread_id: None,
         }));
 
-        tools::run_internal_tool(tool, serde_json::json!({ "message_id": "456" }), &ctx).await;
+        let _ = tools::run_internal_tool(tool, serde_json::json!({ "message_id": "456" }), &ctx).await;
 
         let Event::DeleteMessage { message } = events.try_recv().unwrap() else {
             panic!("expected delete message event");

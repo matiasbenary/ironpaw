@@ -19,10 +19,6 @@ pub(super) fn raw_inference_response_logged(response: &RawInferenceOutput) {
     append(&format!("=== RAW LLM RESPONSE ===\n{response}"));
 }
 
-pub(super) fn raw_http_response_logged(body: &str) {
-    append(&format!("=== RAW HTTP LLM RESPONSE ===\n{body}"));
-}
-
 pub(super) fn raw_tool_call_logged(tool_call: &ToolCall) {
     append(&format!(
         "=== RAW TOOL CALL ===\nid: {}\nname: {}\narguments: {}",

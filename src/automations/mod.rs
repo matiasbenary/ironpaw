@@ -614,8 +614,7 @@ mod tests {
         .await;
         task.abort();
 
-        assert_eq!(result["ok"], true);
-        assert!(result["execution_id"].as_str().is_some());
+        assert!(result.unwrap()["execution_id"].as_str().is_some());
     }
 
     #[tokio::test]

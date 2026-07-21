@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use rquickjs::{CatchResultExt, Context, Ctx, Runtime, Value, function::Func};
 
-use crate::tools::{self, ExecutionContext, ToolRegistry};
+use crate::tools::{self, ExecutionContext, ToolRegistry, tool_result_json};
 
 /// Wall-clock budget for one script execution: a runaway loop gets
 /// interrupted instead of wedging the executor.
@@ -81,8 +81,8 @@ fn execute_script(
             let args: serde_json::Value =
                 serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
             let result = handle.block_on(tools::run_registered_tool(&registry, &name, args, &ctx));
-            serde_json::to_string(&result)
-                .unwrap_or_else(|err| format!(r#"{{"ok":false,"error":"{err}"}}"#))
+            serde_json::to_string(&tool_result_json(&result))
+                .unwrap_or_else(|err| format!(r#"{{"status":"failed","error":"{err}"}}"#))
         });
         globals
             .set("__tool_json", tool_json)
@@ -99,7 +99,11 @@ fn execute_script(
         const PRELUDE: &str = r#"
             for (const name of JSON.parse(__tool_names)) {
                 globalThis[name] = (args) => {
-                    return JSON.parse(__tool_json(name, JSON.stringify(args === undefined ? {} : args)));
+                    const response = JSON.parse(__tool_json(name, JSON.stringify(args === undefined ? {} : args)));
+                    if (response.status === "failed") {
+                        throw new Error(response.error);
+                    }
+                    return response.result;
                 };
             }
             globalThis.console = { log: (...a) => __log(a.map(String).join(" ")) };
@@ -303,8 +307,8 @@ mod tests {
             .run(
                 format!(
                     r#"
-	                const r = web_fetch({{ url: "{url}" }});
-	                return {{ first: JSON.parse(r)[0], third: JSON.parse(r)[2] }};
+                    const r = JSON.parse(web_fetch({{ url: "{url}" }}));
+	                return {{ first: r[0], third: r[2] }};
 	                "#
                 ),
                 ExecutionContext::new(InvocationScope::ScheduledAutomation {

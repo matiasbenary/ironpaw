@@ -28,13 +28,16 @@ pub(super) fn system_preamble(destination: Destination<'_>) -> Vec<Message> {
             .to_string(),
     };
     text.push_str(
-        " When the user requests a future or recurring action, create an automation. \
-        Build a deterministic tool for fixed logic, or create a recurrent agent task when \
-        the work requires judgment or research.",
-    );
-    text.push_str(
-        " Use focused tool calls to verify external facts or process user-provided data. \
-        Be mindful of unnecessary tool calls. Stop once you have enough evidence to act; do not research broadly when it will not improve the result.",
+        "\n\n## Tools\n\
+        Use the callable tools provided with this request.\n\n\
+        ## Automations\n\
+        When the user requests a future or recurring action, create an automation. Build a \
+        deterministic tool only for stateless fixed logic. Create a recurrent agent task when \
+        the work needs persistent state, must stop or change its own automation, requires \
+        judgment, or requires research.\n\n\
+        ## Tips\n\
+        Use focused tool calls to verify external facts or process user-provided data. Stop once \
+        you have enough evidence to act; do not research broadly when it will not improve the result.",
     );
 
     vec![Message::System(text)]

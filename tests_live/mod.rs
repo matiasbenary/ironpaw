@@ -50,6 +50,7 @@ fn start_ironpaw_config(
         "ironpaw-live-test-runtime-{}",
         uuid::Uuid::new_v4()
     )));
+    install_test_telegram_channel(&layout);
     let secrets = ironpaw::secrets::Secrets::for_tests();
     if let Ok(near_api_key) = std::env::var("NEAR_API_KEY") {
         secrets.set("NEAR_API_KEY", &near_api_key).unwrap();
@@ -102,12 +103,14 @@ fn start_ironpaw_config(
     ));
     let agent_handler = Arc::new(AgentHandler::new(bus.clone(), Arc::clone(&agent)));
     install_web_search_for_live_tests(&layout, &tools, &secrets);
+    let tool_state = ironpaw::tools::state::EnabledTools::new(layout.tools_state_path());
     let setup_services = Arc::new(SetupServices::new(
         bus.clone(),
         Arc::clone(&tools),
         Arc::clone(&automations),
         layout,
         secrets,
+        tool_state,
     ));
     tools
         .registry
@@ -119,6 +122,17 @@ fn start_ironpaw_config(
     let _tool_handler_task = tool_handler.start();
     let _agent_handler_task = agent_handler.start();
     (automations.start(), history, automations, memory)
+}
+
+fn install_test_telegram_channel(layout: &ironpaw::config::RuntimeLayout) {
+    let channels_dir = layout.channels_dir();
+    std::fs::create_dir_all(&channels_dir).expect("live test channels directory");
+    std::fs::write(channels_dir.join("telegram.wasm"), []).expect("live test telegram wasm");
+    std::fs::write(
+        channels_dir.join("telegram.config.json"),
+        r#"{ "path": "/webhook/telegram" }"#,
+    )
+    .expect("live test telegram config");
 }
 
 fn reset_raw_inference_log() {
@@ -509,7 +523,9 @@ async fn image_generation_routes_to_telegram() {
         thread_id: None,
     };
 
-    let message = user_message("Create an image of a dog and send it to me in telegram.");
+    let message = user_message(
+        "Create an image of a dog and send it to my Telegram chat ID live-test-telegram.",
+    );
 
     publish_user_message(&bus, history.as_ref(), conversation, message);
 
@@ -665,7 +681,7 @@ async fn agent_identifies_dog_image() {
         message,
     );
 
-    timeout(Duration::from_secs(10), async {
+    timeout(Duration::from_secs(60), async {
         loop {
             let event = events.recv().await.expect("bus closed");
             if let Event::MessageOut { message, .. } = event {

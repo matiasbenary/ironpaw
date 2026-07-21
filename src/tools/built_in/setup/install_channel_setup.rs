@@ -126,7 +126,7 @@ impl SetupChannelTool {
                             ctx,
                         )
                         .await?;
-                        return Ok(serde_json::json!({ "ok": false, "verified": false }));
+                        return Ok(serde_json::json!({ "verified": false }));
                     };
                     set_channel_owner_id(layout, &session.package, channel_user_id)?;
                     self.activate_package(&session.package).await?;
@@ -320,7 +320,7 @@ impl SetupChannelTool {
         .await?;
         publish_tool_result(
             continuation.as_ref(),
-            serde_json::json!({ "ok": false, "channel": session.package.name, "rolled_back": true }),
+            Ok(serde_json::json!({ "channel": session.package.name, "rolled_back": true })),
         );
         Ok(())
     }
@@ -348,7 +348,7 @@ impl SetupChannelTool {
         .await?;
         publish_tool_result(
             continuation.as_ref(),
-            serde_json::json!({ "ok": true, "channel": name, "cancelled": true }),
+            Ok(serde_json::json!({ "channel": name, "cancelled": true })),
         );
         Ok(())
     }
@@ -377,15 +377,14 @@ impl SetupChannelTool {
         .await?;
         publish_tool_result(
             continuation.as_ref(),
-            serde_json::json!({
-                "ok": true,
+            Ok(serde_json::json!({
                 "channel": name,
                 "installed": true,
                 "configured": true,
                 "verification": if verified { "confirmed" } else { "skipped" },
                 "status": "ready",
                 "message": format!("The {name} channel is installed, configured, and ready to use.")
-            }),
+            })),
         );
         Ok(())
     }

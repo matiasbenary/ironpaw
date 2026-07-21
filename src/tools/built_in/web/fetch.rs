@@ -163,10 +163,10 @@ impl InternalTool for WebFetchTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<WebFetchParams>(
             self.name(),
-            "Fetch a public URL (HTTP GET). Returns the response body as a \
-             string (call JSON.parse on it if the body is JSON). Read-only; it \
-             does not execute JavaScript or interact with the page. Use browser \
-             for rendered, JavaScript-heavy, or interactive pages.",
+            "Use only to fetch a known public URL (HTTP GET); never use it to \
+             query a search engine. Returns the response body as a string (call \
+             JSON.parse on it if the body is JSON). Read-only; it does not \
+             execute JavaScript or interact with the page.",
         )
     }
 
@@ -175,13 +175,10 @@ impl InternalTool for WebFetchTool {
         args: serde_json::Value,
         _ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let output = tools::execute_typed(args, |params: WebFetchParams| async {
+    ) {
+        responder.respond(tools::execute_typed(args, |params: WebFetchParams| async {
             WebFetchTool::execute(self, params).await
-        })
-        .await?;
-        responder.respond(output)?;
-        Ok(())
+        }).await);
     }
 }
 

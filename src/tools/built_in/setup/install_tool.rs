@@ -301,6 +301,7 @@ impl SetupToolTool {
             install_package(&self.setup.layout, &session.package, &session.config_values)?;
         let tool = WasmTool::from_manifest(manifest, self.setup.secrets.tools.clone())?;
         self.setup.tools.registry.add(Arc::new(tool))?;
+        self.setup.tool_state.enable(&session.package.name)?;
         self.finish(session, ctx).await
     }
 
@@ -321,7 +322,7 @@ impl SetupToolTool {
         .await?;
         publish_tool_result(
             continuation.as_ref(),
-            serde_json::json!({ "ok": true, "tool": name, "cancelled": true }),
+            Ok(serde_json::json!({ "tool": name, "cancelled": true })),
         );
         Ok(())
     }
@@ -338,7 +339,7 @@ impl SetupToolTool {
             session
                 .as_ref()
                 .and_then(|session| session.continuation.as_ref()),
-            serde_json::json!({ "ok": false, "tool": name, "error": error }),
+            Err(crate::tools::ToolError::new(error)),
         );
         send(
             &self.setup.tools,
@@ -365,7 +366,7 @@ impl SetupToolTool {
         .await?;
         publish_tool_result(
             continuation.as_ref(),
-            serde_json::json!({ "ok": true, "tool": name, "installed": true }),
+            Ok(serde_json::json!({ "tool": name, "installed": true })),
         );
         Ok(())
     }
@@ -380,9 +381,9 @@ impl InternalTool for ListToolsTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<ListToolsParams>(
             self.name(),
-            "List Ironpaw external WASM tools, including installed runtime tools \
-             and installable local tool packages. Use this before install_tool \
-             when the user asks what tools are available.",
+            "List installed and installable Ironpaw external WASM tools, including \
+             each tool's setup requirements. Use this before attempting a capability \
+             that is not already provided by a callable tool.",
         )
     }
 
@@ -391,10 +392,8 @@ impl InternalTool for ListToolsTool {
         _args: serde_json::Value,
         _ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let output = ListToolsTool::execute(self).await?;
-        responder.respond(output)?;
-        Ok(())
+    ) {
+        responder.respond(ListToolsTool::execute(self).await.map_err(crate::tools::ToolError::new));
     }
 }
 
@@ -419,15 +418,16 @@ impl InternalTool for InstallToolTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let params: InstallToolParams =
-            serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let result = InstallToolTool::execute(self, params, ctx, responder.clone()).await?;
-        if result.get("ok").and_then(|ok| ok.as_bool()) == Some(true) {
-            return Ok(());
+    ) {
+        let result = async {
+            let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
+            InstallToolTool::execute(self, params, ctx, responder.clone()).await
+        }.await;
+        match result {
+            Ok(result) if result["ok"] == true => {}
+            Ok(result) => responder.respond(Ok(result)),
+            Err(error) => responder.respond(Err(crate::tools::ToolError::new(error))),
         }
-        responder.respond(result)?;
-        Ok(())
     }
 }
 
@@ -450,22 +450,22 @@ impl InternalTool for SetupToolTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let params: SetupToolParams =
-            serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let name = normalize_tool_name(&params.name)?;
-        let result = match self
-            .continue_setup(&name, &params.message, params.message_id.as_deref(), ctx)
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                self.fail(&name, &error, ctx).await?;
-                serde_json::json!({ "ok": false, "error": error })
-            }
-        };
-        responder.respond(result)?;
-        Ok(())
+    ) {
+        let result: Result<serde_json::Value, String> = async {
+            let params: SetupToolParams = serde_json::from_value(args).map_err(|err| err.to_string())?;
+            let name = normalize_tool_name(&params.name)?;
+            Ok(match self
+                .continue_setup(&name, &params.message, params.message_id.as_deref(), ctx)
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    self.fail(&name, &error, ctx).await?;
+                    serde_json::json!({ "error": error })
+                }
+            })
+        }.await;
+        responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 

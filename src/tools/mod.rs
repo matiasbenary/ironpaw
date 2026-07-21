@@ -3,6 +3,7 @@ mod context;
 pub mod dynamic;
 mod handler;
 mod runner;
+pub mod state;
 pub mod wasm;
 
 use std::sync::{Arc, RwLock};
@@ -41,7 +42,33 @@ use self::built_in::{
 };
 use self::dynamic::CreateToolTool;
 
-pub type ToolOutput = serde_json::Value;
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct ToolError {
+    pub message: String,
+}
+
+impl ToolError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl From<String> for ToolError {
+    fn from(message: String) -> Self {
+        Self::new(message)
+    }
+}
+
+pub type ToolResult = Result<serde_json::Value, ToolError>;
+
+pub fn tool_result_json(result: &ToolResult) -> serde_json::Value {
+    match result {
+        Ok(value) => serde_json::json!({ "status": "succeeded", "result": value }),
+        Err(error) => serde_json::json!({ "status": "failed", "error": error.message }),
+    }
+}
 
 pub struct InternalTools {
     pub raw_inference: RawInferenceTool,
@@ -195,12 +222,6 @@ impl InternalTools {
 pub trait InternalTool: Send + Sync {
     fn name(&self) -> &str;
 
-    /// Maintenance tools can run from system automations without being offered
-    /// to the language model.
-    fn agent_visible(&self) -> bool {
-        true
-    }
-
     fn tool_definition(&self) -> ToolDefinition;
 
     async fn execute(
@@ -208,21 +229,21 @@ pub trait InternalTool: Send + Sync {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String>;
+    );
 }
 
 pub async fn execute_typed<P, O, F>(
     args: serde_json::Value,
     execute: impl FnOnce(P) -> F,
-) -> Result<serde_json::Value, String>
+) -> ToolResult
 where
     P: serde::de::DeserializeOwned,
     O: serde::Serialize,
     F: std::future::Future<Output = Result<O, String>>,
 {
-    let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
-    let output = execute(params).await?;
-    serde_json::to_value(output).map_err(|err| err.to_string())
+    let params = serde_json::from_value(args).map_err(|err| ToolError::new(err.to_string()))?;
+    let output = execute(params).await.map_err(ToolError::from)?;
+    serde_json::to_value(output).map_err(|err| ToolError::new(err.to_string()))
 }
 
 pub fn tool_definition<P>(name: &str, description: &str) -> ToolDefinition
@@ -397,9 +418,8 @@ mod tests {
             _args: serde_json::Value,
             ctx: &ExecutionContext,
             responder: ToolResponder,
-        ) -> Result<(), String> {
-            responder.respond(serde_json::json!({ "depth": ctx.depth }))?;
-            Ok(())
+        ) {
+            responder.respond(Ok(serde_json::json!({ "depth": ctx.depth })));
         }
     }
 
@@ -429,9 +449,8 @@ mod tests {
             _args: serde_json::Value,
             _ctx: &ExecutionContext,
             responder: ToolResponder,
-        ) -> Result<(), String> {
-            responder.respond(serde_json::json!({}))?;
-            Ok(())
+        ) {
+            responder.respond(Ok(serde_json::json!({})));
         }
     }
 
@@ -545,7 +564,7 @@ mod tests {
         });
         deep.depth = runner::MAX_TOOL_DEPTH;
         let result = run_tool(&tools, "fake", serde_json::json!({}), &deep).await;
-        assert_eq!(result["ok"], false);
+        assert!(result.is_err());
 
         let ok = run_tool(
             &tools,
@@ -556,7 +575,7 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(ok["depth"], 1);
+        assert_eq!(ok.unwrap()["depth"], 1);
     }
 
     #[tokio::test]
@@ -570,8 +589,7 @@ mod tests {
 
         let result = run_tool(&tools, "fake", serde_json::json!({}), &ctx).await;
 
-        assert_eq!(result["ok"], false);
-        assert!(result["error"].as_str().unwrap().contains("limit reached"));
+        assert!(result.unwrap_err().message.contains("limit reached"));
     }
 
     #[tokio::test]
@@ -616,7 +634,7 @@ mod tests {
 
         assert_eq!(result.0, "call-1");
         assert_eq!(result.1, "fake");
-        assert_eq!(result.2["depth"], 1);
+        assert_eq!(result.2.unwrap()["depth"], 1);
     }
 
     #[tokio::test]

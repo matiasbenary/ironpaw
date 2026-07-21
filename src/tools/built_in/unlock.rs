@@ -119,14 +119,11 @@ impl InternalTool for UnlockSecretsTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let output = tools::execute_typed(args, |params: UnlockSecretsParams| async {
+    ) {
+        responder.respond(tools::execute_typed(args, |params: UnlockSecretsParams| async {
             self.execute(params, ctx).await?;
             Ok(serde_json::json!({ "ok": true }))
-        })
-        .await?;
-        responder.respond(output)?;
-        Ok(())
+        }).await);
     }
 }
 
@@ -349,13 +346,7 @@ async fn request_written_down_confirmation(
         ctx,
     )
     .await;
-    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-        return Err(result["error"]
-            .as_str()
-            .unwrap_or("could not request confirmation")
-            .to_string());
-    }
-    Ok(())
+    result.map(|_| ()).map_err(|error| error.message)
 }
 
 async fn send_unlock_message(
@@ -382,13 +373,7 @@ async fn send_unlock_message(
         ctx,
     )
     .await;
-    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-        return Err(result["error"]
-            .as_str()
-            .unwrap_or("send failed")
-            .to_string());
-    }
-    Ok(())
+    result.map(|_| ()).map_err(|error| error.message)
 }
 
 async fn delete_outbound_message(
@@ -403,13 +388,7 @@ async fn delete_outbound_message(
         ctx,
     )
     .await;
-    if result.get("ok").and_then(|ok| ok.as_bool()) == Some(false) {
-        return Err(result["error"]
-            .as_str()
-            .unwrap_or("delete failed")
-            .to_string());
-    }
-    Ok(())
+    result.map(|_| ()).map_err(|error| error.message)
 }
 
 #[cfg(test)]

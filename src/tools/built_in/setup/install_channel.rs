@@ -324,10 +324,8 @@ impl InternalTool for ListChannelsTool {
         _args: serde_json::Value,
         _ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let output = ListChannelsTool::execute(self).await?;
-        responder.respond(output)?;
-        Ok(())
+    ) {
+        responder.respond(ListChannelsTool::execute(self).await.map_err(crate::tools::ToolError::new));
     }
 }
 
@@ -350,13 +348,11 @@ impl InternalTool for RemoveChannelTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let output = tools::execute_typed(args, |params| async {
+    ) {
+        responder.respond(tools::execute_typed(args, |params| async {
             RemoveChannelTool::execute(self, params, ctx).await
         })
-        .await?;
-        responder.respond(output)?;
-        Ok(())
+        .await);
     }
 }
 
@@ -381,20 +377,16 @@ impl InternalTool for InstallChannelTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let params: InstallChannelParams =
-            serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let result = InstallChannelTool::execute(self, params, ctx, responder.clone()).await?;
-        if result.get("ok").and_then(|ok| ok.as_bool()) == Some(true)
-            && result
-                .get("already_installed")
-                .and_then(|value| value.as_bool())
-                != Some(true)
-        {
-            return Ok(());
+    ) {
+        let result = async {
+            let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
+            InstallChannelTool::execute(self, params, ctx, responder.clone()).await
+        }.await;
+        match result {
+            Ok(result) if result["ok"] == true && result["already_installed"] != true => {}
+            Ok(result) => responder.respond(Ok(result)),
+            Err(error) => responder.respond(Err(crate::tools::ToolError::new(error))),
         }
-        responder.respond(result)?;
-        Ok(())
     }
 }
 
@@ -417,11 +409,11 @@ impl InternalTool for SetupChannelTool {
         args: serde_json::Value,
         ctx: &ExecutionContext,
         responder: ToolResponder,
-    ) -> Result<(), String> {
-        let params: SetupChannelParams =
-            serde_json::from_value(args).map_err(|err| err.to_string())?;
+    ) {
+        let result = async {
+        let params: SetupChannelParams = serde_json::from_value(args).map_err(|err| err.to_string())?;
         let name = normalize_channel_name(&params.name)?;
-        let result = self
+        self
             .continue_setup(
                 &name,
                 params.channel.as_deref(),
@@ -430,9 +422,9 @@ impl InternalTool for SetupChannelTool {
                 params.message_id.as_deref(),
                 ctx,
             )
-            .await?;
-        responder.respond(result)?;
-        Ok(())
+            .await
+        }.await;
+        responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 
