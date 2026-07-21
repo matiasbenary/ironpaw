@@ -88,7 +88,7 @@ async fn main() -> io::Result<()> {
         memory,
     ));
     let automation_store = Arc::new(
-        FileAutomations::new(layout.automations_dir())
+        FileAutomations::new(layout.data_dir().join("automations"))
             .map_err(std::io::Error::other)?,
     );
     let automations = Arc::new(Automations::new(
@@ -131,7 +131,7 @@ async fn main() -> io::Result<()> {
     {
         tools
             .registry
-            .add(Arc::new(tool))
+            .register_dynamic(Arc::new(tool))
             .map_err(std::io::Error::other)?;
     }
     for manifest in ironpaw::tools::wasm::discover(&layout).map_err(std::io::Error::other)? {

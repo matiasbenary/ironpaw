@@ -13,33 +13,19 @@ use crate::{
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
-pub struct CreateToolParams {
-    /// Short snake_case name for the new tool, e.g. 'fetch_hn_top_stories'.
+pub struct RegisterToolParams {
+    /// Name of the tool directory under tools/ to validate and register.
     pub name: String,
-    /// One-line description of what the tool does, shown to whoever calls it.
-    pub description: String,
-    /// Tool version. Defaults to 0.1.0 when omitted.
-    #[serde(default)]
-    pub version: Option<String>,
-    /// JavaScript source implementing the tool. The sandbox has no network
-    /// or filesystem; existing tools are exposed as synchronous global
-    /// functions named after the tool, e.g. `web_fetch({ url })` or
-    /// `send_message({ channel, chat_id, content })`. The tool's arguments are available as the
-    /// global `args`, and the script must use `return` to produce the tool
-    /// result. `send_message` always requires an explicit channel and chat_id.
-    /// Example: `const r = web_fetch({ url: "https://example.com" });
-    /// return { length: r.length };`
-    pub script: String,
 }
 
-/// Lets the model author new tools as sandboxed scripts.
-pub struct CreateToolTool {
+/// Validates and registers a file-backed sandboxed JavaScript tool.
+pub struct RegisterToolTool {
     registry: Arc<ToolRegistry>,
     scripts: Arc<ScriptRuntime>,
     tools_dir: PathBuf,
 }
 
-impl CreateToolTool {
+impl RegisterToolTool {
     pub fn new(
         registry: Arc<ToolRegistry>,
         scripts: Arc<ScriptRuntime>,
@@ -52,49 +38,31 @@ impl CreateToolTool {
         }
     }
 
-    pub fn execute(&self, params: CreateToolParams) -> Result<serde_json::Value, String> {
+    pub fn execute(&self, params: RegisterToolParams) -> Result<serde_json::Value, String> {
         let name = params.name.trim().to_string();
         if !valid_tool_name(&name) {
             return Err("name must be non-empty snake_case (letters, digits, '_')".to_string());
         }
-        if self.registry.contains(&name) {
-            return Err(format!("a tool named '{name}' already exists"));
-        }
-        if params.script.trim().is_empty() {
-            return Err("script must not be empty".to_string());
-        }
-        crate::scripts::validate_source(&params.script)?;
-        let manifest = DynamicToolManifest {
-            version: params.version.unwrap_or_else(|| "0.1.0".to_string()),
-            description: params.description.clone(),
-            parameters: None,
-        };
-        DynamicTool::write_files(&self.tools_dir, &name, &params.script, &manifest)?;
-        self.registry.add(Arc::new(DynamicTool::new(
-            name.clone(),
-            params.description,
-            None,
-            params.script,
-            Arc::clone(&self.scripts),
-        )))?;
-        Ok(serde_json::json!({ "ok": true, "name": name }))
+        let tool = DynamicTool::from_directory(&self.tools_dir.join(&name), self.scripts.clone())?;
+        self.registry.register_dynamic(Arc::new(tool))?;
+        Ok(serde_json::json!({ "name": name }))
     }
 }
 
 #[async_trait]
-impl InternalTool for CreateToolTool {
+impl InternalTool for RegisterToolTool {
     fn name(&self) -> &str {
-        "create_tool"
+        "register_tool"
     }
 
     fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<CreateToolParams>(
+        tools::tool_definition::<RegisterToolParams>(
             self.name(),
-            "Create a new tool implemented as a JavaScript script that can \
-             call existing tools as global functions named after the tool. \
-             Use this when a task needs logic no current tool covers \
-             (fetching and transforming data, multi-step flows); the new \
-             tool can then be called directly or from an automation.",
+            "Validate and activate the JavaScript tool in tools/<name>/tool.js \
+             with its tools/<name>/config.json. config.json requires `version` \
+             and `description`; it may contain `parameters`, a JSON Schema for \
+             the tool arguments. The script receives `args` and may call existing \
+             tools as globals. Changes do not take effect until this tool is called.",
         )
     }
 
@@ -106,14 +74,14 @@ impl InternalTool for CreateToolTool {
     ) {
         let result = serde_json::from_value(args)
             .map_err(|err| err.to_string())
-            .and_then(|params| CreateToolTool::execute(self, params));
+            .and_then(|params| RegisterToolTool::execute(self, params));
         responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 
 /// A tool implemented as a sandboxed script instead of Rust code. Dynamic
-/// tools are created at runtime (by the model through `create_tool`, or
-/// shipped as stock tools) and live in the same registry as internal tools.
+/// tools are activated by `register_tool` and live in the same registry as
+/// internal tools.
 pub struct DynamicTool {
     name: String,
     description: String,
@@ -147,18 +115,17 @@ impl DynamicTool {
         }
     }
 
-    pub fn from_files(
-        script_path: &Path,
-        config_path: &Path,
-        scripts: Arc<ScriptRuntime>,
-    ) -> Result<Self, String> {
-        let name = tool_name_from_script_path(script_path)?;
-        let script = fs::read_to_string(script_path)
+    pub fn from_directory(dir: &Path, scripts: Arc<ScriptRuntime>) -> Result<Self, String> {
+        let name = tool_name_from_directory(dir)?;
+        let script_path = dir.join("tool.js");
+        let config_path = dir.join("config.json");
+        let script = fs::read_to_string(&script_path)
             .map_err(|err| format!("failed to read {}: {err}", script_path.display()))?;
-        let manifest_json = fs::read_to_string(config_path)
+        let manifest_json = fs::read_to_string(&config_path)
             .map_err(|err| format!("failed to read {}: {err}", config_path.display()))?;
         let manifest: DynamicToolManifest = serde_json::from_str(&manifest_json)
             .map_err(|err| format!("invalid {}: {err}", config_path.display()))?;
+        crate::scripts::validate_source(&script)?;
         Ok(Self::new(
             name,
             manifest.description,
@@ -178,59 +145,28 @@ impl DynamicTool {
         for entry in entries {
             let entry =
                 entry.map_err(|err| format!("failed to read {} entry: {err}", dir.display()))?;
-            let script_path = entry.path();
-            if script_path.extension().and_then(|ext| ext.to_str()) != Some("js") {
+            let path = entry.path();
+            if !path.is_dir() {
                 continue;
             }
-            let config_path = config_path_for_script(&script_path)?;
-            tools.push(Self::from_files(
-                &script_path,
-                &config_path,
-                Arc::clone(&scripts),
-            )?);
+            tools.push(Self::from_directory(&path, Arc::clone(&scripts))?);
         }
         Ok(tools)
     }
-
-    pub fn write_files(
-        dir: &Path,
-        name: &str,
-        script: &str,
-        manifest: &DynamicToolManifest,
-    ) -> Result<(), String> {
-        fs::create_dir_all(dir)
-            .map_err(|err| format!("failed to create {}: {err}", dir.display()))?;
-        let script_path = dir.join(format!("{name}.js"));
-        let config_path = dir.join(format!("{name}.config.json"));
-        fs::write(&script_path, script)
-            .map_err(|err| format!("failed to write {}: {err}", script_path.display()))?;
-        let manifest_json =
-            serde_json::to_string_pretty(manifest).map_err(|err| err.to_string())?;
-        fs::write(&config_path, manifest_json)
-            .map_err(|err| format!("failed to write {}: {err}", config_path.display()))
-    }
 }
 
-fn tool_name_from_script_path(script_path: &Path) -> Result<String, String> {
-    let name = script_path
-        .file_stem()
+fn tool_name_from_directory(dir: &Path) -> Result<String, String> {
+    let name = dir
+        .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("invalid dynamic tool filename: {}", script_path.display()))?;
+        .ok_or_else(|| format!("invalid dynamic tool directory: {}", dir.display()))?;
     if !valid_tool_name(name) {
         return Err(format!(
-            "dynamic tool filename must be snake_case: {}",
-            script_path.display()
+            "dynamic tool directory must be snake_case: {}",
+            dir.display()
         ));
     }
     Ok(name.to_string())
-}
-
-fn config_path_for_script(script_path: &Path) -> Result<PathBuf, String> {
-    let name = script_path
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| format!("invalid dynamic tool filename: {}", script_path.display()))?;
-    Ok(script_path.with_file_name(format!("{name}.config.json")))
 }
 
 pub fn valid_tool_name(name: &str) -> bool {
@@ -281,7 +217,7 @@ mod tests {
         tools::{InternalTools, messages::SendMessageTool, raw_inference::RawInferenceTool},
     };
 
-    fn bound_create_tool() -> (Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf) {
+    fn bound_register_tool() -> (Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf) {
         let bus = Bus::new(4);
         let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
             "ironpaw-create-tool-test-runtime-{}",
@@ -310,29 +246,29 @@ mod tests {
     }
 
     #[test]
-    fn create_tool_writes_script_and_config() {
-        let (tools, scripts, tools_dir) = bound_create_tool();
-
-        let result = tools
-            .create_tool
-            .execute(CreateToolParams {
-                name: "hello_dynamic".to_string(),
-                description: "Say hello.".to_string(),
-                version: Some("1.2.3".to_string()),
-                script: "return { greeting: 'hello' };".to_string(),
-            })
-            .expect("tool should be created");
-
-        assert_eq!(result["ok"], true);
-        assert!(tools.registry.contains("hello_dynamic"));
-        assert_eq!(
-            std::fs::read_to_string(tools_dir.join("hello_dynamic.js")).unwrap(),
-            "return { greeting: 'hello' };"
-        );
-        let manifest: DynamicToolManifest = serde_json::from_str(
-            &std::fs::read_to_string(tools_dir.join("hello_dynamic.config.json")).unwrap(),
+    fn register_tool_loads_directory_files() {
+        let (tools, scripts, tools_dir) = bound_register_tool();
+        let tool_dir = tools_dir.join("hello_dynamic");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(tool_dir.join("tool.js"), "return { greeting: 'hello' };").unwrap();
+        std::fs::write(
+            tool_dir.join("config.json"),
+            r#"{"version":"1.2.3","description":"Say hello."}"#,
         )
         .unwrap();
+
+        let result = tools
+            .register_tool
+            .execute(RegisterToolParams {
+                name: "hello_dynamic".to_string(),
+            })
+            .expect("tool should be registered");
+
+        assert_eq!(result["name"], "hello_dynamic");
+        assert!(tools.registry.contains("hello_dynamic"));
+        let manifest: DynamicToolManifest =
+            serde_json::from_str(&std::fs::read_to_string(tool_dir.join("config.json")).unwrap())
+                .unwrap();
         assert_eq!(manifest.version, "1.2.3");
         assert_eq!(manifest.description, "Say hello.");
 
@@ -343,35 +279,42 @@ mod tests {
     }
 
     #[test]
-    fn create_tool_rejects_internal_tool_names() {
-        let (tools, _scripts, tools_dir) = bound_create_tool();
+    fn register_tool_rejects_internal_tool_names() {
+        let (tools, _scripts, tools_dir) = bound_register_tool();
+        let tool_dir = tools_dir.join("send_message");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(tool_dir.join("tool.js"), "return null;").unwrap();
+        std::fs::write(
+            tool_dir.join("config.json"),
+            r#"{"version":"0.1.0","description":"Override send_message."}"#,
+        )
+        .unwrap();
 
-        let result = tools.create_tool.execute(CreateToolParams {
+        let result = tools.register_tool.execute(RegisterToolParams {
             name: "send_message".to_string(),
-            description: "Override send_message.".to_string(),
-            version: None,
-            script: "null".to_string(),
         });
 
         assert!(result.is_err());
-        assert!(!tools_dir.join("send_message.js").exists());
-        assert!(!tools_dir.join("send_message.config.json").exists());
+        assert!(tools.registry.contains("send_message"));
     }
 
     #[test]
-    fn create_tool_rejects_invalid_javascript_before_writing_files() {
-        let (tools, _scripts, tools_dir) = bound_create_tool();
+    fn register_tool_rejects_invalid_javascript() {
+        let (tools, _scripts, tools_dir) = bound_register_tool();
+        let tool_dir = tools_dir.join("bad_script");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(tool_dir.join("tool.js"), "const nope = ;").unwrap();
+        std::fs::write(
+            tool_dir.join("config.json"),
+            r#"{"version":"0.1.0","description":"Bad script."}"#,
+        )
+        .unwrap();
 
-        let result = tools.create_tool.execute(CreateToolParams {
+        let result = tools.register_tool.execute(RegisterToolParams {
             name: "bad_script".to_string(),
-            description: "Bad script.".to_string(),
-            version: None,
-            script: "const nope = ;".to_string(),
         });
 
         assert!(result.is_err());
         assert!(!tools.registry.contains("bad_script"));
-        assert!(!tools_dir.join("bad_script.js").exists());
-        assert!(!tools_dir.join("bad_script.config.json").exists());
     }
 }

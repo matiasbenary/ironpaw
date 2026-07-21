@@ -6,7 +6,10 @@ mod runner;
 pub mod state;
 pub mod wasm;
 
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashSet,
+    sync::{Arc, RwLock},
+};
 
 use async_trait::async_trait;
 
@@ -40,7 +43,7 @@ use self::built_in::{
     todo::TodoTool,
     web::WebFetchTool,
 };
-use self::dynamic::CreateToolTool;
+use self::dynamic::RegisterToolTool;
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ToolError {
@@ -72,7 +75,7 @@ pub fn tool_result_json(result: &ToolResult) -> serde_json::Value {
 
 pub struct InternalTools {
     pub raw_inference: RawInferenceTool,
-    pub create_tool: Arc<CreateToolTool>,
+    pub register_tool: Arc<RegisterToolTool>,
     pub scripts: Arc<ScriptRuntime>,
     pub history: Arc<dyn History>,
     pub registry: Arc<ToolRegistry>,
@@ -80,12 +83,14 @@ pub struct InternalTools {
 
 pub struct ToolRegistry {
     tools: RwLock<Vec<Arc<dyn InternalTool>>>,
+    dynamic_names: RwLock<HashSet<String>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: RwLock::new(Vec::new()),
+            dynamic_names: RwLock::new(HashSet::new()),
         }
     }
 
@@ -116,6 +121,23 @@ impl ToolRegistry {
         }
         tools.push(tool);
         drop(tools);
+        Ok(())
+    }
+
+    /// Register a dynamic tool, replacing only an earlier dynamic version.
+    pub fn register_dynamic(&self, tool: Arc<dyn InternalTool>) -> Result<(), String> {
+        let name = tool.name().to_string();
+        let mut tools = self.tools.write().expect("tools lock");
+        let mut dynamic_names = self.dynamic_names.write().expect("dynamic tools lock");
+        if let Some(index) = tools.iter().position(|existing| existing.name() == name) {
+            if !dynamic_names.contains(&name) {
+                return Err(format!("cannot replace built-in tool '{name}'"));
+            }
+            tools[index] = tool;
+        } else {
+            tools.push(tool);
+            dynamic_names.insert(name);
+        }
         Ok(())
     }
 
@@ -164,7 +186,7 @@ impl InternalTools {
         let delete_message = Arc::new(delete_message);
         let registry = Arc::new(ToolRegistry::new());
         let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&registry)));
-        let create_tool = Arc::new(CreateToolTool::new(
+        let register_tool = Arc::new(RegisterToolTool::new(
             Arc::clone(&registry),
             Arc::clone(&scripts),
             layout.tools_dir(),
@@ -191,7 +213,8 @@ impl InternalTools {
             tool(CreateFileTool::new(layout.files_dir())),
             tool(UpdateFileTool::new(layout.files_dir())),
             tool(TodoTool::new()),
-            tool(AutomationTool::new(bus.clone(), AutomationToolKind::Register)),
+            tool(AutomationTool::new(bus.clone(), AutomationToolKind::Create)),
+            tool(AutomationTool::new(bus.clone(), AutomationToolKind::Edit)),
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::Delete)),
             tool(AutomationTool::new(
                 bus.clone(),
@@ -200,7 +223,7 @@ impl InternalTools {
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::List)),
             tool(AutomationTool::new(bus, AutomationToolKind::Trigger)),
             tool(ListChannelsTool::new(layout.clone(), secrets)),
-            Arc::clone(&create_tool) as Arc<dyn InternalTool>,
+            Arc::clone(&register_tool) as Arc<dyn InternalTool>,
             tool(SearchHistoryTool::new(Arc::clone(&history))),
             tool(BrowserTool::new(layout.clone())),
             tool(BrowserUpdateTool::new(layout.clone())),
@@ -210,7 +233,7 @@ impl InternalTools {
         }
         Self {
             raw_inference,
-            create_tool: Arc::clone(&create_tool),
+            register_tool: Arc::clone(&register_tool),
             scripts,
             history,
             registry,

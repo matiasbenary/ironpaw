@@ -98,7 +98,8 @@ impl Automations {
         let automations = self.store.load_all()?;
         let count = automations.len();
         for automation in automations {
-            self.register(automation.name.as_str())?;
+            self.validate_automation(&automation)?;
+            self.add_runtime(automation)?;
         }
         Ok(count)
     }
@@ -110,16 +111,6 @@ impl Automations {
         }
         self.store.delete(name)?;
         Ok(())
-    }
-
-    pub fn register(self: &Arc<Self>, name: &str) -> Result<(), String> {
-        let automation = self.store.read(name)?;
-        if automation.name != name {
-            return Err(format!("automation file name does not match its name: {name}"));
-        }
-        self.validate_automation(&automation)?;
-        self.remove_runtime(name);
-        self.add_runtime(automation)
     }
 
     pub fn recover_stale_setup(self: &Arc<Self>) -> Result<(), String> {
@@ -330,13 +321,21 @@ impl Automations {
         action: AutomationAction,
     ) -> Result<serde_json::Value, String> {
         match action {
-            AutomationAction::Register { name } => {
-                let name = name.trim();
-                if name.is_empty() {
-                    return Err("name must not be empty".to_string());
+            AutomationAction::Create { automation } => {
+                let automation = self.automation_from_spec(automation)?;
+                let name = automation.name.clone();
+                self.add(automation)?;
+                Ok(serde_json::json!({ "name": name }))
+            }
+            AutomationAction::Edit { automation } => {
+                let automation = self.automation_from_spec(automation)?;
+                let name = automation.name.clone();
+                if !self.remove_runtime(&name) {
+                    return Err(format!("unknown automation: {name}"));
                 }
-                self.register(name)?;
-                Ok(serde_json::json!({ "ok": true, "name": name }))
+                self.store.write(&automation)?;
+                self.add_runtime(automation)?;
+                Ok(serde_json::json!({ "name": name }))
             }
             AutomationAction::Delete { name } => {
                 let name = name.trim();
@@ -740,6 +739,59 @@ mod tests {
         task.abort();
 
         assert!(result.unwrap()["execution_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn create_and_edit_automation_tools_persist_the_definition() {
+        let bus = Bus::new(16);
+        let tools = test_tools(&bus);
+        let store = temp_store();
+        let automations = Arc::new(Automations::new(
+            bus.clone(),
+            Arc::clone(&tools.registry),
+            Arc::clone(&store),
+        ));
+        let task = automations.start();
+        let context = ExecutionContext::new(InvocationScope::Conversation(ConversationKey {
+            channel: "tui".to_string(),
+            chat_id: "c1".to_string(),
+            thread_id: None,
+        }));
+
+        crate::tools::run_tool(
+            &tools,
+            "create_automation",
+            serde_json::json!({
+                "name": "later",
+                "at": (chrono::Local::now() + chrono::Duration::hours(1)).to_rfc3339(),
+                "tool": "send_message",
+                "args": { "channel": "tui", "content": "first" },
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+        crate::tools::run_tool(
+            &tools,
+            "edit_automation",
+            serde_json::json!({
+                "name": "later",
+                "at": (chrono::Local::now() + chrono::Duration::hours(2)).to_rfc3339(),
+                "tool": "send_message",
+                "args": { "channel": "tui", "content": "second" },
+            }),
+            &context,
+        )
+        .await
+        .unwrap();
+
+        let stored = store.load_all().unwrap();
+        assert_eq!(stored.len(), 1);
+        let AutomationEffect::Tool { args, .. } = &stored[0].effect else {
+            panic!("expected tool automation");
+        };
+        assert_eq!(args["content"], "second");
+        task.abort();
     }
 
     #[tokio::test]

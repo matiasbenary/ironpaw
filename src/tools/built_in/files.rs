@@ -39,7 +39,7 @@ impl ScopedFiles {
 
         let mut components = path.components();
         if let Some(Component::Normal(scope)) = components.next()
-            && matches!(scope.to_str(), Some("tools" | "automations"))
+            && matches!(scope.to_str(), Some("tools"))
         {
             let root = self
                 .files_dir

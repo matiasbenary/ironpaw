@@ -32,10 +32,6 @@ impl RuntimeLayout {
         self.root.join("tools")
     }
 
-    pub fn automations_dir(&self) -> PathBuf {
-        self.root.join("automations")
-    }
-
     pub fn files_dir(&self) -> PathBuf {
         self.root.join("files")
     }

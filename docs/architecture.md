@@ -30,7 +30,7 @@ This document is made for humans to read, meaning that we need to write sentence
 
 Always make sure to introduce the thing you are talking about and, importantly, the why, not the how.
 
-You cannot simply say "The default `answer-the-user` path is also an automation", because nobody knows what `answer-the-user` is. It is better to be clear and highlight the relevancy of why we are talking about it. In this case, the relevant part is that, by default, ironpaw reacts to inbound messages and sends them to the AI Agent through an automation. This means that automations are not "just a part" of the system, they are the core component that makes `ironpaw` act and react. The fact that it is called `answer-the-user` is irrelevant.
+You cannot simply say "the default conversation path is also an automation", because nobody knows what that path is. It is better to be clear and highlight the relevancy of why we are talking about it. In this case, the relevant part is that, by default, Ironpaw reacts to inbound messages and sends them to the AI Agent through an automation. This means that automations are not "just a part" of the system; they are the core component that makes Ironpaw act and react.
 
 ---
 
@@ -51,9 +51,9 @@ The default runtime root is the directory containing the `ironpaw` binary unless
 
 On a fresh install, Ironpaw starts the bus, loads the TUI channel, runs the boot unlock automation, generates a six-word unlock phrase, asks the user to verify selected words through normal channel messages, and creates an encrypted local secret store. On later starts, Ironpaw asks for the phrase through the same message/automation path and does not load normal tools, extra channels, or stored automations until the store unlocks. Unlock is handled by an internal tool and asks the active channel to delete sensitive inbound messages after they are consumed.
 
-Once unlocked, Ironpaw installs a default onboarding automation if required setup secrets such as `NEAR_API_KEY` are missing.
+Once unlocked, Ironpaw installs a transient onboarding automation if required setup secrets such as `NEAR_API_KEY` are missing. It exists only for that process lifetime; a later startup recreates it whenever setup is still required.
 
-After onboarding, it sets `answer-the-user` as the default automation, which routes inbound messages to the agent and sends answers back to the user through the same channel. Web search is implemented as an external WASM tool, so it is available after the `web_search` tool package has been installed into the runtime tools directory.
+After onboarding, it sets `handle-conversation` as the default automation, which routes inbound messages to the agent and sends answers back to the user through the same channel. Web search is implemented as an external WASM tool, so it is available after the `web_search` tool package has been installed into the runtime tools directory.
 
 ---
 
@@ -103,7 +103,7 @@ Ironpaw stores files locally and passes around typed attachments containing a nu
 
 The model interacts with stored files through tools. `download_file(url)` stores a public URL under the runtime `download` directory and returns a `file_id` without placing the response body in conversation history. It recognizes public Google Sheets, Docs, and Slides editor links and exports them as CSV, text, and PDF respectively. `inspect_file(file_id, query)` can inspect downloaded files and message attachments, passing bounded raw text to a text model, extracting text from PDFs, or calling a vision model for images. `image_generation` stores the generated image locally and returns a `file_id`; `send_message` can then publish an assistant message with that attachment for channel delivery.
 
-Agent-created files use a separate scoped workspace. `list_files`, `read_file`, `create_file`, and `update_file` are the only agent filesystem tools. Conversations on every channel share `<runtime-root>/files/user`; a scheduled automation gets its own directory; and tool calls get a directory matching their caller stack. The host appends every registered tool call to `ExecutionContext.tool_stack`; a file tool resolves its root from that stack without its own final entry. Relative paths only are accepted, and symlinks are rejected. Automation and tool names are encoded before becoming directory components.
+Agent-created files use a separate scoped workspace. `list_files`, `read_file`, `create_file`, and `update_file` are the only agent filesystem tools. Conversations on every channel share `<runtime-root>/files/user`; a scheduled automation gets its own directory; and tool calls get a directory matching their caller stack. The host appends every registered tool call to `ExecutionContext.tool_stack`; a file tool resolves its root from that stack without its own final entry. Relative paths only are accepted, and symlinks are rejected. Automation and tool names are encoded before becoming directory components. The managed `tools/` path is also available through these file tools so the agent can author dynamic tools using ordinary paths.
 
 All file ids are `u32` values for now. The current architecture treats that as the stable attachment identifier.
 
@@ -232,11 +232,13 @@ Automations are the cornerstone of Ironpaw's behavior. They are small, declarati
 
 Technically, an automation is defined as a triggering condition plus a tool call (be that an internal or dynamic tool). When the condition is met, the tool is called with pre-defined arguments that can contain information from the triggering event.
 
-Stored automations live in:
+Ironpaw persists automation definitions as JSON files:
 
 ```text
-<runtime-root>/data/automations.db
+<runtime-root>/data/automations/<name>.json
 ```
+
+The agent does not author these files directly. `create_automation` and `edit_automation` accept a typed automation definition, validate it, persist it, and update the live runtime as one host-owned operation.
 
 ### Triggers
 
@@ -248,15 +250,15 @@ A trigger can be one of:
 
 Once a trigger fires, the automation runtime publishes an invocation event. That invocation is translated into a `ToolRequest` or `AgentRequest`; the automation listener never waits for the work to finish. Tool and agent handlers execute those requests in independent tasks and publish their results back to the bus.
 
-One-shot `at` automations are removed from memory and storage immediately after their invocation is dispatched. Cron ticks are dispatched independently and may overlap.
+One-shot `at` automations are removed from memory and storage immediately after their invocation is dispatched. Tool invocations from cron ticks are dispatched independently. Agent-task invocations for the same automation are queued and run in order, so they do not concurrently mutate their shared automation workspace.
 
 Inbound-message triggers can match all conversations, or a specific `ConversationKey`. Setup flows that temporarily take over replies should scope their trigger to the conversation that started the flow.
 
 ### Examples
 
-When `ironpaw` starts, it installs a default automation that reacts to inbound user messages with an `onboarding` tool. This tool asks the user for the NEAR API key needed for AI inference, then installs the default `answer-the-user` automation, which reacts to inbound user messages by calling the agent and sending the final answer back to the user.
+When `ironpaw` starts without the required inference key, it installs a transient onboarding automation that reacts to inbound user messages with the `onboarding` tool. This tool asks for the NEAR API key, removes the transient onboarding automation, then installs the persistent default `handle-conversation` automation, which reacts to inbound user messages by calling the agent and sending the final answer back to the user.
 
-```text answer-the-user
+```text handle-conversation
 MessageIn(User, any conversation)
 -> continue_conversation(current ConversationKey)
 ```
@@ -362,8 +364,8 @@ Implemented internal tools include:
 - `delete_message`: deletes a channel message when the channel supports it.
 - `request_user_input`: asks the current user to choose from specific answers. Telegram renders inline callback buttons; the selected value returns as a normal inbound user message.
 - `call_agent`: runs a sub-agent and returns its final answer as a tool result.
-- `create_tool`: writes and registers a new dynamic tool.
-- `create_automation`, `delete_automation`, `inspect_automation`, `list_automations`: manage persisted automations.
+- `register_tool`: validates and activates a dynamic tool from `tools/<name>/tool.js` and `tools/<name>/config.json`. Editing those files alone has no effect; registering again is required and replaces only an earlier dynamic tool with the same name.
+- `create_automation`, `edit_automation`, `delete_automation`, `inspect_automation`, `list_automations`: validate, persist, and manage automations.
 - `list_channels`, `install_channel`, `setup_channel`: inspect and install local channel packages. `install_channel` starts the install flow and registers a temporary automation; `setup_channel` handles deterministic follow-up replies from that automation.
 - `list_tools`, `install_tool`, `setup_tool`: inspect and install local external WASM tool packages. `install_tool` starts the install flow and registers a temporary scoped automation; `setup_tool` handles the deterministic follow-up replies from that automation.
 - `onboarding`: collects required setup secrets and installs the normal answer automation.
@@ -447,9 +449,9 @@ This example assumes the Telegram chat id is known.
    }
    ```
 
-5. The bridge stores the inbound message in history, then the automation runtime matches the default `answer-the-user` automation.
+5. The bridge stores the inbound message in history, then the automation runtime matches the default `handle-conversation` automation.
 
-6. `answer_the_user` calls `call_agent`, which starts the agent tool loop.
+6. `handle-conversation` dispatches a conversation agent request, which starts the agent tool loop.
 
 7. The agent calls `raw_inference.execute(RawInferenceRequest { ... })`. The model receives schemas for the tools relevant to this flow, including:
 
@@ -457,8 +459,7 @@ This example assumes the Telegram chat id is known.
    raw_inference
    send_message
    delete_message
-   call_agent
-   create_tool
+   register_tool
    create_automation
    install_channel
    install_tool

@@ -92,12 +92,10 @@ fn start_ironpaw_config(
         Arc::clone(&memory),
     );
     let agent = Arc::new(agent);
-    let automations_dir = std::env::temp_dir().join(format!(
-        "ironpaw-live-test-automations-{}",
-        uuid::Uuid::new_v4()
-    ));
-    let automation_store =
-        Arc::new(FileAutomations::new(automations_dir).expect("temp automations store"));
+    let automation_store = Arc::new(
+        FileAutomations::new(layout.data_dir().join("automations"))
+            .expect("temp automations store"),
+    );
     let automations = Arc::new(Automations::new(
         bus.clone(),
         Arc::clone(&tools.registry),

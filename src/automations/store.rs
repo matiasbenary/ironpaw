@@ -2,8 +2,8 @@ use std::{fs, path::PathBuf};
 
 use super::Automation;
 
-/// The persisted, editable automation definitions. A definition is only made
-/// live after `Automations::register` validates it.
+/// Persisted automation definitions. The host, not the agent file tools,
+/// owns their serialization.
 pub struct FileAutomations {
     dir: PathBuf,
 }
@@ -23,13 +23,6 @@ impl FileAutomations {
             ),
         )
         .map_err(|err| err.to_string())
-    }
-
-    pub fn read(&self, name: &str) -> Result<Automation, String> {
-        serde_json::from_str(
-            &fs::read_to_string(self.path(name)).map_err(|err| err.to_string())?,
-        )
-        .map_err(|err| format!("invalid automation '{name}': {err}"))
     }
 
     pub fn delete(&self, name: &str) -> Result<(), String> {
