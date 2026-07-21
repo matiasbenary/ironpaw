@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use ironpaw::{
     agent::{Agent, AgentHandler},
-    automations::{Automations, SqliteAutomations},
+    automations::{Automations, FileAutomations},
     bus::{AutomationAction, Bus, ConversationKey, Event, Sender},
     history::{History, HistoryEntry, HistoryScope, MessageMetadata, SqliteHistory},
     memory::Memory,
@@ -55,6 +55,8 @@ fn start_ironpaw_config(
     if let Ok(near_api_key) = std::env::var("NEAR_API_KEY") {
         secrets.set("NEAR_API_KEY", &near_api_key).unwrap();
     }
+    secrets.set("TELEGRAM_BOT_TOKEN", "live-test-token").unwrap();
+    secrets.set("IRONPAW_NGROK_TOKEN", "live-test-token").unwrap();
     if let Ok(brave_search_api) = std::env::var("BRAVE_SEARCH_API") {
         secrets.set("BRAVE_SEARCH_API", &brave_search_api).unwrap();
     }
@@ -90,12 +92,12 @@ fn start_ironpaw_config(
         Arc::clone(&memory),
     );
     let agent = Arc::new(agent);
-    let automations_db = std::env::temp_dir().join(format!(
-        "ironpaw-live-test-automations-{}.db",
+    let automations_dir = std::env::temp_dir().join(format!(
+        "ironpaw-live-test-automations-{}",
         uuid::Uuid::new_v4()
     ));
     let automation_store =
-        Arc::new(SqliteAutomations::new(automations_db).expect("temp automations db"));
+        Arc::new(FileAutomations::new(automations_dir).expect("temp automations store"));
     let automations = Arc::new(Automations::new(
         bus.clone(),
         Arc::clone(&tools.registry),
@@ -130,7 +132,14 @@ fn install_test_telegram_channel(layout: &ironpaw::config::RuntimeLayout) {
     std::fs::write(channels_dir.join("telegram.wasm"), []).expect("live test telegram wasm");
     std::fs::write(
         channels_dir.join("telegram.config.json"),
-        r#"{ "path": "/webhook/telegram" }"#,
+        r#"{
+  "path": "/webhook/telegram",
+  "default_conversation": {
+    "channel": "telegram",
+    "chat_id": "live-test-telegram",
+    "thread_id": null
+  }
+}"#,
     )
     .expect("live test telegram config");
 }

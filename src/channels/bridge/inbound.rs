@@ -96,7 +96,7 @@ async fn remember_default_conversation(
     conversation: &ConversationKey,
 ) -> Result<(), String> {
     let mut state = channel.state.lock().await;
-    if state.config.default_conversation.as_ref() == Some(conversation) {
+    if state.config.default_conversation.is_some() {
         return Ok(());
     }
 

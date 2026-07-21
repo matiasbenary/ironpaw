@@ -37,9 +37,6 @@ impl SendMessageTool {
         if input.channel.trim().is_empty() {
             return Err("channel must not be empty".to_string());
         }
-        if input.chat_id.trim().is_empty() {
-            return Err("chat_id must not be empty".to_string());
-        }
         let message = Message::Assistant {
             text: Some(input.content.unwrap_or_default()),
             attachments,
@@ -47,7 +44,7 @@ impl SendMessageTool {
         };
         self.bus.publish(Event::MessageOut {
             channel: input.channel.clone(),
-            chat_id: Some(input.chat_id.clone()),
+            chat_id: input.chat_id.clone(),
             thread_id: input.thread_id,
             message_id: input.message_id.clone(),
             message,
@@ -109,8 +106,10 @@ pub struct SendMessageToolInput {
     /// Optional provider message id to use for this outbound message.
     #[serde(default)]
     pub message_id: Option<String>,
-    /// Destination chat id within the channel.
-    pub chat_id: String,
+    /// Optional destination chat id within the channel. When omitted, the
+    /// channel's first paired conversation is used.
+    #[serde(default)]
+    pub chat_id: Option<String>,
     #[serde(default)]
     #[schemars(description = "Optional channel thread/topic id.")]
     pub thread_id: Option<String>,
@@ -230,20 +229,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn send_message_requires_explicit_destination() {
+    fn send_message_requires_channel_but_not_chat_id() {
         let definition =
             SendMessageTool::new(Bus::new(1), |_| Err("unused".to_string())).tool_definition();
         let required = definition.parameters["required"].as_array().unwrap();
 
         assert!(required.contains(&serde_json::json!("channel")));
-        assert!(required.contains(&serde_json::json!("chat_id")));
-        assert!(
-            serde_json::from_value::<SendMessageToolInput>(serde_json::json!({
-                "channel": "telegram",
-                "content": "hi"
-            }))
-            .is_err()
-        );
+        assert!(!required.contains(&serde_json::json!("chat_id")));
+        assert!(serde_json::from_value::<SendMessageToolInput>(serde_json::json!({
+            "channel": "telegram",
+            "content": "hi"
+        }))
+        .is_ok());
     }
 
     #[test]
@@ -256,7 +253,7 @@ mod tests {
             channel: "telegram".to_string(),
             file_id: None,
             content: Some("hi".to_string()),
-            chat_id: "chat-1".to_string(),
+            chat_id: Some("chat-1".to_string()),
             thread_id: Some("thread-1".to_string()),
             message_id: None,
         })
@@ -292,7 +289,8 @@ mod tests {
             thread_id: None,
         }));
 
-        let _ = tools::run_internal_tool(tool, serde_json::json!({ "message_id": "456" }), &ctx).await;
+        let _ =
+            tools::run_internal_tool(tool, serde_json::json!({ "message_id": "456" }), &ctx).await;
 
         let Event::DeleteMessage { message } = events.try_recv().unwrap() else {
             panic!("expected delete message event");
