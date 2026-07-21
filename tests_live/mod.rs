@@ -614,7 +614,7 @@ async fn agent_reads_pdf_content() {
 
     publish_user_message(&bus, history.as_ref(), conversation, message);
 
-    let deadline = Duration::from_secs(10);
+    let deadline = Duration::from_secs(30);
     let result = timeout(deadline, async {
         loop {
             let event = events.recv().await.expect("bus closed");

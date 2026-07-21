@@ -156,7 +156,7 @@ pub enum AutomationTriggerSpec {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AutomationAction {
-    Create { automation: AutomationSpec },
+    Register { name: String },
     Delete { name: String },
     Inspect { name: String },
     List,

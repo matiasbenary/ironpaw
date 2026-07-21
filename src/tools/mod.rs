@@ -191,7 +191,7 @@ impl InternalTools {
             tool(CreateFileTool::new(layout.files_dir())),
             tool(UpdateFileTool::new(layout.files_dir())),
             tool(TodoTool::new()),
-            tool(AutomationTool::new(bus.clone(), AutomationToolKind::Create)),
+            tool(AutomationTool::new(bus.clone(), AutomationToolKind::Register)),
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::Delete)),
             tool(AutomationTool::new(
                 bus.clone(),

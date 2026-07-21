@@ -1,38 +1,15 @@
 use async_trait::async_trait;
 
 use crate::{
-    automations::AutomationEffect,
-    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event},
+    bus::{AutomationAction, Bus, Event},
     message::ToolDefinition,
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
-pub struct CreateAutomationParams {
-    /// Short kebab-case name for the automation, e.g. 'daily-news'.
+pub struct RegisterAutomationParams {
+    /// Name of the JSON definition in automations/<name>.json to validate and register.
     pub name: String,
-    /// Run once at an absolute local time, RFC 3339 format, e.g.
-    /// '2026-06-11T09:00:00+02:00'. Exactly one of `at` or `cron` must be set.
-    #[serde(default)]
-    pub at: Option<String>,
-    /// Recurring schedule as a 5-field cron expression, or a 6/7-field
-    /// expression with seconds. For example, `*/5 * * * * * *` runs every
-    /// five seconds.
-    #[serde(default)]
-    pub cron: Option<String>,
-    /// Name of the tool to run when the automation fires.
-    #[serde(default)]
-    pub tool: Option<String>,
-    /// Arguments the tool is called with, matching its schema.
-    #[serde(default)]
-    pub args: Option<serde_json::Value>,
-    /// Prompt for an agent task that runs on every trigger. Each execution receives
-    /// message history from earlier runs and file tools scoped to this automation.
-    #[serde(default)]
-    pub agent_prompt: Option<String>,
-    /// Additional tools the agent task may use beyond its default file tools.
-    #[serde(default)]
-    pub agent_tools: Vec<String>,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -57,7 +34,7 @@ pub struct TriggerAutomationParams {
 }
 
 pub enum AutomationToolKind {
-    Create,
+    Register,
     Delete,
     Inspect,
     List,
@@ -95,61 +72,13 @@ impl AutomationTool {
         }
     }
 
-    async fn create_automation(
-        &self,
-        params: CreateAutomationParams,
-    ) -> Result<serde_json::Value, String> {
-        let trigger = match (
-            params.at.filter(|datetime| !datetime.trim().is_empty()),
-            params
-                .cron
-                .filter(|expression| !expression.trim().is_empty()),
-        ) {
-            (Some(datetime), None) => AutomationTriggerSpec::At { datetime },
-            (None, Some(expression)) => AutomationTriggerSpec::Cron { expression },
-            _ => return Err("set exactly one of at or cron".to_string()),
-        };
-        let effect = match (
-            params.tool.filter(|tool| !tool.trim().is_empty()),
-            params
-                .agent_prompt
-                .filter(|prompt| !prompt.trim().is_empty()),
-        ) {
-            (Some(tool), None) => AutomationEffect::Tool {
-                tool,
-                args: parse_args(params.args)?,
-            },
-            (None, Some(prompt)) => AutomationEffect::AgentTask {
-                prompt,
-                tools: params.agent_tools,
-            },
-            _ => return Err("set exactly one of tool or agent_prompt".to_string()),
-        };
-        self.request(AutomationAction::Create {
-            automation: AutomationSpec {
-                name: params.name,
-                trigger,
-                effect,
-            },
-        })
-        .await
-    }
-}
-
-fn parse_args(args: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
-    match args {
-        None => Ok(serde_json::json!({})),
-        Some(serde_json::Value::String(text)) => serde_json::from_str(&text)
-            .map_err(|err| format!("args must be a JSON object, got a string: {err}")),
-        Some(value) => Ok(value),
-    }
 }
 
 #[async_trait]
 impl InternalTool for AutomationTool {
     fn name(&self) -> &str {
         match self.kind {
-            AutomationToolKind::Create => "create_automation",
+            AutomationToolKind::Register => "register_automation",
             AutomationToolKind::Delete => "delete_automation",
             AutomationToolKind::Inspect => "inspect_automation",
             AutomationToolKind::List => "list_automations",
@@ -159,9 +88,9 @@ impl InternalTool for AutomationTool {
 
     fn tool_definition(&self) -> ToolDefinition {
         match self.kind {
-            AutomationToolKind::Create => tools::tool_definition::<CreateAutomationParams>(
+            AutomationToolKind::Register => tools::tool_definition::<RegisterAutomationParams>(
                 self.name(),
-                "Create an automation: a tool call or agent task that runs later — once at an absolute time, or repeatedly on a cron schedule. Each agent-task execution receives message history from earlier runs. Included file tools access this automation's isolated directory. Cron supports 5-field expressions and 6/7-field expressions with seconds.",
+                "Validate automations/<name>.json and register it as a live automation. Editing the file alone does not change a running automation.",
             ),
             AutomationToolKind::Delete => tools::tool_definition::<DeleteAutomationParams>(
                 self.name(),
@@ -189,8 +118,12 @@ impl InternalTool for AutomationTool {
         responder: ToolResponder,
     ) {
         let output = match self.kind {
-            AutomationToolKind::Create => {
-                tools::execute_typed(args, |params| self.create_automation(params)).await
+            AutomationToolKind::Register => {
+                tools::execute_typed(args, |params: RegisterAutomationParams| async {
+                    self.request(AutomationAction::Register { name: params.name })
+                        .await
+                })
+                .await
             }
             AutomationToolKind::Delete => {
                 tools::execute_typed(args, |params: DeleteAutomationParams| async {

@@ -37,6 +37,22 @@ impl ScopedFiles {
             return Err("path must not be empty".to_string());
         }
 
+        let mut components = path.components();
+        if let Some(Component::Normal(scope)) = components.next()
+            && matches!(scope.to_str(), Some("tools" | "automations"))
+        {
+            let root = self
+                .files_dir
+                .parent()
+                .expect("files directory has runtime root")
+                .join(scope);
+            let relative = components.as_path();
+            if relative.as_os_str().is_empty() {
+                return Ok(root);
+            }
+            return Ok(root.join(relative));
+        }
+
         let caller_stack = ctx
             .tool_stack
             .split_last()
@@ -115,36 +131,38 @@ impl InternalTool for ListFilesTool {
         responder: ToolResponder,
     ) {
         let result: Result<serde_json::Value, String> = async {
-        let params: ListFilesParams = serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let path = self
-            .0
-            .path(ctx, params.path.as_deref().unwrap_or("."))
-            .await?;
-        let mut directory = fs::read_dir(path).await.map_err(|err| err.to_string())?;
-        let mut entries = Vec::new();
-        while let Some(entry) = directory
-            .next_entry()
-            .await
-            .map_err(|err| err.to_string())?
-        {
-            let kind = if entry
-                .file_type()
+            let params: ListFilesParams =
+                serde_json::from_value(args).map_err(|err| err.to_string())?;
+            let path = self
+                .0
+                .path(ctx, params.path.as_deref().unwrap_or("."))
+                .await?;
+            let mut directory = fs::read_dir(path).await.map_err(|err| err.to_string())?;
+            let mut entries = Vec::new();
+            while let Some(entry) = directory
+                .next_entry()
                 .await
                 .map_err(|err| err.to_string())?
-                .is_dir()
             {
-                "directory"
-            } else {
-                "file"
-            };
-            entries.push(serde_json::json!({
-                "name": entry.file_name().to_string_lossy(),
-                "kind": kind,
-            }));
+                let kind = if entry
+                    .file_type()
+                    .await
+                    .map_err(|err| err.to_string())?
+                    .is_dir()
+                {
+                    "directory"
+                } else {
+                    "file"
+                };
+                entries.push(serde_json::json!({
+                    "name": entry.file_name().to_string_lossy(),
+                    "kind": kind,
+                }));
+            }
+            entries.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+            Ok(serde_json::json!({ "entries": entries }))
         }
-        entries.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
-        Ok(serde_json::json!({ "entries": entries }))
-        }.await;
+        .await;
         responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
@@ -183,13 +201,15 @@ impl InternalTool for ReadFileTool {
         responder: ToolResponder,
     ) {
         let result: Result<serde_json::Value, String> = async {
-        let params: ReadFileParams = serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let path = self.0.path(ctx, &params.path).await?;
-        let content = fs::read_to_string(path)
-            .await
-            .map_err(|err| err.to_string())?;
-        Ok(serde_json::json!({ "content": content }))
-        }.await;
+            let params: ReadFileParams =
+                serde_json::from_value(args).map_err(|err| err.to_string())?;
+            let path = self.0.path(ctx, &params.path).await?;
+            let content = fs::read_to_string(path)
+                .await
+                .map_err(|err| err.to_string())?;
+            Ok(serde_json::json!({ "content": content }))
+        }
+        .await;
         responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
@@ -229,25 +249,26 @@ impl InternalTool for CreateFileTool {
         responder: ToolResponder,
     ) {
         let result: Result<serde_json::Value, String> = async {
-        let params: CreateFileParams =
-            serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let path = self.0.path(ctx, &params.path).await?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
+            let params: CreateFileParams =
+                serde_json::from_value(args).map_err(|err| err.to_string())?;
+            let path = self.0.path(ctx, &params.path).await?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .await
+                    .map_err(|err| err.to_string())?;
+            }
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .await
+                .map_err(|err| err.to_string())?
+                .write_all(params.content.as_bytes())
                 .await
                 .map_err(|err| err.to_string())?;
+            Ok(serde_json::json!({}))
         }
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .await
-            .map_err(|err| err.to_string())?
-            .write_all(params.content.as_bytes())
-            .await
-            .map_err(|err| err.to_string())?;
-        Ok(serde_json::json!({}))
-        }.await;
+        .await;
         responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
@@ -290,26 +311,27 @@ impl InternalTool for UpdateFileTool {
         responder: ToolResponder,
     ) {
         let result: Result<serde_json::Value, String> = async {
-        let params: UpdateFileParams =
-            serde_json::from_value(args).map_err(|err| err.to_string())?;
-        if params.old_content.is_empty() {
-            return Err("old_content must not be empty".to_string());
-        }
-        let path = self.0.path(ctx, &params.path).await?;
-        let content = fs::read_to_string(&path)
+            let params: UpdateFileParams =
+                serde_json::from_value(args).map_err(|err| err.to_string())?;
+            if params.old_content.is_empty() {
+                return Err("old_content must not be empty".to_string());
+            }
+            let path = self.0.path(ctx, &params.path).await?;
+            let content = fs::read_to_string(&path)
+                .await
+                .map_err(|err| err.to_string())?;
+            if content.matches(&params.old_content).count() != 1 {
+                return Err("old_content must occur exactly once in the file".to_string());
+            }
+            fs::write(
+                path,
+                content.replacen(&params.old_content, &params.new_content, 1),
+            )
             .await
             .map_err(|err| err.to_string())?;
-        if content.matches(&params.old_content).count() != 1 {
-            return Err("old_content must occur exactly once in the file".to_string());
+            Ok(serde_json::json!({}))
         }
-        fs::write(
-            path,
-            content.replacen(&params.old_content, &params.new_content, 1),
-        )
-        .await
-        .map_err(|err| err.to_string())?;
-        Ok(serde_json::json!({}))
-        }.await;
+        .await;
         responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }

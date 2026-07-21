@@ -1,4 +1,7 @@
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Mutex, RwLock},
+};
 
 use crate::{
     bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event, SenderKind},
@@ -12,12 +15,12 @@ mod store;
 mod trigger;
 
 pub use effect::AutomationEffect;
-pub use store::SqliteAutomations;
+pub use store::FileAutomations;
 pub use trigger::Trigger;
 
 /// An automation is a trigger plus an effect. Effect fields may contain
 /// `{{event.field}}` placeholders, filled from the triggering event.
-#[derive(Clone)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 pub struct Automation {
     pub name: String,
     pub trigger: Trigger,
@@ -37,16 +40,29 @@ pub struct Automations {
     bus: Bus,
     tools: Arc<ToolRegistry>,
     automations: RwLock<Vec<Arc<Automation>>>,
-    store: Arc<SqliteAutomations>,
+    store: Arc<FileAutomations>,
+    agent_task_queues: Mutex<HashMap<String, AgentTaskQueue>>,
+}
+
+struct AgentTaskQueue {
+    running: Option<String>,
+    pending: VecDeque<PendingInvocation>,
+}
+
+struct PendingInvocation {
+    execution_id: String,
+    context: crate::tools::ExecutionContext,
+    trigger: serde_json::Value,
 }
 
 impl Automations {
-    pub fn new(bus: Bus, tools: Arc<ToolRegistry>, store: Arc<SqliteAutomations>) -> Self {
+    pub fn new(bus: Bus, tools: Arc<ToolRegistry>, store: Arc<FileAutomations>) -> Self {
         Self {
             bus,
             tools,
             automations: RwLock::new(Vec::new()),
             store,
+            agent_task_queues: Mutex::new(HashMap::new()),
         }
     }
 
@@ -66,7 +82,7 @@ impl Automations {
     /// spawned immediately.
     pub fn add(self: &Arc<Self>, automation: Automation) -> Result<(), String> {
         self.ensure_unique_name(&automation.name)?;
-        self.store.insert(&automation)?;
+        self.store.write(&automation)?;
         self.add_runtime(automation)
     }
 
@@ -82,7 +98,7 @@ impl Automations {
         let automations = self.store.load_all()?;
         let count = automations.len();
         for automation in automations {
-            self.add_runtime(automation)?;
+            self.register(automation.name.as_str())?;
         }
         Ok(count)
     }
@@ -94,6 +110,16 @@ impl Automations {
         }
         self.store.delete(name)?;
         Ok(())
+    }
+
+    pub fn register(self: &Arc<Self>, name: &str) -> Result<(), String> {
+        let automation = self.store.read(name)?;
+        if automation.name != name {
+            return Err(format!("automation file name does not match its name: {name}"));
+        }
+        self.validate_automation(&automation)?;
+        self.remove_runtime(name);
+        self.add_runtime(automation)
     }
 
     pub fn recover_stale_setup(self: &Arc<Self>) -> Result<(), String> {
@@ -161,7 +187,20 @@ impl Automations {
             },
             AutomationTriggerSpec::ToolResult => Trigger::ToolResult,
         };
-        match &spec.effect {
+        let automation = Automation {
+            name: spec.name,
+            trigger,
+            effect: spec.effect,
+        };
+        self.validate_automation(&automation)?;
+        Ok(automation)
+    }
+
+    fn validate_automation(&self, automation: &Automation) -> Result<(), String> {
+        if automation.name.trim().is_empty() {
+            return Err("name must not be empty".to_string());
+        }
+        match &automation.effect {
             AutomationEffect::Tool { tool, args } => {
                 if tool.trim().is_empty() {
                     return Err("tool must not be empty".to_string());
@@ -176,11 +215,7 @@ impl Automations {
             }
             AutomationEffect::ContinueConversation => {}
         }
-        Ok(Automation {
-            name: spec.name,
-            trigger,
-            effect: spec.effect,
-        })
+        Ok(())
     }
 
     fn add_runtime(self: &Arc<Self>, automation: Automation) -> Result<(), String> {
@@ -223,7 +258,15 @@ impl Automations {
         let mut automations = self.automations.write().expect("automations lock");
         let before = automations.len();
         automations.retain(|automation| automation.name != name);
-        automations.len() != before
+        let removed = automations.len() != before;
+        drop(automations);
+        if removed {
+            self.agent_task_queues
+                .lock()
+                .expect("agent task queues lock")
+                .remove(name);
+        }
+        removed
     }
 
     /// Watch the bus and run event-triggered automations.
@@ -242,6 +285,11 @@ impl Automations {
     }
 
     fn handle(self: &Arc<Self>, event: &Event) {
+        if let Event::AgentResult { execution_id, .. } = event
+            && let Some((automation_id, invocation)) = self.complete_agent_task(execution_id)
+        {
+            self.start_agent_task(&automation_id, invocation);
+        }
         if let Event::Automation { id, action } = event {
             let result = self.handle_action(action.clone());
             self.bus.publish(Event::AutomationResult {
@@ -282,10 +330,12 @@ impl Automations {
         action: AutomationAction,
     ) -> Result<serde_json::Value, String> {
         match action {
-            AutomationAction::Create { automation } => {
-                let automation = self.automation_from_spec(automation)?;
-                let name = automation.name.clone();
-                self.add(automation)?;
+            AutomationAction::Register { name } => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err("name must not be empty".to_string());
+                }
+                self.register(name)?;
                 Ok(serde_json::json!({ "ok": true, "name": name }))
             }
             AutomationAction::Delete { name } => {
@@ -408,6 +458,28 @@ impl Automations {
             eprintln!("automation '{automation_id}' disappeared before execution");
             return;
         };
+        if matches!(automation.effect, AutomationEffect::AgentTask { .. }) {
+            let invocation = PendingInvocation {
+                execution_id: execution_id.to_string(),
+                context: context.clone(),
+                trigger: trigger.clone(),
+            };
+            let mut queues = self
+                .agent_task_queues
+                .lock()
+                .expect("agent task queues lock");
+            let queue = queues
+                .entry(automation_id.to_string())
+                .or_insert_with(|| AgentTaskQueue {
+                    running: None,
+                    pending: VecDeque::new(),
+                });
+            if queue.running.is_some() {
+                queue.pending.push_back(invocation);
+                return;
+            }
+            queue.running = Some(invocation.execution_id.clone());
+        }
         automation
             .effect
             .dispatch(&self.bus, execution_id, automation_id, context, trigger);
@@ -416,6 +488,45 @@ impl Automations {
         {
             eprintln!("failed to delete one-shot automation '{automation_id}': {err}");
         }
+    }
+
+    fn complete_agent_task(&self, execution_id: &str) -> Option<(String, PendingInvocation)> {
+        let mut queues = self
+            .agent_task_queues
+            .lock()
+            .expect("agent task queues lock");
+        let automation_id = queues.iter().find_map(|(automation_id, queue)| {
+            (queue.running.as_deref() == Some(execution_id)).then(|| automation_id.clone())
+        })?;
+        let queue = queues.get_mut(&automation_id).expect("queued automation");
+        let next = queue.pending.pop_front();
+        queue.running = next
+            .as_ref()
+            .map(|invocation| invocation.execution_id.clone());
+        if queue.running.is_none() {
+            queues.remove(&automation_id);
+        }
+        next.map(|invocation| (automation_id, invocation))
+    }
+
+    fn start_agent_task(&self, automation_id: &str, invocation: PendingInvocation) {
+        let automation = self
+            .automations
+            .read()
+            .expect("automations lock")
+            .iter()
+            .find(|automation| automation.name == automation_id)
+            .cloned();
+        let Some(automation) = automation else {
+            return;
+        };
+        automation.effect.dispatch(
+            &self.bus,
+            &invocation.execution_id,
+            automation_id,
+            &invocation.context,
+            &invocation.trigger,
+        );
     }
 }
 
@@ -488,12 +599,12 @@ mod tests {
         ))
     }
 
-    fn temp_store() -> Arc<SqliteAutomations> {
+    fn temp_store() -> Arc<FileAutomations> {
         let path = std::env::temp_dir().join(format!(
-            "ironpaw-automations-runtime-test-{}.db",
+            "ironpaw-automations-runtime-test-{}",
             uuid::Uuid::new_v4()
         ));
-        Arc::new(SqliteAutomations::new(path).expect("store"))
+        Arc::new(FileAutomations::new(path).expect("store"))
     }
 
     fn send_message_automation(name: &str, trigger: Trigger) -> Automation {
@@ -507,6 +618,20 @@ mod tests {
                     "chat_id": "c1",
                     "content": "hi",
                 }),
+            },
+        }
+    }
+
+    fn agent_task_automation(name: &str) -> Automation {
+        Automation {
+            name: name.to_string(),
+            trigger: Trigger::MessageIn {
+                sender: SenderKind::User,
+                conversation: None,
+            },
+            effect: AutomationEffect::AgentTask {
+                prompt: "do the work".to_string(),
+                tools: Vec::new(),
             },
         }
     }
@@ -615,6 +740,72 @@ mod tests {
         task.abort();
 
         assert!(result.unwrap()["execution_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn agent_task_invocations_run_in_order() {
+        let bus = Bus::new(16);
+        let tools = test_tools(&bus);
+        let automations = Arc::new(Automations::new(
+            bus.clone(),
+            Arc::clone(&tools.registry),
+            temp_store(),
+        ));
+        automations.add(agent_task_automation("serial")).unwrap();
+        let task = automations.start();
+        let mut events = bus.subscribe();
+        let context = ExecutionContext::new(InvocationScope::ScheduledAutomation {
+            automation_id: "serial".to_string(),
+        });
+        let first = automations.dispatch("serial", context.clone(), serde_json::json!({}));
+        let second = automations.dispatch("serial", context, serde_json::json!({}));
+
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Event::AgentRequest { execution_id, .. } =
+                    events.recv().await.expect("event")
+                {
+                    break execution_id;
+                }
+            }
+        })
+        .await
+        .expect("first agent request");
+        assert_eq!(request, first);
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), async {
+                loop {
+                    if matches!(
+                        events.recv().await.expect("event"),
+                        Event::AgentRequest { .. }
+                    ) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .is_err()
+        );
+
+        bus.publish(Event::AgentResult {
+            execution_id: first,
+            result: Ok(None),
+        });
+        let request = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Event::AgentRequest { execution_id, .. } =
+                    events.recv().await.expect("event")
+                {
+                    break execution_id;
+                }
+            }
+        })
+        .await
+        .expect("second agent request");
+        task.abort();
+
+        assert_eq!(request, second);
     }
 
     #[tokio::test]

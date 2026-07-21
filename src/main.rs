@@ -2,7 +2,7 @@ use std::{io, sync::Arc};
 
 use ironpaw::{
     agent::Agent,
-    automations::{Automations, SqliteAutomations},
+    automations::{Automations, FileAutomations},
     bus::{Bus, Event},
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
@@ -88,7 +88,7 @@ async fn main() -> io::Result<()> {
         memory,
     ));
     let automation_store = Arc::new(
-        SqliteAutomations::new(layout.data_dir().join("automations.db"))
+        FileAutomations::new(layout.automations_dir())
             .map_err(std::io::Error::other)?,
     );
     let automations = Arc::new(Automations::new(
@@ -207,7 +207,7 @@ async fn main() -> io::Result<()> {
                 .map_err(std::io::Error::other)?;
         } else {
             automations
-                .add(OnboardingTool::automation())
+                .add_transient(OnboardingTool::automation())
                 .map_err(std::io::Error::other)?;
         }
     }
