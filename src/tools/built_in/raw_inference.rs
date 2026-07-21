@@ -325,10 +325,14 @@ impl InternalTool for RawInferenceTool {
         responder: tools::ToolResponder,
     ) {
         let result = async {
-            let request = serde_json::from_value(args).map_err(|error| ToolError::new(error.to_string()))?;
-            let output = RawInferenceTool::execute(self, request).await.map_err(ToolError::new)?;
+            let request =
+                serde_json::from_value(args).map_err(|error| ToolError::new(error.to_string()))?;
+            let output = RawInferenceTool::execute(self, request)
+                .await
+                .map_err(ToolError::new)?;
             serde_json::to_value(output).map_err(|error| ToolError::new(error.to_string()))
-        }.await;
+        }
+        .await;
         responder.respond(result);
     }
 }

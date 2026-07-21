@@ -4,7 +4,11 @@ use std::sync::{
 };
 
 use crate::bus::{Bus, Event, ExecutionContext};
-use crate::{history::History, message::Message, tools::{ToolResult, tool_result_json}};
+use crate::{
+    history::History,
+    message::Message,
+    tools::{ToolResult, tool_result_json},
+};
 
 #[derive(Clone)]
 pub struct ToolResponder {
@@ -22,7 +26,7 @@ enum ToolResponderKind {
         tool_name: String,
         record_in_history: bool,
     },
-    Capture(Arc<Mutex<Option<ToolResult>>>)
+    Capture(Arc<Mutex<Option<ToolResult>>>),
 }
 
 impl ToolResponder {
@@ -99,5 +103,4 @@ impl ToolResponder {
             }
         }
     }
-
 }

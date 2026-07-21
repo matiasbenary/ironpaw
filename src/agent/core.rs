@@ -6,7 +6,9 @@ use crate::{
     memory::Memory,
     message::{Message, ToolCall, ToolDefinition},
     models,
-    tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolRegistry, tool_result_json},
+    tools::{
+        self, ExecutionContext, InternalTool, InvocationScope, ToolRegistry, tool_result_json,
+    },
 };
 
 const DEFAULT_TASK_TOOLS: [&str; 4] = ["list_files", "read_file", "create_file", "update_file"];

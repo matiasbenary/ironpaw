@@ -25,8 +25,10 @@ mod tests {
     use crate::{bus::MessageRef, history::SqliteHistory};
 
     fn temp_history() -> SqliteHistory {
-        let path =
-            std::env::temp_dir().join(format!("ironpaw-bridge-history-{}.db", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "ironpaw-bridge-history-{}.db",
+            uuid::Uuid::new_v4()
+        ));
         SqliteHistory::new(path).unwrap()
     }
 

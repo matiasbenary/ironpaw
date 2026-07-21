@@ -56,42 +56,44 @@ impl InternalTool for InspectFileTool {
         responder: crate::tools::ToolResponder,
     ) {
         let result: Result<serde_json::Value, String> = async {
-        let params: InspectFileParams = serde_json::from_value(args).map_err(|e| e.to_string())?;
+            let params: InspectFileParams =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
 
-        let attachment = self
-            .file_dirs
-            .iter()
-            .find_map(|dir| Attachment::from_file_id(dir, params.file_id).ok())
-            .ok_or_else(|| format!("file not found: {}", params.file_id))?;
-        let path = attachment.source.clone();
-        let data =
-            std::fs::read(&path).map_err(|_| format!("file not found: {}", params.file_id))?;
+            let attachment = self
+                .file_dirs
+                .iter()
+                .find_map(|dir| Attachment::from_file_id(dir, params.file_id).ok())
+                .ok_or_else(|| format!("file not found: {}", params.file_id))?;
+            let path = attachment.source.clone();
+            let data =
+                std::fs::read(&path).map_err(|_| format!("file not found: {}", params.file_id))?;
 
-        let ext = attachment
-            .source
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let query = params.query.as_deref().unwrap_or("describe this file");
+            let ext = attachment
+                .source
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let query = params.query.as_deref().unwrap_or("describe this file");
 
-        if attachment.mime_type.starts_with("image/") {
-            let answer = self.inspect_image(attachment, query).await?;
-            return Ok(inspection_output(params.file_id, query, answer));
-        }
-
-        let text = if ext == "pdf" {
-            match pdf_extract::extract_text_from_mem(&data) {
-                Ok(t) => t,
-                Err(_) => format!("[Could not extract text from PDF: {}]", params.file_id),
+            if attachment.mime_type.starts_with("image/") {
+                let answer = self.inspect_image(attachment, query).await?;
+                return Ok(inspection_output(params.file_id, query, answer));
             }
-        } else {
-            bounded_raw_text(&data)
-        };
 
-        let answer = self.inspect_text(&text, query).await?;
-        Ok(inspection_output(params.file_id, query, answer))
-        }.await;
+            let text = if ext == "pdf" {
+                match pdf_extract::extract_text_from_mem(&data) {
+                    Ok(t) => t,
+                    Err(_) => format!("[Could not extract text from PDF: {}]", params.file_id),
+                }
+            } else {
+                bounded_raw_text(&data)
+            };
+
+            let answer = self.inspect_text(&text, query).await?;
+            Ok(inspection_output(params.file_id, query, answer))
+        }
+        .await;
         responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }

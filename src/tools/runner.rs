@@ -3,7 +3,10 @@ use std::sync::Arc;
 use crate::{
     bus::Bus,
     history::History,
-    tools::{ExecutionContext, InternalTool, InternalTools, ToolError, ToolRegistry, ToolResponder, ToolResult},
+    tools::{
+        ExecutionContext, InternalTool, InternalTools, ToolError, ToolRegistry, ToolResponder,
+        ToolResult,
+    },
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can

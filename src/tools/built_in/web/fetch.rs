@@ -176,9 +176,12 @@ impl InternalTool for WebFetchTool {
         _ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
-        responder.respond(tools::execute_typed(args, |params: WebFetchParams| async {
-            WebFetchTool::execute(self, params).await
-        }).await);
+        responder.respond(
+            tools::execute_typed(args, |params: WebFetchParams| async {
+                WebFetchTool::execute(self, params).await
+            })
+            .await,
+        );
     }
 }
 

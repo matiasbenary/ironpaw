@@ -89,19 +89,20 @@ impl InternalTool for WasmTool {
         responder: ToolResponder,
     ) {
         let result: Result<serde_json::Value, String> = async {
-        let args_json = serde_json::to_string(&args).map_err(|err| err.to_string())?;
-        let wasm_path = self.wasm_path.clone();
-        let secrets = self.secrets.clone();
-        let config = self.config.clone();
-        let guest_config_json = self.guest_config_json.clone();
-        let output = tokio::task::spawn_blocking(move || {
-            let mut loaded = LoadedTool::load(&wasm_path, secrets, config)?;
-            loaded.execute(&args_json, &guest_config_json)
-        })
-        .await
-        .map_err(|err| err.to_string())??;
-        Ok(output)
-        }.await;
+            let args_json = serde_json::to_string(&args).map_err(|err| err.to_string())?;
+            let wasm_path = self.wasm_path.clone();
+            let secrets = self.secrets.clone();
+            let config = self.config.clone();
+            let guest_config_json = self.guest_config_json.clone();
+            let output = tokio::task::spawn_blocking(move || {
+                let mut loaded = LoadedTool::load(&wasm_path, secrets, config)?;
+                loaded.execute(&args_json, &guest_config_json)
+            })
+            .await
+            .map_err(|err| err.to_string())??;
+            Ok(output)
+        }
+        .await;
         responder.respond(result.map_err(ToolError::new));
     }
 }
@@ -300,12 +301,9 @@ impl LoadedTool {
             .map_err(|err| err.to_string())
     }
 
-    fn execute(
-        &mut self,
-        args_json: &str,
-        config_json: &str,
-    ) -> Result<serde_json::Value, String> {
-        let output = self.bindings
+    fn execute(&mut self, args_json: &str, config_json: &str) -> Result<serde_json::Value, String> {
+        let output = self
+            .bindings
             .call_execute(&mut self.store, args_json, config_json)
             .map_err(|err| err.to_string())?
             .map_err(|err| format!("WASM tool error: {err}"))?;

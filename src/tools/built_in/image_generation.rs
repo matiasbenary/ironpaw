@@ -99,20 +99,25 @@ impl InternalTool for ImageGenerationTool {
         responder: crate::tools::ToolResponder,
     ) {
         let result = async {
-        let params: ImageGenerationParams = serde_json::from_value(args).map_err(|err| ToolError::new(err.to_string()))?;
-        let data_base64 = self.generate(&params.prompt).await.map_err(ToolError::new)?;
-        let file_id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
-        std::fs::create_dir_all(&self.files_dir).map_err(|e| ToolError::new(e.to_string()))?;
-        let path = self.files_dir.join(format!("{file_id}.png"));
-        let bytes = base64_decode(&data_base64).map_err(ToolError::new)?;
-        std::fs::write(&path, bytes).map_err(|e| ToolError::new(e.to_string()))?;
-        Ok(serde_json::json!({
-            "file_id": file_id,
-        }))
-        }.await;
+            let params: ImageGenerationParams =
+                serde_json::from_value(args).map_err(|err| ToolError::new(err.to_string()))?;
+            let data_base64 = self
+                .generate(&params.prompt)
+                .await
+                .map_err(ToolError::new)?;
+            let file_id = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as u32;
+            std::fs::create_dir_all(&self.files_dir).map_err(|e| ToolError::new(e.to_string()))?;
+            let path = self.files_dir.join(format!("{file_id}.png"));
+            let bytes = base64_decode(&data_base64).map_err(ToolError::new)?;
+            std::fs::write(&path, bytes).map_err(|e| ToolError::new(e.to_string()))?;
+            Ok(serde_json::json!({
+                "file_id": file_id,
+            }))
+        }
+        .await;
         responder.respond(result);
     }
 }

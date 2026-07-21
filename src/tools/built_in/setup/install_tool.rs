@@ -393,7 +393,11 @@ impl InternalTool for ListToolsTool {
         _ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
-        responder.respond(ListToolsTool::execute(self).await.map_err(crate::tools::ToolError::new));
+        responder.respond(
+            ListToolsTool::execute(self)
+                .await
+                .map_err(crate::tools::ToolError::new),
+        );
     }
 }
 
@@ -422,7 +426,8 @@ impl InternalTool for InstallToolTool {
         let result = async {
             let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
             InstallToolTool::execute(self, params, ctx, responder.clone()).await
-        }.await;
+        }
+        .await;
         match result {
             Ok(result) if result["ok"] == true => {}
             Ok(result) => responder.respond(Ok(result)),
@@ -452,19 +457,23 @@ impl InternalTool for SetupToolTool {
         responder: ToolResponder,
     ) {
         let result: Result<serde_json::Value, String> = async {
-            let params: SetupToolParams = serde_json::from_value(args).map_err(|err| err.to_string())?;
+            let params: SetupToolParams =
+                serde_json::from_value(args).map_err(|err| err.to_string())?;
             let name = normalize_tool_name(&params.name)?;
-            Ok(match self
-                .continue_setup(&name, &params.message, params.message_id.as_deref(), ctx)
-                .await
-            {
-                Ok(result) => result,
-                Err(error) => {
-                    self.fail(&name, &error, ctx).await?;
-                    serde_json::json!({ "error": error })
-                }
-            })
-        }.await;
+            Ok(
+                match self
+                    .continue_setup(&name, &params.message, params.message_id.as_deref(), ctx)
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(error) => {
+                        self.fail(&name, &error, ctx).await?;
+                        serde_json::json!({ "error": error })
+                    }
+                },
+            )
+        }
+        .await;
         responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }

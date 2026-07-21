@@ -325,7 +325,11 @@ impl InternalTool for ListChannelsTool {
         _ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
-        responder.respond(ListChannelsTool::execute(self).await.map_err(crate::tools::ToolError::new));
+        responder.respond(
+            ListChannelsTool::execute(self)
+                .await
+                .map_err(crate::tools::ToolError::new),
+        );
     }
 }
 
@@ -349,10 +353,12 @@ impl InternalTool for RemoveChannelTool {
         ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
-        responder.respond(tools::execute_typed(args, |params| async {
-            RemoveChannelTool::execute(self, params, ctx).await
-        })
-        .await);
+        responder.respond(
+            tools::execute_typed(args, |params| async {
+                RemoveChannelTool::execute(self, params, ctx).await
+            })
+            .await,
+        );
     }
 }
 
@@ -381,7 +387,8 @@ impl InternalTool for InstallChannelTool {
         let result = async {
             let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
             InstallChannelTool::execute(self, params, ctx, responder.clone()).await
-        }.await;
+        }
+        .await;
         match result {
             Ok(result) if result["ok"] == true && result["already_installed"] != true => {}
             Ok(result) => responder.respond(Ok(result)),
@@ -411,10 +418,10 @@ impl InternalTool for SetupChannelTool {
         responder: ToolResponder,
     ) {
         let result = async {
-        let params: SetupChannelParams = serde_json::from_value(args).map_err(|err| err.to_string())?;
-        let name = normalize_channel_name(&params.name)?;
-        self
-            .continue_setup(
+            let params: SetupChannelParams =
+                serde_json::from_value(args).map_err(|err| err.to_string())?;
+            let name = normalize_channel_name(&params.name)?;
+            self.continue_setup(
                 &name,
                 params.channel.as_deref(),
                 params.channel_user_id.as_deref(),
@@ -423,7 +430,8 @@ impl InternalTool for SetupChannelTool {
                 ctx,
             )
             .await
-        }.await;
+        }
+        .await;
         responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }

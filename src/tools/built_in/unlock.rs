@@ -120,10 +120,13 @@ impl InternalTool for UnlockSecretsTool {
         ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
-        responder.respond(tools::execute_typed(args, |params: UnlockSecretsParams| async {
-            self.execute(params, ctx).await?;
-            Ok(serde_json::json!({ "ok": true }))
-        }).await);
+        responder.respond(
+            tools::execute_typed(args, |params: UnlockSecretsParams| async {
+                self.execute(params, ctx).await?;
+                Ok(serde_json::json!({ "ok": true }))
+            })
+            .await,
+        );
     }
 }
 

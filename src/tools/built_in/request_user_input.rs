@@ -45,10 +45,14 @@ impl InternalTool for RequestUserInputTool {
                 conversation: conversation.clone(),
                 request: UserInputRequest {
                     question: input.question,
-                    options: input.options.into_iter().map(|option| UserInputOption {
-                        label: option.label,
-                        value: option.value,
-                    }).collect(),
+                    options: input
+                        .options
+                        .into_iter()
+                        .map(|option| UserInputOption {
+                            label: option.label,
+                            value: option.value,
+                        })
+                        .collect(),
                 },
             });
             Ok(serde_json::json!({ "status": "question_sent" }))

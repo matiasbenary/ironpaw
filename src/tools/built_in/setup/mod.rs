@@ -74,7 +74,10 @@ pub(super) async fn delete_current_message(
     )
     .await;
     if let Err(error) = result {
-        eprintln!("{label} could not delete inbound setup message: {}", error.message);
+        eprintln!(
+            "{label} could not delete inbound setup message: {}",
+            error.message
+        );
     }
 }
 

@@ -129,7 +129,7 @@ impl OnboardingTool {
     }
 
     async fn finish(&self, ctx: &ExecutionContext) -> Result<(), String> {
-        self.setup.automations.delete("onboarding")?;
+        self.setup.automations.remove_transient("onboarding");
         self.setup
             .automations
             .add(Automations::handle_conversation())?;
@@ -175,8 +175,11 @@ impl InternalTool for OnboardingTool {
         ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
-        responder.respond(tools::execute_typed(args, |params: OnboardingParams| async {
-            OnboardingTool::execute(self, params, ctx).await
-        }).await);
+        responder.respond(
+            tools::execute_typed(args, |params: OnboardingParams| async {
+                OnboardingTool::execute(self, params, ctx).await
+            })
+            .await,
+        );
     }
 }

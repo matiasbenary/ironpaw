@@ -80,56 +80,57 @@ impl InternalTool for TodoTool {
         responder: ToolResponder,
     ) {
         let result = (|| {
-        let input: TodoInput = serde_json::from_value(args).map_err(|e| e.to_string())?;
-        let key = match &ctx.invoked_by {
-            InvocationScope::Conversation(conversation) => conversation.storage_key(),
-            InvocationScope::ScheduledAutomation { automation_id } => {
-                format!("scheduled:{automation_id}")
-            }
-        };
-        let all_done = input
-            .todos
-            .iter()
-            .all(|todo| matches!(todo.status, TodoStatus::Completed));
-        let old_todos = {
-            let mut state = self.state.lock().expect("todo state lock");
-            let old_todos = state.remove(&key).unwrap_or_default();
-            if !all_done {
-                state.insert(key, input.todos.clone());
-            }
-            old_todos
-        };
-        let mut lines = vec!["Todo list:".to_string()];
-        for todo in &input.todos {
-            let icon = match todo.status {
-                TodoStatus::Completed => "✓",
-                TodoStatus::InProgress => "→",
-                TodoStatus::Pending => "○",
+            let input: TodoInput = serde_json::from_value(args).map_err(|e| e.to_string())?;
+            let key = match &ctx.invoked_by {
+                InvocationScope::Conversation(conversation) => conversation.storage_key(),
+                InvocationScope::ScheduledAutomation { automation_id } => {
+                    format!("scheduled:{automation_id}")
+                }
             };
-            lines.push(format!("  [{icon}] {}", todo.description));
-        }
+            let all_done = input
+                .todos
+                .iter()
+                .all(|todo| matches!(todo.status, TodoStatus::Completed));
+            let old_todos = {
+                let mut state = self.state.lock().expect("todo state lock");
+                let old_todos = state.remove(&key).unwrap_or_default();
+                if !all_done {
+                    state.insert(key, input.todos.clone());
+                }
+                old_todos
+            };
+            let mut lines = vec!["Todo list:".to_string()];
+            for todo in &input.todos {
+                let icon = match todo.status {
+                    TodoStatus::Completed => "✓",
+                    TodoStatus::InProgress => "→",
+                    TodoStatus::Pending => "○",
+                };
+                lines.push(format!("  [{icon}] {}", todo.description));
+            }
 
-        let has_remaining = input
-            .todos
-            .iter()
-            .any(|t| !matches!(t.status, TodoStatus::Completed));
+            let has_remaining = input
+                .todos
+                .iter()
+                .any(|t| !matches!(t.status, TodoStatus::Completed));
 
-        lines.push(String::new());
-        if has_remaining {
-            lines.push(
+            lines.push(String::new());
+            if has_remaining {
+                lines.push(
                 "Continue with the next pending task. Do not stop until all tasks are completed."
                     .to_string(),
             );
-        } else {
-            lines.push("All tasks completed.".to_string());
-        }
+            } else {
+                lines.push("All tasks completed.".to_string());
+            }
 
-        Ok::<_, String>(serde_json::json!({
-            "old_todos": old_todos,
-            "new_todos": input.todos,
-            "result": lines.join("\n")
-        }))
-        })().map_err(crate::tools::ToolError::new);
+            Ok::<_, String>(serde_json::json!({
+                "old_todos": old_todos,
+                "new_todos": input.todos,
+                "result": lines.join("\n")
+            }))
+        })()
+        .map_err(crate::tools::ToolError::new);
         responder.respond(result);
     }
 }
