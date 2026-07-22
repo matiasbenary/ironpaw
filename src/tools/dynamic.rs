@@ -13,82 +13,129 @@ use crate::{
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
-pub struct RegisterToolParams {
-    /// Name of the tool directory under tools/ to validate and register.
+pub struct CreateToolParams {
+    /// Tool name using letters, digits, underscores, or hyphens.
     pub name: String,
     /// One-line description shown to callers of this tool.
     pub description: String,
     /// Optional JSON Schema for the tool arguments. Defaults to a free-form object.
     #[serde(default)]
     pub parameters: Option<serde_json::Value>,
+    /// JavaScript source. Use top-level code and return the tool result.
+    pub script: String,
 }
 
-/// Validates and registers a file-backed sandboxed JavaScript tool.
-pub struct RegisterToolTool {
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct DeleteToolParams {
+    /// Exact dynamic tool name to delete.
+    pub name: String,
+}
+
+/// Creates, updates, or deletes a sandboxed JavaScript tool.
+pub struct DynamicToolTool {
     registry: Arc<ToolRegistry>,
     scripts: Arc<ScriptRuntime>,
     tools_dir: PathBuf,
+    kind: DynamicToolKind,
 }
 
-impl RegisterToolTool {
+#[derive(Clone, Copy)]
+pub enum DynamicToolKind {
+    Create,
+    Edit,
+    Delete,
+}
+
+impl DynamicToolTool {
     pub fn new(
         registry: Arc<ToolRegistry>,
         scripts: Arc<ScriptRuntime>,
         tools_dir: PathBuf,
+        kind: DynamicToolKind,
     ) -> Self {
         Self {
             registry,
             scripts,
             tools_dir,
+            kind,
         }
     }
 
-    pub fn execute(&self, params: RegisterToolParams) -> Result<serde_json::Value, String> {
+    fn save(&self, params: CreateToolParams, must_exist: bool) -> Result<serde_json::Value, String> {
         let name = params.name.trim().to_string();
         if !valid_tool_name(&name) {
             return Err(
                 "name must be non-empty and use only ASCII letters, digits, underscores, or hyphens"
-                    .to_string(),
+                .to_string(),
             );
         }
+        if self.registry.contains(&name) != must_exist {
+            return Err(if must_exist {
+                format!("unknown dynamic tool: {name}")
+            } else {
+                format!("a tool named '{name}' already exists")
+            });
+        }
+        if params.script.trim().is_empty() {
+            return Err("script must not be empty".to_string());
+        }
+        self.scripts.validate_source(&params.script)?;
         let directory = self.tools_dir.join(&name);
-        let script_path = directory.join("tool.js");
-        let script = fs::read_to_string(&script_path)
-            .map_err(|err| format!("failed to read {}: {err}", script_path.display()))?;
-        self.scripts.validate_source(&script)?;
         let manifest = DynamicToolManifest {
             description: params.description.clone(),
             parameters: params.parameters.clone(),
         };
-        DynamicTool::write_manifest(&directory, &manifest)?;
+        DynamicTool::write_files(&directory, &params.script, &manifest)?;
         let tool = DynamicTool::new(
             name.clone(),
             params.description,
             params.parameters,
-            script,
+            params.script,
             self.scripts.clone(),
         );
         self.registry.register_dynamic(Arc::new(tool))?;
         Ok(serde_json::json!({ "name": name }))
     }
+
+    fn delete(&self, params: DeleteToolParams) -> Result<serde_json::Value, String> {
+        if !self.registry.remove_dynamic(&params.name)? {
+            return Err(format!("unknown dynamic tool: {}", params.name));
+        }
+        let directory = self.tools_dir.join(&params.name);
+        fs::remove_dir_all(&directory)
+            .map_err(|err| format!("failed to remove {}: {err}", directory.display()))?;
+        Ok(serde_json::json!({ "name": params.name }))
+    }
 }
 
 #[async_trait]
-impl InternalTool for RegisterToolTool {
+impl InternalTool for DynamicToolTool {
     fn name(&self) -> &str {
-        "register_tool"
+        match self.kind {
+            DynamicToolKind::Create => "create_tool",
+            DynamicToolKind::Edit => "edit_tool",
+            DynamicToolKind::Delete => "delete_tool",
+        }
     }
 
     fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<RegisterToolParams>(
-            self.name(),
-            "Validate and activate tools/<name>/tool.js, then write its config.json \
-             automatically from this call's description and optional parameters. \
-             Write top-level script code and return its result; do not define an \
-             uncalled main function. Arguments are available as `args`. Registered \
-             tools are callable globals: use web_fetch({ url }), never fetch(url). \
-             Changes do not take effect until this tool is called.",
-        )
+        match self.kind {
+            DynamicToolKind::Create => tools::tool_definition::<CreateToolParams>(
+                self.name(),
+                "Create and activate a JavaScript tool. Write top-level script code and return its \
+                 result; do not define an uncalled main function. Arguments are available as `args`. \
+                 Registered tools are callable globals: use web_fetch({ url }), never fetch(url).",
+            ),
+            DynamicToolKind::Edit => tools::tool_definition::<CreateToolParams>(
+                self.name(),
+                "Replace an existing dynamic JavaScript tool and activate the complete replacement. \
+                 Pass its complete script, description, and optional parameter schema.",
+            ),
+            DynamicToolKind::Delete => tools::tool_definition::<DeleteToolParams>(
+                self.name(),
+                "Delete an existing dynamic tool and its stored files.",
+            ),
+        }
     }
 
     async fn execute(
@@ -97,16 +144,24 @@ impl InternalTool for RegisterToolTool {
         _ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
-        let result = serde_json::from_value(args)
-            .map_err(|err| err.to_string())
-            .and_then(|params| RegisterToolTool::execute(self, params));
+        let result = match self.kind {
+            DynamicToolKind::Create => serde_json::from_value(args)
+                .map_err(|err| err.to_string())
+                .and_then(|params| self.save(params, false)),
+            DynamicToolKind::Edit => serde_json::from_value(args)
+                .map_err(|err| err.to_string())
+                .and_then(|params| self.save(params, true)),
+            DynamicToolKind::Delete => serde_json::from_value::<DeleteToolParams>(args)
+                .map_err(|err| err.to_string())
+                .and_then(|params| self.delete(params)),
+        };
         responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }
 
 /// A tool implemented as a sandboxed script instead of Rust code. Dynamic
-/// tools are activated by `register_tool` and live in the same registry as
-/// internal tools.
+/// tools are created and edited by typed tool calls and live in the same
+/// registry as internal tools.
 pub struct DynamicTool {
     name: String,
     description: String,
@@ -159,8 +214,16 @@ impl DynamicTool {
         ))
     }
 
-    fn write_manifest(dir: &Path, manifest: &DynamicToolManifest) -> Result<(), String> {
-        fs::create_dir_all(dir).map_err(|err| format!("failed to create {}: {err}", dir.display()))?;
+    fn write_files(
+        dir: &Path,
+        script: &str,
+        manifest: &DynamicToolManifest,
+    ) -> Result<(), String> {
+        fs::create_dir_all(dir)
+            .map_err(|err| format!("failed to create {}: {err}", dir.display()))?;
+        let script_path = dir.join("tool.js");
+        fs::write(&script_path, script)
+            .map_err(|err| format!("failed to write {}: {err}", script_path.display()))?;
         let config_path = dir.join("config.json");
         let contents = serde_json::to_string_pretty(manifest).map_err(|err| err.to_string())?;
         fs::write(&config_path, format!("{contents}\n"))
@@ -252,7 +315,7 @@ mod tests {
         tools::{InternalTools, messages::SendMessageTool, raw_inference::RawInferenceTool},
     };
 
-    fn bound_register_tool() -> (Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf) {
+    fn bound_dynamic_tools() -> (Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf) {
         let bus = Bus::new(4);
         let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
             "ironpaw-create-tool-test-runtime-{}",
@@ -281,27 +344,21 @@ mod tests {
     }
 
     #[test]
-    fn register_tool_loads_directory_files() {
-        let (tools, scripts, tools_dir) = bound_register_tool();
+    fn create_tool_writes_and_registers_files() {
+        let (tools, scripts, tools_dir) = bound_dynamic_tools();
         let tool_dir = tools_dir.join("hello_dynamic");
-        std::fs::create_dir_all(&tool_dir).unwrap();
-        std::fs::write(tool_dir.join("tool.js"), "return { greeting: 'hello' };").unwrap();
-        std::fs::write(
-            tool_dir.join("config.json"),
-            r#"{"description":"Old description."}"#,
-        )
-        .unwrap();
 
         let result = tools
-            .register_tool
-            .execute(RegisterToolParams {
+            .create_tool
+            .save(CreateToolParams {
                 name: "hello_dynamic".to_string(),
                 description: "Say hello.".to_string(),
                 parameters: Some(serde_json::json!({
                     "type": "object",
                     "properties": { "name": { "type": "string" } }
                 })),
-            })
+                script: "return { greeting: 'hello' };".to_string(),
+            }, false)
             .expect("tool should be registered");
 
         assert_eq!(result["name"], "hello_dynamic");
@@ -325,44 +382,73 @@ mod tests {
     }
 
     #[test]
-    fn register_tool_rejects_internal_tool_names() {
-        let (tools, _scripts, tools_dir) = bound_register_tool();
-        let tool_dir = tools_dir.join("send_message");
-        std::fs::create_dir_all(&tool_dir).unwrap();
-        std::fs::write(tool_dir.join("tool.js"), "return null;").unwrap();
-        std::fs::write(
-            tool_dir.join("config.json"),
-            r#"{"description":"Override send_message."}"#,
-        )
-        .unwrap();
+    fn edit_and_delete_tool_replace_the_active_tool_and_files() {
+        let (tools, _scripts, tools_dir) = bound_dynamic_tools();
+        tools
+            .create_tool
+            .save(
+                CreateToolParams {
+                    name: "weather".to_string(),
+                    description: "Old weather tool.".to_string(),
+                    parameters: None,
+                    script: "return { temperature: 20 };".to_string(),
+                },
+                false,
+            )
+            .unwrap();
 
-        let result = tools.register_tool.execute(RegisterToolParams {
+        tools
+            .edit_tool
+            .save(
+                CreateToolParams {
+                    name: "weather".to_string(),
+                    description: "New weather tool.".to_string(),
+                    parameters: None,
+                    script: "return { temperature: 21 };".to_string(),
+                },
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(tools_dir.join("weather/tool.js")).unwrap(),
+            "return { temperature: 21 };"
+        );
+
+        tools
+            .delete_tool
+            .delete(DeleteToolParams {
+                name: "weather".to_string(),
+            })
+            .unwrap();
+        assert!(!tools.registry.contains("weather"));
+        assert!(!tools_dir.join("weather").exists());
+    }
+
+    #[test]
+    fn create_tool_rejects_internal_tool_names() {
+        let (tools, _scripts, _tools_dir) = bound_dynamic_tools();
+
+        let result = tools.create_tool.save(CreateToolParams {
             name: "send_message".to_string(),
             description: "Override send_message.".to_string(),
             parameters: None,
-        });
+            script: "return null;".to_string(),
+        }, false);
 
         assert!(result.is_err());
         assert!(tools.registry.contains("send_message"));
     }
 
     #[test]
-    fn register_tool_rejects_invalid_javascript() {
-        let (tools, _scripts, tools_dir) = bound_register_tool();
-        let tool_dir = tools_dir.join("bad_script");
-        std::fs::create_dir_all(&tool_dir).unwrap();
-        std::fs::write(tool_dir.join("tool.js"), "const nope = ;").unwrap();
-        std::fs::write(
-            tool_dir.join("config.json"),
-            r#"{"description":"Bad script."}"#,
-        )
-        .unwrap();
+    fn create_tool_rejects_invalid_javascript() {
+        let (tools, _scripts, _tools_dir) = bound_dynamic_tools();
 
-        let result = tools.register_tool.execute(RegisterToolParams {
+        let result = tools.create_tool.save(CreateToolParams {
             name: "bad_script".to_string(),
             description: "Bad script.".to_string(),
             parameters: None,
-        });
+            script: "const nope = ;".to_string(),
+        }, false);
 
         assert!(result.is_err());
         assert!(!tools.registry.contains("bad_script"));

@@ -43,7 +43,7 @@ use self::built_in::{
     todo::TodoTool,
     web::WebFetchTool,
 };
-use self::dynamic::RegisterToolTool;
+use self::dynamic::{DynamicToolKind, DynamicToolTool};
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ToolError {
@@ -75,7 +75,9 @@ pub fn tool_result_json(result: &ToolResult) -> serde_json::Value {
 
 pub struct InternalTools {
     pub raw_inference: RawInferenceTool,
-    pub register_tool: Arc<RegisterToolTool>,
+    pub create_tool: Arc<DynamicToolTool>,
+    pub edit_tool: Arc<DynamicToolTool>,
+    pub delete_tool: Arc<DynamicToolTool>,
     pub scripts: Arc<ScriptRuntime>,
     pub history: Arc<dyn History>,
     pub registry: Arc<ToolRegistry>,
@@ -141,6 +143,20 @@ impl ToolRegistry {
         Ok(())
     }
 
+    pub fn remove_dynamic(&self, name: &str) -> Result<bool, String> {
+        let mut tools = self.tools.write().expect("tools lock");
+        let mut dynamic_names = self.dynamic_names.write().expect("dynamic tools lock");
+        if !dynamic_names.remove(name) {
+            return Ok(false);
+        }
+        let index = tools
+            .iter()
+            .position(|tool| tool.name() == name)
+            .ok_or_else(|| format!("dynamic tool registry is missing '{name}'"))?;
+        tools.remove(index);
+        Ok(true)
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.tools
             .read()
@@ -186,11 +202,17 @@ impl InternalTools {
         let delete_message = Arc::new(delete_message);
         let registry = Arc::new(ToolRegistry::new());
         let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&registry)));
-        let register_tool = Arc::new(RegisterToolTool::new(
-            Arc::clone(&registry),
-            Arc::clone(&scripts),
-            layout.tools_dir(),
-        ));
+        let dynamic_tool = |kind| {
+            Arc::new(DynamicToolTool::new(
+                Arc::clone(&registry),
+                Arc::clone(&scripts),
+                layout.tools_dir(),
+                kind,
+            ))
+        };
+        let create_tool = dynamic_tool(DynamicToolKind::Create);
+        let edit_tool = dynamic_tool(DynamicToolKind::Edit);
+        let delete_tool = dynamic_tool(DynamicToolKind::Delete);
         fn tool<T: InternalTool + 'static>(tool: T) -> Arc<dyn InternalTool> {
             Arc::new(tool)
         }
@@ -223,7 +245,9 @@ impl InternalTools {
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::List)),
             tool(AutomationTool::new(bus, AutomationToolKind::Trigger)),
             tool(ListChannelsTool::new(layout.clone(), secrets)),
-            Arc::clone(&register_tool) as Arc<dyn InternalTool>,
+            Arc::clone(&create_tool) as Arc<dyn InternalTool>,
+            Arc::clone(&edit_tool) as Arc<dyn InternalTool>,
+            Arc::clone(&delete_tool) as Arc<dyn InternalTool>,
             tool(SearchHistoryTool::new(Arc::clone(&history))),
             tool(BrowserTool::new(layout.clone())),
             tool(BrowserUpdateTool::new(layout.clone())),
@@ -233,7 +257,9 @@ impl InternalTools {
         }
         Self {
             raw_inference,
-            register_tool: Arc::clone(&register_tool),
+            create_tool,
+            edit_tool,
+            delete_tool,
             scripts,
             history,
             registry,

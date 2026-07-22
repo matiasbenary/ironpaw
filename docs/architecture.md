@@ -103,7 +103,7 @@ Ironpaw stores files locally and passes around typed attachments containing a nu
 
 The model interacts with stored files through tools. `download_file(url)` stores a public URL under the runtime `download` directory and returns a `file_id` without placing the response body in conversation history. It recognizes public Google Sheets, Docs, and Slides editor links and exports them as CSV, text, and PDF respectively. `inspect_file(file_id, query)` can inspect downloaded files and message attachments, passing bounded raw text to a text model, extracting text from PDFs, or calling a vision model for images. `image_generation` stores the generated image locally and returns a `file_id`; `send_message` can then publish an assistant message with that attachment for channel delivery.
 
-Agent-created files use a separate scoped workspace. `list_files`, `read_file`, `create_file`, and `update_file` are the only agent filesystem tools. Conversations on every channel share `<runtime-root>/files/user`; a scheduled automation gets its own directory; and tool calls get a directory matching their caller stack. The host appends every registered tool call to `ExecutionContext.tool_stack`; a file tool resolves its root from that stack without its own final entry. Relative paths only are accepted, and symlinks are rejected. Automation and tool names are encoded before becoming directory components. The managed `tools/` path is also available through these file tools so the agent can author dynamic tools using ordinary paths.
+Agent-created files use a separate scoped workspace. `list_files`, `read_file`, `create_file`, and `update_file` are the only agent filesystem tools. Conversations on every channel share `<runtime-root>/files/user`; a scheduled automation gets its own directory; and tool calls get a directory matching their caller stack. The host appends every registered tool call to `ExecutionContext.tool_stack`; a file tool resolves its root from that stack without its own final entry. Relative paths only are accepted, and symlinks are rejected. Automation and tool names are encoded before becoming directory components.
 
 All file ids are `u32` values for now. The current architecture treats that as the stable attachment identifier.
 
@@ -364,7 +364,7 @@ Implemented internal tools include:
 - `delete_message`: deletes a channel message when the channel supports it.
 - `request_user_input`: asks the current user to choose from specific answers. Telegram renders inline callback buttons; the selected value returns as a normal inbound user message.
 - `call_agent`: runs a sub-agent and returns its final answer as a tool result.
-- `register_tool`: validates and activates a dynamic tool from `tools/<name>/tool.js`. It writes the generated `config.json` from the supplied description and optional parameter schema. Editing `tool.js` alone has no effect; registering again is required and replaces only an earlier dynamic tool with the same name.
+- `create_tool`, `edit_tool`, `delete_tool`: create, replace, or delete dynamic JavaScript tools. The host validates the complete script, writes the tool files, and updates the registry as one operation.
 - `create_automation`, `edit_automation`, `delete_automation`, `inspect_automation`, `list_automations`: validate, persist, and manage automations.
 - `list_channels`, `install_channel`, `setup_channel`: inspect and install local channel packages. `install_channel` starts the install flow and registers a temporary automation; `setup_channel` handles deterministic follow-up replies from that automation.
 - `list_tools`, `install_tool`, `setup_tool`: inspect and install local external WASM tool packages. `install_tool` starts the install flow and registers a temporary scoped automation; `setup_tool` handles the deterministic follow-up replies from that automation.
@@ -414,7 +414,7 @@ Scripts have no ambient filesystem or network access. They receive:
 - registered tools as global functions named after the tool, e.g. `web_fetch({ url })`.
 - `console.log(...)`: debug logging.
 
-Scripts use top-level code and `return` their result; defining an uncalled `main` function does nothing. They have no ambient network access: `fetch` is unavailable and `web_fetch({ url })` is the network tool. Registration parses the script and rejects calls to unavailable functions before activation. The agent writes only `tool.js`; it calls `register_tool` with the tool description and optional parameter schema, and Ironpaw writes `config.json` itself.
+Scripts use top-level code and `return` their result; defining an uncalled `main` function does nothing. They have no ambient network access: `fetch` is unavailable and `web_fetch({ url })` is the network tool. Creation and editing parse the script and reject calls to unavailable functions before activation. The agent supplies the complete script, description, and optional parameter schema to `create_tool` or `edit_tool`; Ironpaw owns the resulting files.
 
 ---
 
@@ -459,7 +459,9 @@ This example assumes the Telegram chat id is known.
    raw_inference
    send_message
    delete_message
-   register_tool
+   create_tool
+   edit_tool
+   delete_tool
    create_automation
    install_channel
    install_tool
