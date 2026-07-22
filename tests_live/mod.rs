@@ -984,7 +984,17 @@ async fn lottery_automation() {
             if let Some(automation) = automations
                 .list()
                 .into_iter()
-                .find(|automation| !existing.contains(&automation.name))
+                .find(|automation| {
+                    !existing.contains(&automation.name)
+                        && automation.effect["type"] == "agent_task"
+                        && automation.effect["tools"]
+                            .as_array()
+                            .is_some_and(|tools| {
+                                ["send_message", "delete_automation"]
+                                    .into_iter()
+                                    .all(|name| tools.iter().any(|tool| tool == name))
+                            })
+                })
             {
                 break automation;
             }
@@ -1009,6 +1019,19 @@ async fn lottery_automation() {
     .await
     .expect("automation did not delete itself");
 
+    fn lucky_number(content: &str) -> Option<u32> {
+        let marker = "lucky number";
+        let lower = content.to_ascii_lowercase();
+        let suffix = &content[lower.find(marker)? + marker.len()..];
+        let digits = suffix
+            .chars()
+            .skip_while(|character| !character.is_ascii_digit())
+            .take_while(|character| character.is_ascii_digit())
+            .collect::<String>();
+        let number = digits.parse().ok()?;
+        (1..=99).contains(&number).then_some(number)
+    }
+
     let entries = history
         .load_scope(&HistoryScope::Automation(automation_name))
         .expect("load automation history");
@@ -1022,7 +1045,7 @@ async fn lottery_automation() {
                 (call.name == "send_message")
                     .then(|| serde_json::from_str::<serde_json::Value>(&call.arguments).ok())
                     .flatten()
-                    .and_then(|args| args["content"].as_str().map(str::to_string))
+                    .and_then(|args| args["content"].as_str().and_then(lucky_number))
             })
         })
         .collect::<Vec<_>>();

@@ -125,15 +125,6 @@ async fn main() -> io::Result<()> {
     automations.remove_transient(UNLOCK_AUTOMATION);
     let tool_state = EnabledTools::new(layout.tools_state_path());
 
-    let scripts = Arc::clone(&tools.scripts);
-    for tool in DynamicTool::discover(&layout.tools_dir(), Arc::clone(&scripts))
-        .map_err(std::io::Error::other)?
-    {
-        tools
-            .registry
-            .register_dynamic(Arc::new(tool))
-            .map_err(std::io::Error::other)?;
-    }
     for manifest in ironpaw::tools::wasm::discover(&layout).map_err(std::io::Error::other)? {
         let name = manifest.name.clone();
         if !tool_state
@@ -149,6 +140,15 @@ async fn main() -> io::Result<()> {
             .add(Arc::new(tool))
             .map_err(std::io::Error::other)?;
         println!("loaded tool: {name}");
+    }
+    let scripts = Arc::clone(&tools.scripts);
+    for tool in DynamicTool::discover(&layout.tools_dir(), Arc::clone(&scripts))
+        .map_err(std::io::Error::other)?
+    {
+        let name = tool.name().to_string();
+        if let Err(error) = tools.registry.register_dynamic(Arc::new(tool)) {
+            eprintln!("did not load dynamic tool '{name}': {error}");
+        }
     }
 
     let setup_services = Arc::new(SetupServices::new(

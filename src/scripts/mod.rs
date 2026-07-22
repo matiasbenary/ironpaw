@@ -1,6 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
-use rquickjs::{CatchResultExt, Context, Ctx, Runtime, Value, function::Func};
+use rquickjs::{CatchResultExt, Context, Ctx, Promise, Runtime, Value, function::Func};
+use tree_sitter::{Node, Parser};
 
 use crate::tools::{self, ExecutionContext, ToolRegistry, tool_result_json};
 
@@ -34,9 +35,20 @@ impl ScriptRuntime {
             .await
             .map_err(|err| format!("script task failed: {err}"))?
     }
+
+    pub fn validate_source(&self, source: &str) -> Result<(), String> {
+        let tool_names = self
+            .registry
+            .all()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
+        validate_source(source, &tool_names)
+    }
 }
 
-pub fn validate_source(source: &str) -> Result<(), String> {
+pub fn validate_source(source: &str, tools: &BTreeSet<String>) -> Result<(), String> {
+    validate_tool_calls(source, tools)?;
     let runtime = Runtime::new().map_err(|err| err.to_string())?;
     runtime.set_memory_limit(SCRIPT_MEMORY_LIMIT);
     let context = Context::full(&runtime).map_err(|err| err.to_string())?;
@@ -45,10 +57,110 @@ pub fn validate_source(source: &str) -> Result<(), String> {
         globals
             .set("__source", source)
             .map_err(|err| err.to_string())?;
-        js.eval::<(), _>("new Function(__source);")
+        js.eval::<(), _>(
+            "Object.getPrototypeOf(async function () {}).constructor(__source);",
+        )
             .catch(&js)
             .map_err(|err| format!("script syntax error: {err}"))
     })
+}
+
+fn validate_tool_calls(source: &str, tools: &BTreeSet<String>) -> Result<(), String> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_javascript::LANGUAGE.into())
+        .map_err(|err| err.to_string())?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| "failed to parse script".to_string())?;
+    if tree.root_node().has_error() {
+        return Err("script syntax error".to_string());
+    }
+
+    let mut globals = tools.clone();
+    globals.extend(
+        [
+            "Array", "BigInt", "Boolean", "Error", "Number", "Object", "Promise", "String",
+            "Symbol", "TypeError", "parseFloat", "parseInt", "require",
+        ]
+        .map(str::to_string),
+    );
+    validate_node(tree.root_node(), source.as_bytes(), &globals)
+}
+
+fn validate_node(
+    node: Node<'_>,
+    source: &[u8],
+    inherited: &BTreeSet<String>,
+) -> Result<(), String> {
+    let mut names = inherited.clone();
+    collect_bindings(node, source, &mut names, true);
+
+    if node.kind() == "call_expression"
+        && let Some(function) = node.child_by_field_name("function")
+        && function.kind() == "identifier"
+    {
+        let name = function.utf8_text(source).map_err(|err| err.to_string())?;
+        if !names.contains(name) {
+            return Err(format!(
+                "script calls unavailable function `{name}`; use a registered tool or a locally declared function"
+            ));
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        validate_node(child, source, &names)?;
+    }
+    Ok(())
+}
+
+fn is_scope(node: Node<'_>) -> bool {
+    matches!(
+        node.kind(),
+        "statement_block" | "function_expression" | "arrow_function" | "function_declaration"
+    )
+}
+
+fn collect_bindings(
+    node: Node<'_>,
+    source: &[u8],
+    names: &mut BTreeSet<String>,
+    first: bool,
+) {
+    if !first && is_scope(node) {
+        if node.kind() == "function_declaration"
+            && let Some(name) = node.child_by_field_name("name")
+            && let Ok(name) = name.utf8_text(source)
+        {
+            names.insert(name.to_string());
+        }
+        return;
+    }
+    match node.kind() {
+        "variable_declarator" | "function_declaration" | "function_expression" => {
+            if let Some(name) = node.child_by_field_name("name")
+                && let Ok(name) = name.utf8_text(source)
+            {
+                names.insert(name.to_string());
+            }
+        }
+        "formal_parameters" => {
+            let mut cursor = node.walk();
+            for parameter in node.named_children(&mut cursor) {
+                if parameter.kind() == "identifier"
+                    && let Ok(name) = parameter.utf8_text(source)
+                {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_bindings(child, source, names, false);
+    }
 }
 
 fn execute_script(
@@ -107,6 +219,9 @@ fn execute_script(
                 };
             }
             globalThis.console = { log: (...a) => __log(a.map(String).join(" ")) };
+            globalThis.fetch = () => {
+                throw new Error("fetch is unavailable in scripts. For network requests, use web_fetch({ url }).");
+            };
             globalThis.require = (module) => {
                 switch (module) {
                     case "fs":
@@ -132,8 +247,12 @@ fn execute_script(
         globals
             .set("__source", source)
             .map_err(|err| err.to_string())?;
-        let result: Value = js
-            .eval("new Function(__source)();")
+        let result: Promise = js
+            .eval("Object.getPrototypeOf(async function () {}).constructor(__source)()")
+            .catch(&js)
+            .map_err(|err| format!("script error: {err}"))?;
+        let result: Value = result
+            .finish()
             .catch(&js)
             .map_err(|err| format!("script error: {err}"))?;
         js_result_to_json(&js, result)
@@ -285,7 +404,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn web_fetch_result_is_plain_string() {
+    async fn script_can_await_a_tool_call() {
         let bus = Bus::new(16);
         let runtime = test_runtime(&bus);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -307,8 +426,8 @@ mod tests {
             .run(
                 format!(
                     r#"
-                    const r = JSON.parse(web_fetch({{ url: "{url}" }}));
-	                return {{ first: r[0], third: r[2] }};
+                    const r = JSON.parse(await web_fetch({{ url: "{url}" }}));
+                    return {{ first: r[0], third: r[2] }};
 	                "#
                 ),
                 ExecutionContext::new(InvocationScope::ScheduledAutomation {
@@ -320,6 +439,44 @@ mod tests {
             .expect("script should run");
 
         assert_eq!(result, serde_json::json!({ "first": 1, "third": 3 }));
+    }
+
+    #[tokio::test]
+    async fn fetch_explains_the_supported_network_tool() {
+        let bus = Bus::new(16);
+        let runtime = test_runtime(&bus);
+
+        let error = runtime
+            .run(
+                "await fetch('https://example.com');".to_string(),
+                ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                    automation_id: "script-test".to_string(),
+                }),
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("use web_fetch({ url })"));
+    }
+
+    #[test]
+    fn validation_rejects_fetch_before_a_script_can_be_registered() {
+        let error = validate_source("await fetch('https://example.com');", &BTreeSet::new())
+            .unwrap_err();
+
+        assert!(error.contains("unavailable function `fetch`"));
+    }
+
+    #[test]
+    fn validation_allows_registered_and_local_functions() {
+        let tools = BTreeSet::from(["web_fetch".to_string()]);
+
+        validate_source(
+            "function format(value) { return String(value); } const body = web_fetch({ url: 'https://example.com' }); return format(body);",
+            &tools,
+        )
+        .unwrap();
     }
 
     #[tokio::test]

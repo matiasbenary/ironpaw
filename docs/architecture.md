@@ -364,7 +364,7 @@ Implemented internal tools include:
 - `delete_message`: deletes a channel message when the channel supports it.
 - `request_user_input`: asks the current user to choose from specific answers. Telegram renders inline callback buttons; the selected value returns as a normal inbound user message.
 - `call_agent`: runs a sub-agent and returns its final answer as a tool result.
-- `register_tool`: validates and activates a dynamic tool from `tools/<name>/tool.js` and `tools/<name>/config.json`. Editing those files alone has no effect; registering again is required and replaces only an earlier dynamic tool with the same name.
+- `register_tool`: validates and activates a dynamic tool from `tools/<name>/tool.js`. It writes the generated `config.json` from the supplied description and optional parameter schema. Editing `tool.js` alone has no effect; registering again is required and replaces only an earlier dynamic tool with the same name.
 - `create_automation`, `edit_automation`, `delete_automation`, `inspect_automation`, `list_automations`: validate, persist, and manage automations.
 - `list_channels`, `install_channel`, `setup_channel`: inspect and install local channel packages. `install_channel` starts the install flow and registers a temporary automation; `setup_channel` handles deterministic follow-up replies from that automation.
 - `list_tools`, `install_tool`, `setup_tool`: inspect and install local external WASM tool packages. `install_tool` starts the install flow and registers a temporary scoped automation; `setup_tool` handles the deterministic follow-up replies from that automation.
@@ -402,11 +402,11 @@ Dynamic tools are JavaScript files executed in a QuickJS sandbox.
 They live in:
 
 ```text
-<runtime-root>/tools/<name>.js
-<runtime-root>/tools/<name>.config.json
+<runtime-root>/tools/<name>/tool.js
+<runtime-root>/tools/<name>/config.json
 ```
 
-At startup, Ironpaw discovers `.js` files in the tools directory and registers them in the same tool registry as internal tools.
+At startup, Ironpaw discovers tool directories in the tools directory and registers them in the same tool registry as internal tools.
 
 Scripts have no ambient filesystem or network access. They receive:
 
@@ -414,7 +414,7 @@ Scripts have no ambient filesystem or network access. They receive:
 - registered tools as global functions named after the tool, e.g. `web_fetch({ url })`.
 - `console.log(...)`: debug logging.
 
-The script's last expression becomes the tool result.
+Scripts use top-level code and `return` their result; defining an uncalled `main` function does nothing. They have no ambient network access: `fetch` is unavailable and `web_fetch({ url })` is the network tool. Registration parses the script and rejects calls to unavailable functions before activation. The agent writes only `tool.js`; it calls `register_tool` with the tool description and optional parameter schema, and Ironpaw writes `config.json` itself.
 
 ---
 
@@ -511,10 +511,11 @@ This flow is the intended uniform shape: TUI and Telegram are both channels, and
 ## Appendix: ToDo
 
 - make sure code does not panic instead we need to return errors for the agent to handle or tell the user
-- Decide whether dynamic tools should have a richer manifest: version, description, parameter schema, allowed tool calls, and allowed outbound HTTPS endpoints.
+- Decide whether dynamic tools should declare allowed tool calls and outbound HTTPS endpoints beyond their current description and parameter schema.
 - Decide whether runtime reload/file watching is needed.
 - Decide whether some internal tools should eventually move to packaged WASM tools with declared capabilities and secret requirements.
 - Add durable tool execution audit logs.
+- Let a running automation report that its definition needs repair—such as a missing required tool—and provide a controlled path for the agent to inspect and update that automation.
 - I asked ironpaw to install a channel, and it said "ok, I need your token to do that" instead of starting the install flow!
 
 ### Better Config UX

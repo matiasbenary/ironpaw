@@ -41,14 +41,39 @@ impl ScopedFiles {
         if let Some(Component::Normal(scope)) = components.next()
             && matches!(scope.to_str(), Some("tools"))
         {
+            let relative = components.as_path();
+            if let Some(Component::Normal(name)) = relative.components().next()
+                && !crate::tools::dynamic::valid_tool_name(&name.to_string_lossy())
+            {
+                return Err(
+                    "tool directory names must use only ASCII letters, digits, underscores, or hyphens"
+                        .to_string(),
+                );
+            }
             let root = self
                 .files_dir
                 .parent()
                 .expect("files directory has runtime root")
                 .join(scope);
-            let relative = components.as_path();
-            if relative.as_os_str().is_empty() {
-                return Ok(root);
+            fs::create_dir_all(&root)
+                .await
+                .map_err(|err| err.to_string())?;
+            let mut current = root.clone();
+            if let Ok(metadata) = fs::symlink_metadata(&current).await
+                && metadata.file_type().is_symlink()
+            {
+                return Err("symbolic links are not allowed in the workspace".to_string());
+            }
+            for component in relative.components() {
+                let Component::Normal(name) = component else {
+                    continue;
+                };
+                current.push(name);
+                if let Ok(metadata) = fs::symlink_metadata(&current).await
+                    && metadata.file_type().is_symlink()
+                {
+                    return Err("symbolic links are not allowed in the workspace".to_string());
+                }
             }
             return Ok(root.join(relative));
         }
@@ -94,6 +119,25 @@ impl ScopedFiles {
 
 fn scope_component(name: &str) -> String {
     name.bytes().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn file_result(path: &str) -> serde_json::Value {
+    let mut components = Path::new(path).components();
+    let Some(Component::Normal(scope)) = components.next() else {
+        return serde_json::json!({});
+    };
+    if scope != "tools" {
+        return serde_json::json!({});
+    }
+    let Some(Component::Normal(name)) = components.next() else {
+        return serde_json::json!({});
+    };
+    let name = name.to_string_lossy();
+    serde_json::json!({
+        "next_step": format!(
+            "Do not create config.json. When tools/{name}/tool.js is complete, call register_tool with name '{name}' and a description; it writes config.json automatically."
+        ),
+    })
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -266,7 +310,7 @@ impl InternalTool for CreateFileTool {
                 .write_all(params.content.as_bytes())
                 .await
                 .map_err(|err| err.to_string())?;
-            Ok(serde_json::json!({}))
+            Ok(file_result(&params.path))
         }
         .await;
         responder.respond(result.map_err(crate::tools::ToolError::new));
@@ -329,7 +373,7 @@ impl InternalTool for UpdateFileTool {
             )
             .await
             .map_err(|err| err.to_string())?;
-            Ok(serde_json::json!({}))
+            Ok(file_result(&params.path))
         }
         .await;
         responder.respond(result.map_err(crate::tools::ToolError::new));
@@ -339,7 +383,16 @@ impl InternalTool for UpdateFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::InvocationScope;
+    use crate::bus::{ConversationKey, InvocationScope};
+
+    #[test]
+    fn tool_files_remind_the_agent_to_register() {
+        assert_eq!(
+            file_result("tools/weather/tool.js")["next_step"],
+            "Do not create config.json. When tools/weather/tool.js is complete, call register_tool with name 'weather' and a description; it writes config.json automatically."
+        );
+        assert_eq!(file_result("notes.txt"), serde_json::json!({}));
+    }
 
     #[tokio::test]
     async fn paths_are_isolated_by_scope() {
@@ -374,6 +427,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_directories_allow_hyphenated_tool_names() {
+        let root = std::env::temp_dir().join(format!("ironpaw-files-{}", uuid::Uuid::new_v4()));
+        let files = ScopedFiles::new(root.join("files"));
+        let ctx = ExecutionContext::new(InvocationScope::Conversation(ConversationKey {
+            channel: "test".to_string(),
+            chat_id: "test".to_string(),
+            thread_id: None,
+        }));
+
+        assert!(files.path(&ctx, "tools/hn-top5/tool.js").await.is_ok());
+    }
+
+    #[tokio::test]
     async fn paths_cannot_escape_the_scope() {
         let files = ScopedFiles::new(std::env::temp_dir());
         let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
@@ -381,6 +447,26 @@ mod tests {
         });
         assert!(files.path(&ctx, "../secrets").await.is_err());
         assert!(files.path(&ctx, "/etc/passwd").await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn managed_tool_paths_reject_symlinks() {
+        let root =
+            std::env::temp_dir().join(format!("ironpaw-file-tool-test-{}", uuid::Uuid::new_v4()));
+        let files = ScopedFiles::new(root.join("files"));
+        let tools = root.join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        std::os::unix::fs::symlink(std::env::temp_dir(), tools.join("outside")).unwrap();
+        let ctx = ExecutionContext::new(InvocationScope::Conversation(
+            crate::bus::ConversationKey {
+                channel: "tui".to_string(),
+                chat_id: "local".to_string(),
+                thread_id: None,
+            },
+        ));
+
+        assert!(files.path(&ctx, "tools/outside/tool.js").await.is_err());
     }
 
     #[tokio::test]
