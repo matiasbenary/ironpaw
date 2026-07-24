@@ -116,13 +116,9 @@ impl Agent {
                 Err(error) => debug_log(format!("memory recall failed: {error}")),
             }
         }
-        let mut compact_before_next_round = false;
         let mut round = 0;
         loop {
             round += 1;
-            if compact_before_next_round {
-                self.compact_history(&run.history_scope).await?;
-            }
             run.transient_messages
                 .extend(ctx.drain_tool_budget_messages());
             if let Some(conversation) = run.destination {
@@ -145,7 +141,14 @@ impl Agent {
             logger::raw_inference_request_logged(&request);
             let inference = self.inference.execute(request).await?;
             logger::raw_inference_response_logged(&inference);
-            compact_before_next_round = inference.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS;
+            if inference.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS {
+                if let Some(conversation) = run.destination {
+                    publish_progress(&self.bus, conversation, "compacting history...".to_string());
+                }
+                if let Err(error) = self.compact_history(&run.history_scope).await {
+                    debug_log(format!("history compaction failed: {error}"));
+                }
+            }
             let output = inference.message.clone();
             let Message::Assistant {
                 text, tool_calls, ..
