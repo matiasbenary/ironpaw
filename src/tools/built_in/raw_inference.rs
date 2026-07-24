@@ -37,14 +37,16 @@ pub struct RawInferenceOutput {
     pub usage: RawInferenceUsage,
 }
 
+/// Rust-facing model completion service. It is deliberately independent from
+/// the LLM-callable `raw_inference` tool below.
 #[derive(Clone)]
-pub struct RawInferenceTool {
+pub struct ModelInference {
     client: Client,
     base_url: String,
     secrets: ToolSecrets,
 }
 
-impl RawInferenceTool {
+impl ModelInference {
     pub fn new(secrets: ToolSecrets) -> Result<Self, HttpError> {
         let client = Client::builder()
             .timeout(Duration::from_secs(env_timeout_secs(
@@ -303,6 +305,18 @@ fn user_text_with_attachment_hints(text: &str, attachments: &[Attachment]) -> St
     result
 }
 
+/// LLM-callable wrapper around one model completion.
+#[derive(Clone)]
+pub struct RawInferenceTool {
+    inference: ModelInference,
+}
+
+impl RawInferenceTool {
+    pub fn new(inference: ModelInference) -> Self {
+        Self { inference }
+    }
+}
+
 #[async_trait]
 impl InternalTool for RawInferenceTool {
     fn name(&self) -> &str {
@@ -327,7 +341,9 @@ impl InternalTool for RawInferenceTool {
         let result = async {
             let request =
                 serde_json::from_value(args).map_err(|error| ToolError::new(error.to_string()))?;
-            let output = RawInferenceTool::execute(self, request)
+            let output = self
+                .inference
+                .execute(request)
                 .await
                 .map_err(ToolError::new)?;
             serde_json::to_value(output).map_err(|error| ToolError::new(error.to_string()))

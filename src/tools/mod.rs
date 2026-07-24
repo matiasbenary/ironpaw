@@ -36,7 +36,7 @@ use self::built_in::{
     image_generation::ImageGenerationTool,
     inspect_file::InspectFileTool,
     messages::{DeleteMessageTool, SendMessageTool},
-    raw_inference::RawInferenceTool,
+    raw_inference::{ModelInference, RawInferenceTool},
     request_user_input::RequestUserInputTool,
     search_history::SearchHistoryTool,
     setup::ListChannelsTool,
@@ -74,7 +74,7 @@ pub fn tool_result_json(result: &ToolResult) -> serde_json::Value {
 }
 
 pub struct InternalTools {
-    pub raw_inference: RawInferenceTool,
+    pub inference: ModelInference,
     pub create_tool: Arc<DynamicToolTool>,
     pub edit_tool: Arc<DynamicToolTool>,
     pub delete_tool: Arc<DynamicToolTool>,
@@ -191,7 +191,7 @@ impl InternalTools {
     pub fn new(
         bus: Bus,
         layout: RuntimeLayout,
-        raw_inference: RawInferenceTool,
+        inference: ModelInference,
         send_message: SendMessageTool,
         delete_message: DeleteMessageTool,
         files_dir: std::path::PathBuf,
@@ -217,7 +217,7 @@ impl InternalTools {
             Arc::new(tool)
         }
         for tool in vec![
-            tool(raw_inference.clone()),
+            tool(RawInferenceTool::new(inference.clone())),
             Arc::clone(&send_message) as Arc<dyn InternalTool>,
             Arc::clone(&delete_message) as Arc<dyn InternalTool>,
             tool(RequestUserInputTool::new(bus.clone())),
@@ -227,7 +227,7 @@ impl InternalTools {
             )),
             tool(InspectFileTool::new(
                 vec![files_dir, layout.download_dir()],
-                raw_inference.clone(),
+                inference.clone(),
             )),
             tool(DownloadFileTool::new(layout.download_dir())),
             tool(ListFilesTool::new(layout.files_dir())),
@@ -256,7 +256,7 @@ impl InternalTools {
             registry.add(tool).expect("unique built-in tool name");
         }
         Self {
-            raw_inference,
+            inference,
             create_tool,
             edit_tool,
             delete_tool,
@@ -519,7 +519,7 @@ mod tests {
         InternalTools::new(
             bus.clone(),
             layout,
-            RawInferenceTool::new(secrets.tools.clone()).unwrap(),
+            ModelInference::new(secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             DeleteMessageTool::new(bus),
             files_dir,

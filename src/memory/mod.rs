@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
 };
 
-use crate::{message::Message, secrets::ToolSecrets, tools::raw_inference::RawInferenceTool};
+use crate::{message::Message, secrets::ToolSecrets, tools::raw_inference::ModelInference};
 
 use near::MemoryInference;
 use sqlite::{MemoryRecord, SqliteMemory};
@@ -20,11 +20,11 @@ impl Memory {
     pub fn new(
         path: PathBuf,
         secrets: ToolSecrets,
-        raw_inference: RawInferenceTool,
+        inference: ModelInference,
     ) -> Result<Self, String> {
         Ok(Self {
             store: SqliteMemory::new(path)?,
-            inference: MemoryInference::new(secrets, raw_inference)?,
+            inference: MemoryInference::new(secrets, inference)?,
         })
     }
 

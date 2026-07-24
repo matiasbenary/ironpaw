@@ -7,20 +7,20 @@ use crate::{
     models,
     tools::{
         self, InternalTool,
-        raw_inference::{RawInferenceRequest, RawInferenceTool},
+        raw_inference::{ModelInference, RawInferenceRequest},
     },
 };
 
 pub struct InspectFileTool {
     file_dirs: Vec<PathBuf>,
-    raw_inference: RawInferenceTool,
+    inference: ModelInference,
 }
 
 impl InspectFileTool {
-    pub fn new(file_dirs: Vec<PathBuf>, raw_inference: RawInferenceTool) -> Self {
+    pub fn new(file_dirs: Vec<PathBuf>, inference: ModelInference) -> Self {
         Self {
             file_dirs,
-            raw_inference,
+            inference,
         }
     }
 }
@@ -123,7 +123,7 @@ impl InspectFileTool {
 
     async fn call_model(&self, model: String, input: Vec<Message>) -> Result<String, String> {
         let response = self
-            .raw_inference
+            .inference
             .execute(RawInferenceRequest {
                 model,
                 messages: input,

@@ -14,7 +14,7 @@ use ironpaw::{
         browser::BrowserUpdateTool,
         dynamic::DynamicTool,
         messages::{DeleteMessageTool, SendMessageTool},
-        raw_inference::RawInferenceTool,
+        raw_inference::ModelInference,
         setup::{
             InstallChannelTool, InstallToolTool, OnboardingTool, RemoveChannelTool, SetupServices,
         },
@@ -52,12 +52,12 @@ async fn main() -> io::Result<()> {
         .await
         .map_err(std::io::Error::other)?;
 
-    let raw_inference =
-        RawInferenceTool::new(secrets.tools.clone()).map_err(std::io::Error::other)?;
+    let inference =
+        ModelInference::new(secrets.tools.clone()).map_err(std::io::Error::other)?;
     let tools = Arc::new(InternalTools::new(
         bus.clone(),
         layout.clone(),
-        raw_inference,
+        inference,
         SendMessageTool::new(bus.clone(), {
             let files_dir = layout.files_dir();
             move |file_id| Attachment::from_file_id(&files_dir, file_id)
@@ -76,7 +76,7 @@ async fn main() -> io::Result<()> {
         Memory::new(
             layout.data_dir().join("memory.db"),
             secrets.tools.clone(),
-            tools.raw_inference.clone(),
+            tools.inference.clone(),
         )
         .map_err(io::Error::other)?,
     );
@@ -84,7 +84,7 @@ async fn main() -> io::Result<()> {
         bus.clone(),
         Arc::clone(&tools.registry),
         Arc::clone(&history),
-        tools.raw_inference.clone(),
+        tools.inference.clone(),
         memory,
     ));
     let automation_store = Arc::new(

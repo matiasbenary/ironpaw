@@ -290,7 +290,7 @@ mod tests {
         message::Message,
         tools::{
             InternalTools, InvocationScope, messages::SendMessageTool,
-            raw_inference::RawInferenceTool,
+            raw_inference::ModelInference,
         },
     };
 
@@ -310,7 +310,7 @@ mod tests {
         Arc::new(InternalTools::new(
             bus.clone(),
             layout,
-            RawInferenceTool::new(secrets.tools.clone()).unwrap(),
+            ModelInference::new(secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             crate::tools::messages::DeleteMessageTool::new(bus.clone()),
             files_dir,

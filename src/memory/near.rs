@@ -6,7 +6,7 @@ use crate::{
     message::Message,
     models,
     secrets::ToolSecrets,
-    tools::raw_inference::{RawInferenceRequest, RawInferenceTool},
+    tools::raw_inference::{ModelInference, RawInferenceRequest},
 };
 
 use super::sqlite::MemoryRecord;
@@ -31,11 +31,11 @@ pub(super) struct MemoryInference {
     client: Client,
     base_url: String,
     secrets: ToolSecrets,
-    raw_inference: RawInferenceTool,
+    inference: ModelInference,
 }
 
 impl MemoryInference {
-    pub fn new(secrets: ToolSecrets, raw_inference: RawInferenceTool) -> Result<Self, String> {
+    pub fn new(secrets: ToolSecrets, inference: ModelInference) -> Result<Self, String> {
         let client = Client::builder()
             .timeout(Duration::from_secs(180))
             .build()
@@ -45,7 +45,7 @@ impl MemoryInference {
             base_url: std::env::var("NEAR_BASE_URL")
                 .unwrap_or_else(|_| "https://cloud-api.near.ai".to_string()),
             secrets,
-            raw_inference,
+            inference,
         })
     }
 
@@ -69,7 +69,7 @@ impl MemoryInference {
             "current_date": today,
         });
         let response = self
-            .raw_inference
+            .inference
             .execute(RawInferenceRequest {
                 model: models::text_model(),
                 messages: vec![

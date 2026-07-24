@@ -19,7 +19,7 @@ use super::{
     preamble::system_preamble,
     utils::{publish_channel_action, publish_progress},
 };
-use crate::tools::raw_inference::{RawInferenceRequest, RawInferenceTool};
+use crate::tools::raw_inference::{ModelInference, RawInferenceRequest};
 
 /// The conversation a run replies to.
 pub type Destination<'a> = Option<&'a ConversationKey>;
@@ -29,7 +29,7 @@ pub struct Agent {
     bus: Bus,
     tools: Arc<ToolRegistry>,
     history: Arc<dyn History>,
-    raw_inference: RawInferenceTool,
+    inference: ModelInference,
     memory: Arc<Memory>,
 }
 
@@ -38,14 +38,14 @@ impl Agent {
         bus: Bus,
         tools: Arc<ToolRegistry>,
         history: Arc<dyn History>,
-        raw_inference: RawInferenceTool,
+        inference: ModelInference,
         memory: Arc<Memory>,
     ) -> Self {
         Self {
             bus,
             tools,
             history,
-            raw_inference,
+            inference,
             memory,
         }
     }
@@ -143,7 +143,7 @@ impl Agent {
             };
 
             logger::raw_inference_request_logged(&request);
-            let inference = self.raw_inference.execute(request).await?;
+            let inference = self.inference.execute(request).await?;
             logger::raw_inference_response_logged(&inference);
             compact_before_next_round = inference.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS;
             let output = inference.message.clone();
@@ -316,7 +316,7 @@ impl Agent {
         }
         let transcript = serde_json::to_string(&messages).map_err(|err| err.to_string())?;
         let response = self
-            .raw_inference
+            .inference
             .execute(RawInferenceRequest {
                 model: models::text_model(),
                 messages: vec![

@@ -312,7 +312,7 @@ mod tests {
     use crate::{
         bus::Bus,
         history::SqliteHistory,
-        tools::{InternalTools, messages::SendMessageTool, raw_inference::RawInferenceTool},
+        tools::{InternalTools, messages::SendMessageTool, raw_inference::ModelInference},
     };
 
     fn bound_dynamic_tools() -> (Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf) {
@@ -331,7 +331,7 @@ mod tests {
         let tools = Arc::new(InternalTools::new(
             bus.clone(),
             layout.clone(),
-            RawInferenceTool::new(secrets.tools.clone()).unwrap(),
+            ModelInference::new(secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             crate::tools::messages::DeleteMessageTool::new(bus),
             files_dir,
