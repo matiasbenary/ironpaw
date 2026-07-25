@@ -19,7 +19,7 @@ use super::{
     preamble::system_preamble,
     utils::{publish_channel_action, publish_progress},
 };
-use crate::tools::raw_inference::{ModelInference, RawInferenceRequest};
+use crate::tools::raw_inference::{InferenceError, ModelInference, RawInferenceRequest};
 
 /// The conversation a run replies to.
 pub type Destination<'a> = Option<&'a ConversationKey>;
@@ -139,7 +139,19 @@ impl Agent {
             };
 
             logger::raw_inference_request_logged(&request);
-            let inference = self.inference.execute(request).await?;
+            let inference = match self.inference.execute(request).await {
+                Ok(inference) => inference,
+                Err(InferenceError::ApiKey(error)) => {
+                    if let Some(conversation) = run.destination {
+                        self.bus.publish(Event::ApiKeyError {
+                            conversation: conversation.clone(),
+                            error: error.clone(),
+                        });
+                    }
+                    return Err(error.message);
+                }
+                Err(InferenceError::Other(error)) => return Err(error),
+            };
             logger::raw_inference_response_logged(&inference);
             if inference.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS {
                 if let Some(conversation) = run.destination {
@@ -334,7 +346,8 @@ impl Agent {
                 ],
                 tools: Vec::new(),
             })
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
         let Message::Assistant { text, .. } = response.message else {
             return Err(
                 "history compaction model response was not an assistant message".to_string(),

@@ -20,6 +20,8 @@ pub enum Trigger {
     },
     /// Fires when a conversation-owned tool request has finished.
     ToolResult,
+    /// Fires when the conversation agent cannot authenticate with its API key.
+    ApiKeyError,
 }
 
 mod datetime_serde {
@@ -92,6 +94,7 @@ impl Trigger {
             (Trigger::ToolResult, Event::ToolResult { context, .. }) => {
                 matches!(context.invoked_by, InvocationScope::Conversation(_))
             }
+            (Trigger::ApiKeyError, Event::ApiKeyError { .. }) => true,
             _ => false,
         }
     }
@@ -114,7 +117,7 @@ pub(crate) fn parse_datetime(text: &str) -> Result<chrono::DateTime<chrono::Fixe
 mod tests {
     use super::*;
     use crate::{
-        bus::{ConversationKey, Event, Sender},
+        bus::{ApiKeyError, ConversationKey, Event, Sender},
         message::Message,
     };
 
@@ -173,6 +176,22 @@ mod tests {
             },
             Sender::Guest("123".to_string()),
         )));
+        assert!(!trigger.matches(&message_in("tui", Sender::User("local".to_string()))));
+    }
+
+    #[test]
+    fn api_key_error_trigger_matches_api_key_errors() {
+        let trigger = Trigger::ApiKeyError;
+        assert!(trigger.matches(&Event::ApiKeyError {
+            conversation: ConversationKey {
+                channel: "tui".to_string(),
+                chat_id: "c1".to_string(),
+                thread_id: None,
+            },
+            error: ApiKeyError {
+                message: "key rejected".to_string(),
+            },
+        }));
         assert!(!trigger.matches(&message_in("tui", Sender::User("local".to_string()))));
     }
 

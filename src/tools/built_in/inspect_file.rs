@@ -129,7 +129,8 @@ impl InspectFileTool {
                 messages: input,
                 tools: Vec::new(),
             })
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
         let Message::Assistant { text, .. } = response.message else {
             return Err("file inspection model response was not an assistant message".to_string());
         };

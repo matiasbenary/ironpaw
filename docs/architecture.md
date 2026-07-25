@@ -556,3 +556,17 @@ The model seems to take well to using an `inspect_file` tool to "see" the image,
 Tried using the `/responses` API, but NEAR AI's `previous_response_id` does not load conversation history into the model.
 
 The agent therefore does not rely on `previous_response_id` or `function_call_output` for its main loop.
+
+
+
+---
+
+## Brainstorming: Recovering on AI Inference Error
+
+AI Inference can have a specific problem: the api-key runs out of money, or expires, and now the agent becomes obsolete. When that happens, we cannot rely on the LLM fixing itself, because we literally cannot call it. This means that, we need a way for `ironpaw` as a whole to recover from this situation (i.e. to start an automation that asks the user to provide a new api-key, and then continue the conversation).
+
+One option would be, we could make the AI agent raise a specific error, lets call it `InferenceError`, and then the agent would publish that error to the bus, and then we could have an automation that listens for that error, and then asks the user to provide a new api-key, and then continue the conversation.
+
+It is important to remember though that not only the agent relies on the AI inference, but also the `history` (for compaction), the `memory` (for embeddings), `tools`, and `automations` (those that use `AgentTasks`). I think `history`, `memory` and `tools` would only fail because of inference within an agent loop, so those cases should be covered (i.e. the agent can detect them and trigger the `InferenceError`).
+
+Other option would be to separate the agent's logic in such a way that it does `ai inference` through a request in the `bus` (i.e. we introduce `InferenceRequest` and `InferenceAnswer` and model Agents around it... and possibly other modules). Then, it is the Inference module itself (called ModelInference I think) the one that could centralize the error and raise it. But again, we need to handle the case of `automations` because for those we cannot raise an error, because they are not in a conversation, thus we cannot ask the user for a new api-key.

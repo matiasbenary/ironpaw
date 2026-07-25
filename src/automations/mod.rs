@@ -177,6 +177,7 @@ impl Automations {
                 conversation,
             },
             AutomationTriggerSpec::ToolResult => Trigger::ToolResult,
+            AutomationTriggerSpec::ApiKeyError => Trigger::ApiKeyError,
         };
         let automation = Automation {
             name: spec.name,
@@ -219,7 +220,7 @@ impl Automations {
         match &automation.trigger {
             Trigger::At { datetime } => self.spawn_at(automation.clone(), *datetime),
             Trigger::Cron { expression } => self.spawn_cron(automation.clone(), expression.clone()),
-            Trigger::MessageIn { .. } | Trigger::ToolResult => {}
+            Trigger::MessageIn { .. } | Trigger::ToolResult | Trigger::ApiKeyError => {}
         }
         Ok(())
     }
@@ -557,6 +558,9 @@ fn trigger_json(trigger: &Trigger) -> serde_json::Value {
         }),
         Trigger::ToolResult => serde_json::json!({
             "type": "tool_result",
+        }),
+        Trigger::ApiKeyError => serde_json::json!({
+            "type": "api_key_error",
         }),
     }
 }

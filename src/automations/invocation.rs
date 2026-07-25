@@ -54,6 +54,20 @@ pub(super) fn from_bus(event: &Event) -> Option<(ExecutionContext, serde_json::V
                 }),
             ))
         }
+        Event::ApiKeyError {
+            conversation,
+            error,
+        } => Some((
+            ExecutionContext::new(InvocationScope::Conversation(conversation.clone())),
+            serde_json::json!({
+                "type": "api_key_error",
+                "channel": &conversation.channel,
+                "conversation": conversation,
+                "chat_id": &conversation.chat_id,
+                "thread_id": &conversation.thread_id,
+                "error": error,
+            }),
+        )),
         _ => None,
     }
 }

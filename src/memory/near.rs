@@ -81,7 +81,8 @@ impl MemoryInference {
                 ],
                 tools: Vec::new(),
             })
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
         let Message::Assistant {
             text: Some(text), ..
         } = response.message

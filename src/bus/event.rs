@@ -152,6 +152,12 @@ pub enum AutomationTriggerSpec {
         conversation: Option<ConversationKey>,
     },
     ToolResult,
+    ApiKeyError,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiKeyError {
+    pub message: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -228,6 +234,10 @@ pub enum Event {
     AgentResult {
         execution_id: String,
         result: Result<Option<String>, String>,
+    },
+    ApiKeyError {
+        conversation: ConversationKey,
+        error: ApiKeyError,
     },
     ToolRequest {
         context: ExecutionContext,

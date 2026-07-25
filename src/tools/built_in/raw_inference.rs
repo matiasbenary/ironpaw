@@ -5,12 +5,36 @@ use base64::Engine as _;
 use reqwest::Client;
 
 use crate::{
+    bus::ApiKeyError,
     http::HttpError,
     message::{Attachment, Message, ToolCall, ToolDefinition},
     models,
     secrets::ToolSecrets,
     tools::{self, InternalTool, ToolError},
 };
+
+#[derive(Clone, Debug)]
+pub enum InferenceError {
+    ApiKey(ApiKeyError),
+    Other(String),
+}
+
+impl std::fmt::Display for InferenceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ApiKey(error) => error.message.fmt(formatter),
+            Self::Other(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for InferenceError {}
+
+impl From<String> for InferenceError {
+    fn from(error: String) -> Self {
+        Self::Other(error)
+    }
+}
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct RawInferenceRequest {
@@ -74,12 +98,13 @@ impl ModelInference {
     pub async fn execute(
         &self,
         request: RawInferenceRequest,
-    ) -> Result<RawInferenceOutput, String> {
-        let near_api_key = self
-            .secrets
-            .get("NEAR_API_KEY")
-            .ok_or_else(|| "missing tool secret: NEAR_API_KEY".to_string())?;
-        let chat_request = self.chat_request(&request)?;
+    ) -> Result<RawInferenceOutput, InferenceError> {
+        let near_api_key = self.secrets.get("NEAR_API_KEY").ok_or_else(|| {
+            InferenceError::ApiKey(ApiKeyError {
+                message: "missing tool secret: NEAR_API_KEY".to_string(),
+            })
+        })?;
+        let chat_request = self.chat_request(&request).map_err(InferenceError::Other)?;
 
         let response = self
             .client
@@ -89,22 +114,28 @@ impl ModelInference {
             .send()
             .await
             .map_err(sanitize_reqwest_error)
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| InferenceError::Other(err.to_string()))?;
         let status = response.status();
         let body = response
             .text()
             .await
             .map_err(sanitize_reqwest_error)
-            .map_err(|err| err.to_string())?;
+            .map_err(|err| InferenceError::Other(err.to_string()))?;
 
         if !status.is_success() {
-            return Err(format!("request failed with {status}: {body}"));
+            let message = format!("request failed with {status}: {body}");
+            return Err(if is_api_key_status(status) {
+                InferenceError::ApiKey(ApiKeyError { message })
+            } else {
+                InferenceError::Other(message)
+            });
         }
 
-        let response = serde_json::from_str(&body)
-            .map_err(|err| format!("failed to parse chat response JSON: {err}"))?;
+        let response = serde_json::from_str(&body).map_err(|err| {
+            InferenceError::Other(format!("failed to parse chat response JSON: {err}"))
+        })?;
 
-        response_to_output(response)
+        response_to_output(response).map_err(InferenceError::Other)
     }
 
     fn chat_request(&self, request: &RawInferenceRequest) -> Result<serde_json::Value, String> {
@@ -197,6 +228,15 @@ impl ModelInference {
             base64::engine::general_purpose::STANDARD.encode(data)
         ))
     }
+}
+
+fn is_api_key_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED
+            | reqwest::StatusCode::PAYMENT_REQUIRED
+            | reqwest::StatusCode::FORBIDDEN
+    )
 }
 
 fn response_to_output(response: serde_json::Value) -> Result<RawInferenceOutput, String> {
@@ -345,7 +385,7 @@ impl InternalTool for RawInferenceTool {
                 .inference
                 .execute(request)
                 .await
-                .map_err(ToolError::new)?;
+                .map_err(|error| ToolError::new(error.to_string()))?;
             serde_json::to_value(output).map_err(|error| ToolError::new(error.to_string()))
         }
         .await;
@@ -379,7 +419,7 @@ fn env_timeout_secs(name: &str, default: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_tool_arguments;
+    use super::{is_api_key_status, normalize_tool_arguments};
 
     #[test]
     fn removes_deepseek_trailing_empty_string_from_valid_json() {
@@ -392,5 +432,16 @@ mod tests {
             normalize_tool_arguments("{\"still\":\"broken\""),
             "{\"still\":\"broken\""
         );
+    }
+
+    #[test]
+    fn only_credential_statuses_are_api_key_errors() {
+        assert!(is_api_key_status(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(is_api_key_status(reqwest::StatusCode::PAYMENT_REQUIRED));
+        assert!(is_api_key_status(reqwest::StatusCode::FORBIDDEN));
+        assert!(!is_api_key_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(!is_api_key_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
     }
 }
