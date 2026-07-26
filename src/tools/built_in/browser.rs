@@ -133,35 +133,35 @@ impl BrowserTool {
             let session = sessions.get(&key).expect("session inserted");
             execute_session(session, &params).await
         };
-        if let Err(error) = &result {
-            if is_connection_error(error) {
-                let session = sessions.remove(&key).expect("session exists");
-                let log = chrome_log_tail(&session.log_path);
-                let log_path = session.log_path.display().to_string();
-                let last_url = session.last_url.clone();
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                key.hash(&mut hasher);
-                let profile = self
-                    .layout
-                    .data_dir()
-                    .join("browser")
-                    .join(format!("{:x}", hasher.finish()));
-                let replacement = launch_session(&self.layout, profile).await?;
-                if let Some(url) = last_url.filter(|url| !url.is_empty() && url != "about:blank") {
-                    replacement.page.goto(url).await.map_err(|err| {
-                        format!("browser restarted but could not restore its page: {err}")
-                    })?;
-                }
-                let retry = matches!(params, BrowserParams::Snapshot | BrowserParams::Goto { .. });
-                sessions.insert(key.clone(), replacement);
-                if retry {
-                    let session = sessions.get(&key).expect("replacement inserted");
-                    return execute_session(session, &params).await;
-                }
-                return Err(format!(
-                    "{error}\nBrowser session restarted; call browser({{action:'snapshot'}}) before retrying this action. Chrome log ({log_path}): {log}",
-                ));
+        if let Err(error) = &result
+            && is_connection_error(error)
+        {
+            let session = sessions.remove(&key).expect("session exists");
+            let log = chrome_log_tail(&session.log_path);
+            let log_path = session.log_path.display().to_string();
+            let last_url = session.last_url.clone();
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut hasher);
+            let profile = self
+                .layout
+                .data_dir()
+                .join("browser")
+                .join(format!("{:x}", hasher.finish()));
+            let replacement = launch_session(&self.layout, profile).await?;
+            if let Some(url) = last_url.filter(|url| !url.is_empty() && url != "about:blank") {
+                replacement.page.goto(url).await.map_err(|err| {
+                    format!("browser restarted but could not restore its page: {err}")
+                })?;
             }
+            let retry = matches!(params, BrowserParams::Snapshot | BrowserParams::Goto { .. });
+            sessions.insert(key.clone(), replacement);
+            if retry {
+                let session = sessions.get(&key).expect("replacement inserted");
+                return execute_session(session, &params).await;
+            }
+            return Err(format!(
+                "{error}\nBrowser session restarted; call browser({{action:'snapshot'}}) before retrying this action. Chrome log ({log_path}): {log}",
+            ));
         }
         if let Ok(output) = &result {
             sessions.get_mut(&key).expect("session exists").last_url = Some(output.url.clone());

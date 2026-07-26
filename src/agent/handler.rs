@@ -58,6 +58,18 @@ impl AgentHandler {
                                 tool_calls: Vec::new(),
                             },
                         });
+                    } else if let Err(error) = &result {
+                        bus.publish(Event::MessageOut {
+                            channel: conversation.channel.clone(),
+                            chat_id: Some(conversation.chat_id.clone()),
+                            thread_id: conversation.thread_id.clone(),
+                            message_id: None,
+                            message: Message::Assistant {
+                                text: Some(format!("I couldn't complete your request: {error}")),
+                                attachments: Vec::new(),
+                                tool_calls: Vec::new(),
+                            },
+                        });
                     }
                     result
                 }

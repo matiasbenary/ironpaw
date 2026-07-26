@@ -29,29 +29,18 @@ pub struct SetupConfig {
     pub value_type: ConfigValueType,
 }
 
-#[derive(Clone, Default, serde::Deserialize)]
+#[derive(Clone, Copy, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ConfigValueType {
-    #[serde(rename = "string")]
     #[default]
     String,
-    #[serde(rename = "number")]
     Number,
-    #[serde(rename = "bool", alias = "boolean")]
+    #[serde(alias = "boolean")]
     Bool,
 }
 
 pub fn default_secret_length() -> usize {
     32
-}
-
-impl ConfigValueType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ConfigValueType::String => "string",
-            ConfigValueType::Number => "number",
-            ConfigValueType::Bool => "bool",
-        }
-    }
 }
 
 pub fn config_prompt(config: &SetupConfig) -> &str {
@@ -64,7 +53,7 @@ pub fn config_statuses(configs: Vec<SetupConfig>) -> Vec<serde_json::Value> {
         .map(|config| {
             serde_json::json!({
                 "path": config.path,
-                "type": config.value_type.as_str(),
+                "type": config.value_type,
                 "prompt": config_prompt(&config),
             })
         })
@@ -205,27 +194,20 @@ pub fn write_package_artifacts(
 }
 
 pub fn discover_package_dir_names(source_dirs: Vec<PathBuf>) -> Vec<String> {
-    let mut names = Vec::new();
-    for source_root in source_dirs {
-        let Ok(entries) = std::fs::read_dir(source_root) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            if entry.path().join(format!("{name}.install.json")).exists() {
-                names.push(name);
-            }
-        }
-    }
-    names
+    source_dirs
+        .into_iter()
+        .flat_map(|root| std::fs::read_dir(root).into_iter().flatten())
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            entry
+                .path()
+                .join(format!("{name}.install.json"))
+                .exists()
+                .then_some(name)
+        })
+        .collect()
 }
 
 pub fn set_json_pointer(
@@ -239,20 +221,13 @@ pub fn set_json_pointer(
     let mut current = value;
     let mut parts = path.split('/').map(pointer_part).peekable();
     while let Some(part) = parts.next() {
+        let object = current
+            .as_object_mut()
+            .ok_or_else(|| format!("config path '/{path}' does not point into an object"))?;
         if parts.peek().is_none() {
-            let Some(object) = current.as_object_mut() else {
-                return Err(format!(
-                    "config path '/{path}' does not point into an object"
-                ));
-            };
             object.insert(part, replacement);
             return Ok(());
         }
-        let Some(object) = current.as_object_mut() else {
-            return Err(format!(
-                "config path '/{path}' does not point into an object"
-            ));
-        };
         current = object
             .entry(part)
             .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));

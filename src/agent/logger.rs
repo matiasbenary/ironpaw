@@ -1,18 +1,18 @@
 use crate::{
+    inference::{InferenceOutput, InferenceRequest},
     message::{Message, ToolCall},
-    tools::raw_inference::{RawInferenceOutput, RawInferenceRequest},
 };
 
 const LOG_PATH: &str = "/Users/gagdiez/tmp/miniclaw/release/llm_requests.log";
 
-pub(super) fn raw_inference_request_logged(request: &RawInferenceRequest) {
+pub(super) fn raw_inference_request_logged(request: &InferenceRequest) {
     let Ok(request) = serde_json::to_string(request) else {
         return;
     };
     append(&format!("=== RAW LLM REQUEST ===\n{request}"));
 }
 
-pub(super) fn raw_inference_response_logged(response: &RawInferenceOutput) {
+pub(super) fn raw_inference_response_logged(response: &InferenceOutput) {
     let Ok(response) = serde_json::to_string(response) else {
         return;
     };

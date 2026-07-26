@@ -61,7 +61,11 @@ impl DynamicToolTool {
         }
     }
 
-    fn save(&self, params: CreateToolParams, must_exist: bool) -> Result<serde_json::Value, String> {
+    fn save(
+        &self,
+        params: CreateToolParams,
+        must_exist: bool,
+    ) -> Result<serde_json::Value, String> {
         let name = params.name.trim().to_string();
         if !valid_tool_name(&name) {
             return Err(
@@ -214,11 +218,7 @@ impl DynamicTool {
         ))
     }
 
-    fn write_files(
-        dir: &Path,
-        script: &str,
-        manifest: &DynamicToolManifest,
-    ) -> Result<(), String> {
+    fn write_files(dir: &Path, script: &str, manifest: &DynamicToolManifest) -> Result<(), String> {
         fs::create_dir_all(dir)
             .map_err(|err| format!("failed to create {}: {err}", dir.display()))?;
         let script_path = dir.join("tool.js");
@@ -312,7 +312,8 @@ mod tests {
     use crate::{
         bus::Bus,
         history::SqliteHistory,
-        tools::{InternalTools, messages::SendMessageTool, raw_inference::ModelInference},
+        inference::Inference,
+        tools::{InternalTools, messages::SendMessageTool},
     };
 
     fn bound_dynamic_tools() -> (Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf) {
@@ -331,7 +332,7 @@ mod tests {
         let tools = Arc::new(InternalTools::new(
             bus.clone(),
             layout.clone(),
-            ModelInference::new(secrets.tools.clone()).unwrap(),
+            Inference::new(bus.clone(), secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             crate::tools::messages::DeleteMessageTool::new(bus),
             files_dir,
@@ -350,15 +351,18 @@ mod tests {
 
         let result = tools
             .create_tool
-            .save(CreateToolParams {
-                name: "hello_dynamic".to_string(),
-                description: "Say hello.".to_string(),
-                parameters: Some(serde_json::json!({
-                    "type": "object",
-                    "properties": { "name": { "type": "string" } }
-                })),
-                script: "return { greeting: 'hello' };".to_string(),
-            }, false)
+            .save(
+                CreateToolParams {
+                    name: "hello_dynamic".to_string(),
+                    description: "Say hello.".to_string(),
+                    parameters: Some(serde_json::json!({
+                        "type": "object",
+                        "properties": { "name": { "type": "string" } }
+                    })),
+                    script: "return { greeting: 'hello' };".to_string(),
+                },
+                false,
+            )
             .expect("tool should be registered");
 
         assert_eq!(result["name"], "hello_dynamic");
@@ -428,12 +432,15 @@ mod tests {
     fn create_tool_rejects_internal_tool_names() {
         let (tools, _scripts, _tools_dir) = bound_dynamic_tools();
 
-        let result = tools.create_tool.save(CreateToolParams {
-            name: "send_message".to_string(),
-            description: "Override send_message.".to_string(),
-            parameters: None,
-            script: "return null;".to_string(),
-        }, false);
+        let result = tools.create_tool.save(
+            CreateToolParams {
+                name: "send_message".to_string(),
+                description: "Override send_message.".to_string(),
+                parameters: None,
+                script: "return null;".to_string(),
+            },
+            false,
+        );
 
         assert!(result.is_err());
         assert!(tools.registry.contains("send_message"));
@@ -443,12 +450,15 @@ mod tests {
     fn create_tool_rejects_invalid_javascript() {
         let (tools, _scripts, _tools_dir) = bound_dynamic_tools();
 
-        let result = tools.create_tool.save(CreateToolParams {
-            name: "bad_script".to_string(),
-            description: "Bad script.".to_string(),
-            parameters: None,
-            script: "const nope = ;".to_string(),
-        }, false);
+        let result = tools.create_tool.save(
+            CreateToolParams {
+                name: "bad_script".to_string(),
+                description: "Bad script.".to_string(),
+                parameters: None,
+                script: "const nope = ;".to_string(),
+            },
+            false,
+        );
 
         assert!(result.is_err());
         assert!(!tools.registry.contains("bad_script"));

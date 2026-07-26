@@ -35,6 +35,7 @@ pub(super) fn from_bus(event: &Event) -> Option<(ExecutionContext, serde_json::V
             tool_call_id,
             tool_name,
             result,
+            ..
         } => {
             let conversation = match &context.invoked_by {
                 InvocationScope::Conversation(conversation) => Some(conversation),

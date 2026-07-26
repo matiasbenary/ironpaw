@@ -11,7 +11,7 @@ use crate::{
             install_common::{
                 config_prompt, config_value, is_yes, secret_value, stored_secret_name,
             },
-            publish_tool_result, send, stop_setup_automation,
+            publish_tool_result, request_choice, send, stop_setup_automation,
         },
     },
 };
@@ -149,9 +149,10 @@ impl SetupChannelTool {
                         self.finish(session, tools, automations, ctx, false).await?;
                     }
                     "continue" => {
-                        send(
+                        request_verification_choice(
                             tools,
-                            "The channel has not started successfully yet. Reply retry to reconfigure it, or rollback to cancel setup.",
+                            "The channel has not started successfully yet.",
+                            false,
                             ctx,
                         )
                         .await?;
@@ -160,20 +161,22 @@ impl SetupChannelTool {
                         self.rollback(session, tools, automations, ctx).await?;
                     }
                     _ if activated => {
-                        send(
+                        request_verification_choice(
                             tools,
                             &format!(
-                                "I am waiting for a message from the {} channel containing the verification code I sent above. Reply retry to reconfigure, continue to skip verification, or rollback to cancel setup.",
+                                "I am waiting for a message from the {} channel containing the verification code I sent above.",
                                 session.package.name
                             ),
+                            true,
                             ctx,
                         )
                         .await?;
                     }
                     _ => {
-                        send(
+                        request_verification_choice(
                             tools,
-                            "Reply retry to reconfigure the channel, or rollback to cancel setup.",
+                            "The channel is not ready yet.",
+                            false,
                             ctx,
                         )
                         .await?;
@@ -236,13 +239,15 @@ impl SetupChannelTool {
                 send(
                     tools,
                     &format!(
-                        "The {} channel is installed and started. Send me this code from that channel to confirm it works: {}. You can also reply retry to reconfigure, continue to skip verification, or rollback to cancel setup.",
+                        "The {} channel is installed and started. Send me this code from that channel to confirm it works: {}.",
                         session.package.name,
                         code
                     ),
                     ctx,
                 )
-                .await
+                .await?;
+                request_verification_choice(tools, "Or choose how to continue setup.", true, ctx)
+                    .await
             }
             Err(err) => {
                 let mut session = session;
@@ -251,11 +256,10 @@ impl SetupChannelTool {
                     code: verification_code(),
                 };
                 self.save_session(session);
-                send(
+                request_verification_choice(
                     tools,
-                    &format!(
-                        "I installed the channel files, but the channel did not start: {err}. Reply retry to reconfigure it, or rollback to cancel setup."
-                    ),
+                    &format!("I installed the channel files, but the channel did not start: {err}"),
+                    false,
                     ctx,
                 )
                 .await
@@ -395,6 +399,24 @@ impl SetupChannelTool {
             .activate_installed_channel(&package.name, package.manifest.external)
             .await
     }
+}
+
+async fn request_verification_choice(
+    tools: &InternalTools,
+    question: &str,
+    activated: bool,
+    ctx: &ExecutionContext,
+) -> Result<(), String> {
+    let options = if activated {
+        &[
+            ("Retry setup", "retry"),
+            ("Continue", "continue"),
+            ("Rollback", "rollback"),
+        ][..]
+    } else {
+        &[("Retry setup", "retry"), ("Rollback", "rollback")][..]
+    };
+    request_choice(tools, question, options, ctx).await
 }
 
 fn stop_setup_automations(automations: &Arc<Automations>, name: &str) -> Result<(), String> {

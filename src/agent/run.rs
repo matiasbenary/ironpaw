@@ -3,34 +3,34 @@ use std::{collections::HashSet, sync::Arc};
 use crate::{
     bus::{Bus, ChannelAction, ConversationKey, Event},
     history::{History, HistoryEntry, HistoryScope, MessageMetadata},
+    inference::{Inference, InferenceError, InferenceRequest},
     memory::Memory,
-    message::{Message, ToolCall, ToolDefinition},
+    message::{Message, ToolCall},
     models,
     tools::{
         self, ExecutionContext, InternalTool, InvocationScope, ToolRegistry, tool_result_json,
     },
 };
 
-const DEFAULT_TASK_TOOLS: [&str; 4] = ["list_files", "read_file", "create_file", "update_file"];
-const COMPACT_AT_PROMPT_TOKENS: u64 = 256_000;
-
 use super::{
     logger,
     preamble::system_preamble,
     utils::{publish_channel_action, publish_progress},
 };
-use crate::tools::raw_inference::{InferenceError, ModelInference, RawInferenceRequest};
+
+const DEFAULT_TASK_TOOLS: [&str; 4] = ["list_files", "read_file", "create_file", "update_file"];
+const COMPACT_AT_PROMPT_TOKENS: u64 = 256_000;
 
 /// The conversation a run replies to.
 pub type Destination<'a> = Option<&'a ConversationKey>;
 
-/// The bounded tool loop: history + raw_inference + tool execution.
+/// Entry point for conversation and scheduled-agent runs.
 pub struct Agent {
-    bus: Bus,
-    tools: Arc<ToolRegistry>,
-    history: Arc<dyn History>,
-    inference: ModelInference,
-    memory: Arc<Memory>,
+    pub(super) bus: Bus,
+    pub(super) tools: Arc<ToolRegistry>,
+    pub(super) history: Arc<dyn History>,
+    pub(super) inference: Inference,
+    pub(super) memory: Arc<Memory>,
 }
 
 impl Agent {
@@ -38,7 +38,7 @@ impl Agent {
         bus: Bus,
         tools: Arc<ToolRegistry>,
         history: Arc<dyn History>,
-        inference: ModelInference,
+        inference: Inference,
         memory: Arc<Memory>,
     ) -> Self {
         Self {
@@ -49,7 +49,9 @@ impl Agent {
             memory,
         }
     }
+}
 
+impl Agent {
     pub async fn handle_conversation(
         &self,
         destination: Destination<'_>,
@@ -105,17 +107,14 @@ impl Agent {
         .await
     }
 
-    /// Shared bounded tool loop. `transient_messages` are included in the
-    /// model input for this run but are not persisted by the agent as user
-    /// history.
     async fn run(&self, mut run: AgentRun<'_>) -> Result<Option<String>, String> {
-        let ctx = run.context.clone();
         if let Some(query) = self.latest_user_text(&run.history_scope)? {
             match self.memory.recall(&query).await {
                 Ok(memories) => run.recalled_memories = memories,
                 Err(error) => debug_log(format!("memory recall failed: {error}")),
             }
         }
+        let ctx = run.context.clone();
         let mut round = 0;
         loop {
             round += 1;
@@ -124,33 +123,28 @@ impl Agent {
             if let Some(conversation) = run.destination {
                 publish_channel_action(&self.bus, conversation, ChannelAction::Typing);
             }
-            let available_tools = tool_definitions(&run.tools);
-            let model_messages = self.model_messages(&run)?;
-            debug_log(format!(
-                "agent: round {} calling chat_completions(messages={}, tools={})",
-                round,
-                model_messages.len(),
-                available_tools.len()
-            ));
-            let request = RawInferenceRequest {
-                model: models::text_model(),
-                messages: model_messages,
-                tools: available_tools,
-            };
 
+            let tools = run
+                .tools
+                .iter()
+                .map(|tool| tools::definition_for_model(tool.as_ref()))
+                .collect::<Vec<_>>();
+            let messages = self.model_messages(&run)?;
+            debug_log(format!(
+                "agent: round {round} calling chat_completions(messages={}, tools={})",
+                messages.len(),
+                tools.len()
+            ));
+            let request = InferenceRequest {
+                model: models::text_model(),
+                messages,
+                tools,
+            };
             logger::raw_inference_request_logged(&request);
-            let inference = match self.inference.execute(request).await {
+            let inference = match self.inference.execute(request, run.destination).await {
                 Ok(inference) => inference,
-                Err(InferenceError::ApiKey(error)) => {
-                    if let Some(conversation) = run.destination {
-                        self.bus.publish(Event::ApiKeyError {
-                            conversation: conversation.clone(),
-                            error: error.clone(),
-                        });
-                    }
-                    return Err(error.message);
-                }
-                Err(InferenceError::Other(error)) => return Err(error),
+                Err(InferenceError::ApiKey(_)) => return Ok(None),
+                Err(error) => return Err(error.to_string()),
             };
             logger::raw_inference_response_logged(&inference);
             if inference.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS {
@@ -161,7 +155,8 @@ impl Agent {
                     debug_log(format!("history compaction failed: {error}"));
                 }
             }
-            let output = inference.message.clone();
+
+            let output = inference.message;
             let Message::Assistant {
                 text, tool_calls, ..
             } = output.clone()
@@ -170,60 +165,73 @@ impl Agent {
             };
             run.transient_messages.clear();
             if tool_calls.is_empty() {
-                debug_log(format!(
-                    "agent: round {} finished with assistant text",
-                    round
-                ));
                 if text.as_deref().is_some_and(|text| !text.is_empty()) {
-                    let scope = &run.history_scope;
-                    self.history
-                        .append_scope(scope, &[history_entry(output.clone(), scope)])?;
-                    self.ingest_memory(scope);
+                    let metadata = match &run.history_scope {
+                        HistoryScope::Conversation(conversation) => {
+                            MessageMetadata::new(conversation.clone(), None)
+                        }
+                        HistoryScope::Automation(automation_id) => {
+                            MessageMetadata::for_automation(automation_id.clone())
+                        }
+                    };
+                    self.history.append_scope(
+                        &run.history_scope,
+                        &[HistoryEntry {
+                            message: output,
+                            metadata,
+                        }],
+                    )?;
+                    self.ingest_memory(&run.history_scope);
                 }
                 return Ok(text.filter(|text| !text.is_empty()));
             }
+            self.handle_tool_calls(&mut run, output, tool_calls).await?;
+        }
+    }
 
-            debug_log(format!(
-                "agent: round {} received {} tool call(s)",
-                round,
-                tool_calls.len()
-            ));
-            let mut tool_results = Vec::new();
-            let mut tool_requests = Vec::new();
-            for tool_call in tool_calls {
-                self.publish_tool_progress(run.destination, &tool_call.name);
-                logger::raw_tool_call_logged(&tool_call);
-                match prepare_tool_request(tool_call, run.allowed_tool_names.as_deref()) {
-                    PreparedToolCall::Request { tool_call, args } => {
-                        tool_requests.push((tool_call, args));
-                    }
-                    PreparedToolCall::Result(message) => tool_results.push(message),
-                }
-            }
-            if !tool_results.is_empty() {
-                logger::raw_tool_results_logged(&tool_results);
-                run.transient_messages
-                    .push(assistant_message_for_tool_results(output, &tool_results));
-                run.transient_messages.extend(tool_results);
-            }
-            if !tool_requests.is_empty() {
-                let mut events = self.bus.subscribe();
-                let pending = tool_requests
-                    .iter()
-                    .map(|(tool_call, _)| tool_call.id.clone())
-                    .collect::<HashSet<_>>();
-                for (tool_call, args) in tool_requests {
-                    self.bus.publish(Event::ToolRequest {
-                        context: ctx.clone(),
-                        tool_call,
-                        args,
-                        record_in_history: true,
-                    });
-                }
-                let tool_results = wait_for_tool_results(&mut events, pending).await?;
-                logger::raw_tool_results_logged(&tool_results);
+    async fn handle_tool_calls(
+        &self,
+        run: &mut AgentRun<'_>,
+        output: Message,
+        tool_calls: Vec<ToolCall>,
+    ) -> Result<(), String> {
+        let mut immediate_results = Vec::new();
+        let mut requests = Vec::new();
+        for tool_call in tool_calls {
+            self.publish_tool_progress(run.destination, &tool_call.name);
+            logger::raw_tool_call_logged(&tool_call);
+            match prepare_tool_request(tool_call, run.allowed_tool_names.as_deref()) {
+                PreparedToolCall::Request { tool_call, args } => requests.push((tool_call, args)),
+                PreparedToolCall::Result(message) => immediate_results.push(message),
             }
         }
+        if !immediate_results.is_empty() {
+            logger::raw_tool_results_logged(&immediate_results);
+            run.transient_messages
+                .push(assistant_message_for_tool_results(
+                    output,
+                    &immediate_results,
+                ));
+            run.transient_messages.extend(immediate_results);
+        }
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        let mut events = self.bus.subscribe();
+        let pending = requests
+            .iter()
+            .map(|(tool_call, _)| tool_call.id.clone())
+            .collect::<HashSet<_>>();
+        for (tool_call, args) in requests {
+            self.bus.publish(Event::ToolRequest {
+                context: run.context.clone(),
+                tool_call,
+                args,
+                record_in_history: true,
+            });
+        }
+        wait_for_tool_results(&mut events, pending).await
     }
 
     fn model_messages(&self, run: &AgentRun<'_>) -> Result<Vec<Message>, String> {
@@ -250,7 +258,7 @@ impl Agent {
                         *text = Some(format!(
                             "[message_id:{external_id}] {}",
                             text.clone().unwrap_or_default()
-                        ))
+                        ));
                     }
                     _ => {}
                 }
@@ -332,20 +340,23 @@ impl Agent {
         let transcript = serde_json::to_string(&messages).map_err(|err| err.to_string())?;
         let response = self
             .inference
-            .execute(RawInferenceRequest {
-                model: models::text_model(),
-                messages: vec![
-                    Message::System(
-                        "Summarize older history for future runs. This summary is not an action ledger. Do not claim an action, delivery, user acknowledgement, recommendation, date, or research finding unless the transcript explicitly proves it. Omit uncertain information. Preserve only user preferences, durable source ids, verified tool evidence, and unresolved work."
-                            .to_string(),
-                    ),
-                    Message::User {
-                        text: transcript,
-                        attachments: Vec::new(),
-                    },
-                ],
-                tools: Vec::new(),
-            })
+            .execute(
+                InferenceRequest {
+                    model: models::text_model(),
+                    messages: vec![
+                        Message::System(
+                            "Summarize older history for future runs. This summary is not an action ledger. Do not claim an action, delivery, user acknowledgement, recommendation, date, or research finding unless the transcript explicitly proves it. Omit uncertain information. Preserve only user preferences, durable source ids, verified tool evidence, and unresolved work."
+                                .to_string(),
+                        ),
+                        Message::User {
+                            text: transcript,
+                            attachments: Vec::new(),
+                        },
+                    ],
+                    tools: Vec::new(),
+                },
+                None,
+            )
             .await
             .map_err(|error| error.to_string())?;
         let Message::Assistant { text, .. } = response.message else {
@@ -359,6 +370,16 @@ impl Agent {
         }
         self.history.compact_scope(scope, &summary, &retained)
     }
+}
+
+struct AgentRun<'a> {
+    destination: Destination<'a>,
+    history_scope: HistoryScope,
+    context: ExecutionContext,
+    transient_messages: Vec<Message>,
+    tools: Vec<Arc<dyn InternalTool>>,
+    allowed_tool_names: Option<Vec<String>>,
+    recalled_memories: Vec<String>,
 }
 
 fn retained_entries(history: &[HistoryEntry]) -> Vec<HistoryEntry> {
@@ -380,64 +401,15 @@ fn retained_entries(history: &[HistoryEntry]) -> Vec<HistoryEntry> {
 async fn wait_for_tool_results(
     events: &mut tokio::sync::broadcast::Receiver<Event>,
     mut pending: HashSet<String>,
-) -> Result<Vec<Message>, String> {
-    let mut results = Vec::new();
+) -> Result<(), String> {
     while !pending.is_empty() {
         match events.recv().await {
-            Ok(Event::ToolResult {
-                tool_call_id,
-                tool_name,
-                result,
-                ..
-            }) => {
-                if pending.remove(&tool_call_id) {
-                    results.push(Message::ToolResult {
-                        tool_call_id,
-                        tool_name,
-                        result: tool_result_json(&result),
-                    });
-                }
-            }
+            Ok(Event::ToolResult { tool_call_id, .. }) if pending.remove(&tool_call_id) => {}
             Ok(_) => {}
             Err(error) => return Err(format!("failed waiting for tool result: {error}")),
         }
     }
-    Ok(results)
-}
-
-struct AgentRun<'a> {
-    destination: Destination<'a>,
-    history_scope: HistoryScope,
-    context: ExecutionContext,
-    transient_messages: Vec<Message>,
-    tools: Vec<Arc<dyn InternalTool>>,
-    allowed_tool_names: Option<Vec<String>>,
-    recalled_memories: Vec<String>,
-}
-
-fn tool_definitions(tools: &[Arc<dyn InternalTool>]) -> Vec<ToolDefinition> {
-    tools
-        .iter()
-        .map(|tool| tools::definition_for_model(tool.as_ref()))
-        .collect()
-}
-
-fn history_entry(message: Message, scope: &HistoryScope) -> HistoryEntry {
-    HistoryEntry {
-        message,
-        metadata: history_metadata(scope),
-    }
-}
-
-fn history_metadata(scope: &HistoryScope) -> MessageMetadata {
-    match scope {
-        HistoryScope::Conversation(conversation) => {
-            MessageMetadata::new(conversation.clone(), None)
-        }
-        HistoryScope::Automation(automation_id) => {
-            MessageMetadata::for_automation(automation_id.clone())
-        }
-    }
+    Ok(())
 }
 
 enum PreparedToolCall {
@@ -460,7 +432,7 @@ fn prepare_tool_request(
             result: error_result("tool is not allowed in this agent run"),
         });
     }
-    let args: serde_json::Value = match serde_json::from_str(&tool_call.arguments) {
+    let args = match serde_json::from_str(&tool_call.arguments) {
         Ok(args) => args,
         Err(err) => {
             return PreparedToolCall::Result(Message::ToolResult {

@@ -20,7 +20,7 @@ use crate::{
 
 pub use crate::bus::{ExecutionContext, InvocationScope};
 pub use built_in::{
-    automation, browser, download_file, image_generation, inspect_file, messages, raw_inference,
+    automation, browser, download_file, image_generation, inference, inspect_file, messages,
     request_user_input, search_history, setup, todo, unlock, web,
 };
 pub use context::ToolResponder;
@@ -34,9 +34,9 @@ use self::built_in::{
     download_file::DownloadFileTool,
     files::{CreateFileTool, ListFilesTool, ReadFileTool, UpdateFileTool},
     image_generation::ImageGenerationTool,
+    inference::RawInferenceTool,
     inspect_file::InspectFileTool,
     messages::{DeleteMessageTool, SendMessageTool},
-    raw_inference::{ModelInference, RawInferenceTool},
     request_user_input::RequestUserInputTool,
     search_history::SearchHistoryTool,
     setup::ListChannelsTool,
@@ -74,7 +74,7 @@ pub fn tool_result_json(result: &ToolResult) -> serde_json::Value {
 }
 
 pub struct InternalTools {
-    pub inference: ModelInference,
+    pub inference: crate::inference::Inference,
     pub create_tool: Arc<DynamicToolTool>,
     pub edit_tool: Arc<DynamicToolTool>,
     pub delete_tool: Arc<DynamicToolTool>,
@@ -123,6 +123,18 @@ impl ToolRegistry {
         }
         tools.push(tool);
         drop(tools);
+        Ok(())
+    }
+
+    pub fn replace(&self, tool: Arc<dyn InternalTool>) -> Result<(), String> {
+        let mut tools = self.tools.write().expect("tools lock");
+        let Some(existing) = tools
+            .iter_mut()
+            .find(|existing| existing.name() == tool.name())
+        else {
+            return Err(format!("unknown tool: {}", tool.name()));
+        };
+        *existing = tool;
         Ok(())
     }
 
@@ -191,7 +203,7 @@ impl InternalTools {
     pub fn new(
         bus: Bus,
         layout: RuntimeLayout,
-        inference: ModelInference,
+        inference: crate::inference::Inference,
         send_message: SendMessageTool,
         delete_message: DeleteMessageTool,
         files_dir: std::path::PathBuf,
@@ -519,7 +531,7 @@ mod tests {
         InternalTools::new(
             bus.clone(),
             layout,
-            ModelInference::new(secrets.tools.clone()).unwrap(),
+            crate::inference::Inference::new(bus.clone(), secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             DeleteMessageTool::new(bus),
             files_dir,

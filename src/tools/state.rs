@@ -5,10 +5,18 @@ pub struct EnabledTools {
     path: PathBuf,
 }
 
-#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 struct StoredEnabledTools {
     #[serde(default)]
     enabled: BTreeSet<String>,
+}
+
+impl Default for StoredEnabledTools {
+    fn default() -> Self {
+        Self {
+            enabled: ["web_search".to_string()].into_iter().collect(),
+        }
+    }
 }
 
 impl EnabledTools {
@@ -30,8 +38,11 @@ impl EnabledTools {
         if !self.path.exists() {
             return Ok(StoredEnabledTools::default());
         }
-        serde_json::from_str(&fs::read_to_string(&self.path).map_err(|err| err.to_string())?)
-            .map_err(|err| format!("invalid {}: {err}", self.path.display()))
+        let mut state: StoredEnabledTools =
+            serde_json::from_str(&fs::read_to_string(&self.path).map_err(|err| err.to_string())?)
+                .map_err(|err| format!("invalid {}: {err}", self.path.display()))?;
+        state.enabled.insert("web_search".to_string());
+        Ok(state)
     }
 
     fn save(&self, state: &StoredEnabledTools) -> Result<(), String> {
@@ -60,8 +71,18 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("ironpaw-tools-{}.json", uuid::Uuid::new_v4()));
         let state = EnabledTools::new(path.clone());
-        assert!(!state.is_enabled("web_search").unwrap());
-        state.enable("web_search").unwrap();
+        assert!(state.is_enabled("web_search").unwrap());
+        assert!(!state.is_enabled("email").unwrap());
+        state.enable("email").unwrap();
+        assert!(EnabledTools::new(path.clone()).is_enabled("email").unwrap());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn web_search_is_enabled_for_existing_state() {
+        let path =
+            std::env::temp_dir().join(format!("ironpaw-tools-{}.json", uuid::Uuid::new_v4()));
+        fs::write(&path, "{\"enabled\":[]}").unwrap();
         assert!(
             EnabledTools::new(path.clone())
                 .is_enabled("web_search")

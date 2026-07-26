@@ -7,6 +7,7 @@ use ironpaw::{
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
     history::{History, SqliteHistory},
+    inference::Inference,
     memory::Memory,
     message::Attachment,
     tools::{
@@ -14,7 +15,6 @@ use ironpaw::{
         browser::BrowserUpdateTool,
         dynamic::DynamicTool,
         messages::{DeleteMessageTool, SendMessageTool},
-        raw_inference::ModelInference,
         setup::{
             InstallChannelTool, InstallToolTool, OnboardingTool, RemoveChannelTool, SetupServices,
         },
@@ -53,7 +53,7 @@ async fn main() -> io::Result<()> {
         .map_err(std::io::Error::other)?;
 
     let inference =
-        ModelInference::new(secrets.tools.clone()).map_err(std::io::Error::other)?;
+        Inference::new(bus.clone(), secrets.tools.clone()).map_err(std::io::Error::other)?;
     let tools = Arc::new(InternalTools::new(
         bus.clone(),
         layout.clone(),
@@ -163,6 +163,9 @@ async fn main() -> io::Result<()> {
         .registry
         .add(Arc::new(OnboardingTool::new(Arc::clone(&setup_services))))
         .map_err(std::io::Error::other)?;
+    automations
+        .add_transient(OnboardingTool::api_key_recovery_automation())
+        .map_err(std::io::Error::other)?;
     let install_channel = Arc::new(InstallChannelTool::new(Arc::clone(&setup_services)));
     tools
         .registry
@@ -186,6 +189,10 @@ async fn main() -> io::Result<()> {
     tools
         .registry
         .add(Arc::new(install_tool.setup_tool()))
+        .map_err(std::io::Error::other)?;
+    tools
+        .registry
+        .add(Arc::new(install_tool.configure_tool()))
         .map_err(std::io::Error::other)?;
     let stored_count = automations.load_stored().map_err(std::io::Error::other)?;
     if !automations

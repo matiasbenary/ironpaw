@@ -1,12 +1,8 @@
 use std::sync::Arc;
 
-use crate::{
-    bus::Bus,
-    history::History,
-    tools::{
-        ExecutionContext, InternalTool, InternalTools, ToolError, ToolRegistry, ToolResponder,
-        ToolResult,
-    },
+use crate::tools::{
+    ExecutionContext, InternalTool, InternalTools, ToolError, ToolRegistry, ToolResponder,
+    ToolResult,
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can
@@ -23,7 +19,7 @@ fn reserve_tool_call(ctx: &ExecutionContext) -> Result<(), String> {
         ));
     }
     budget.used += 1;
-    if budget.used % TOOL_CALL_WARNING_INTERVAL == 0 {
+    if budget.used.is_multiple_of(TOOL_CALL_WARNING_INTERVAL) {
         let used = budget.used;
         budget
             .pending_warnings
@@ -89,23 +85,12 @@ pub async fn run_internal_tool(
 }
 
 pub(crate) async fn run_registered_tool_for_context(
-    bus: Bus,
-    history: std::sync::Arc<dyn History>,
     registry: &ToolRegistry,
     ctx: &ExecutionContext,
-    tool_call_id: String,
     tool_name: String,
     args: serde_json::Value,
-    record_in_history: bool,
+    responder: ToolResponder,
 ) {
-    let responder = ToolResponder::bus(
-        bus,
-        history,
-        ctx.clone(),
-        tool_call_id,
-        tool_name.clone(),
-        record_in_history,
-    );
     let tool = registry
         .all()
         .iter()
@@ -117,12 +102,10 @@ pub(crate) async fn run_registered_tool_for_context(
     };
     if let Err(error) = reserve_tool_call(ctx) {
         responder.respond(Err(ToolError::new(error)));
-        return;
     } else if ctx.depth >= MAX_TOOL_DEPTH {
         responder.respond(Err(ToolError::new(format!(
             "tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"
         ))));
-        return;
     } else {
         let mut tool_ctx = ctx.with_tool(tool.name().to_string());
         tool_ctx.depth += 1;

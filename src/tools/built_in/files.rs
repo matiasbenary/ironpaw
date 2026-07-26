@@ -74,10 +74,130 @@ impl ScopedFiles {
         }
         Ok(root.join(path))
     }
+
+    async fn list(
+        &self,
+        params: ListFilesParams,
+        ctx: &ExecutionContext,
+    ) -> Result<serde_json::Value, String> {
+        let path = self
+            .path(ctx, params.path.as_deref().unwrap_or("."))
+            .await?;
+        let mut directory = fs::read_dir(path).await.map_err(|err| err.to_string())?;
+        let mut entries = Vec::new();
+        while let Some(entry) = directory
+            .next_entry()
+            .await
+            .map_err(|err| err.to_string())?
+        {
+            entries.push(serde_json::json!({
+                "name": entry.file_name().to_string_lossy(),
+                "kind": if entry.file_type().await.map_err(|err| err.to_string())?.is_dir() {
+                    "directory"
+                } else {
+                    "file"
+                },
+            }));
+        }
+        entries.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+        Ok(serde_json::json!({ "entries": entries }))
+    }
+
+    async fn read(
+        &self,
+        params: ReadFileParams,
+        ctx: &ExecutionContext,
+    ) -> Result<serde_json::Value, String> {
+        let content = fs::read_to_string(self.path(ctx, &params.path).await?)
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(serde_json::json!({ "content": content }))
+    }
+
+    async fn create(
+        &self,
+        params: CreateFileParams,
+        ctx: &ExecutionContext,
+    ) -> Result<serde_json::Value, String> {
+        let path = self.path(ctx, &params.path).await?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .await
+            .map_err(|err| err.to_string())?
+            .write_all(params.content.as_bytes())
+            .await
+            .map_err(|err| err.to_string())?;
+        Ok(serde_json::json!({}))
+    }
+
+    async fn update(
+        &self,
+        params: UpdateFileParams,
+        ctx: &ExecutionContext,
+    ) -> Result<serde_json::Value, String> {
+        if params.old_content.is_empty() {
+            return Err("old_content must not be empty".to_string());
+        }
+        let path = self.path(ctx, &params.path).await?;
+        let content = fs::read_to_string(&path)
+            .await
+            .map_err(|err| err.to_string())?;
+        if content.matches(&params.old_content).count() != 1 {
+            return Err("old_content must occur exactly once in the file".to_string());
+        }
+        fs::write(
+            path,
+            content.replacen(&params.old_content, &params.new_content, 1),
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+        Ok(serde_json::json!({}))
+    }
 }
 
 fn scope_component(name: &str) -> String {
     name.bytes().map(|byte| format!("{byte:02x}")).collect()
+}
+
+macro_rules! file_tool {
+    ($tool:ident, $params:ty, $name:literal, $description:literal, $method:ident) => {
+        pub struct $tool(ScopedFiles);
+
+        impl $tool {
+            pub fn new(files_dir: PathBuf) -> Self {
+                Self(ScopedFiles::new(files_dir))
+            }
+        }
+
+        #[async_trait]
+        impl InternalTool for $tool {
+            fn name(&self) -> &str {
+                $name
+            }
+
+            fn tool_definition(&self) -> ToolDefinition {
+                tools::tool_definition::<$params>(self.name(), $description)
+            }
+
+            async fn execute(
+                &self,
+                args: serde_json::Value,
+                ctx: &ExecutionContext,
+                responder: ToolResponder,
+            ) {
+                responder.respond(
+                    tools::execute_typed(args, |params: $params| self.0.$method(params, ctx)).await,
+                );
+            }
+        }
+    };
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -87,69 +207,13 @@ pub struct ListFilesParams {
     pub path: Option<String>,
 }
 
-pub struct ListFilesTool(ScopedFiles);
-
-impl ListFilesTool {
-    pub fn new(files_dir: PathBuf) -> Self {
-        Self(ScopedFiles::new(files_dir))
-    }
-}
-
-#[async_trait]
-impl InternalTool for ListFilesTool {
-    fn name(&self) -> &str {
-        "list_files"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<ListFilesParams>(
-            self.name(),
-            "List files in this execution's private workspace. Paths are relative to that workspace.",
-        )
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result: Result<serde_json::Value, String> = async {
-            let params: ListFilesParams =
-                serde_json::from_value(args).map_err(|err| err.to_string())?;
-            let path = self
-                .0
-                .path(ctx, params.path.as_deref().unwrap_or("."))
-                .await?;
-            let mut directory = fs::read_dir(path).await.map_err(|err| err.to_string())?;
-            let mut entries = Vec::new();
-            while let Some(entry) = directory
-                .next_entry()
-                .await
-                .map_err(|err| err.to_string())?
-            {
-                let kind = if entry
-                    .file_type()
-                    .await
-                    .map_err(|err| err.to_string())?
-                    .is_dir()
-                {
-                    "directory"
-                } else {
-                    "file"
-                };
-                entries.push(serde_json::json!({
-                    "name": entry.file_name().to_string_lossy(),
-                    "kind": kind,
-                }));
-            }
-            entries.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
-            Ok(serde_json::json!({ "entries": entries }))
-        }
-        .await;
-        responder.respond(result.map_err(crate::tools::ToolError::new));
-    }
-}
+file_tool!(
+    ListFilesTool,
+    ListFilesParams,
+    "list_files",
+    "List files in this execution's private workspace. Paths are relative to that workspace.",
+    list
+);
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct ReadFileParams {
@@ -157,46 +221,13 @@ pub struct ReadFileParams {
     pub path: String,
 }
 
-pub struct ReadFileTool(ScopedFiles);
-
-impl ReadFileTool {
-    pub fn new(files_dir: PathBuf) -> Self {
-        Self(ScopedFiles::new(files_dir))
-    }
-}
-
-#[async_trait]
-impl InternalTool for ReadFileTool {
-    fn name(&self) -> &str {
-        "read_file"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<ReadFileParams>(
-            self.name(),
-            "Read a UTF-8 file from this execution's private workspace.",
-        )
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result: Result<serde_json::Value, String> = async {
-            let params: ReadFileParams =
-                serde_json::from_value(args).map_err(|err| err.to_string())?;
-            let path = self.0.path(ctx, &params.path).await?;
-            let content = fs::read_to_string(path)
-                .await
-                .map_err(|err| err.to_string())?;
-            Ok(serde_json::json!({ "content": content }))
-        }
-        .await;
-        responder.respond(result.map_err(crate::tools::ToolError::new));
-    }
-}
+file_tool!(
+    ReadFileTool,
+    ReadFileParams,
+    "read_file",
+    "Read a UTF-8 file from this execution's private workspace.",
+    read
+);
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateFileParams {
@@ -205,65 +236,13 @@ pub struct CreateFileParams {
     pub content: String,
 }
 
-pub struct CreateFileTool(ScopedFiles);
-
-impl CreateFileTool {
-    pub fn new(files_dir: PathBuf) -> Self {
-        Self(ScopedFiles::new(files_dir))
-    }
-}
-
-#[async_trait]
-impl InternalTool for CreateFileTool {
-    fn name(&self) -> &str {
-        "create_file"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<CreateFileParams>(
-            self.name(),
-            "Create a new UTF-8 file in this execution's private workspace. Fails if it exists.",
-        )
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result: Result<serde_json::Value, String> = async {
-            let params: CreateFileParams =
-                serde_json::from_value(args).map_err(|err| err.to_string())?;
-            let path = self.0.path(ctx, &params.path).await?;
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .await
-                    .map_err(|err| err.to_string())?;
-            }
-            OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-                .await
-                .map_err(|err| err.to_string())?
-                .write_all(params.content.as_bytes())
-                .await
-                .map_err(|err| err.to_string())?;
-            Ok(serde_json::json!({}))
-        }
-        .await;
-        responder.respond(result.map_err(crate::tools::ToolError::new));
-    }
-}
-
-pub struct UpdateFileTool(ScopedFiles);
-
-impl UpdateFileTool {
-    pub fn new(files_dir: PathBuf) -> Self {
-        Self(ScopedFiles::new(files_dir))
-    }
-}
+file_tool!(
+    CreateFileTool,
+    CreateFileParams,
+    "create_file",
+    "Create a new UTF-8 file in this execution's private workspace. Fails if it exists.",
+    create
+);
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct UpdateFileParams {
@@ -275,50 +254,13 @@ pub struct UpdateFileParams {
     pub new_content: String,
 }
 
-#[async_trait]
-impl InternalTool for UpdateFileTool {
-    fn name(&self) -> &str {
-        "update_file"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<UpdateFileParams>(
-            self.name(),
-            "Make one targeted edit to an existing UTF-8 file. Read the file first, then provide its exact old_content and replacement new_content.",
-        )
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result: Result<serde_json::Value, String> = async {
-            let params: UpdateFileParams =
-                serde_json::from_value(args).map_err(|err| err.to_string())?;
-            if params.old_content.is_empty() {
-                return Err("old_content must not be empty".to_string());
-            }
-            let path = self.0.path(ctx, &params.path).await?;
-            let content = fs::read_to_string(&path)
-                .await
-                .map_err(|err| err.to_string())?;
-            if content.matches(&params.old_content).count() != 1 {
-                return Err("old_content must occur exactly once in the file".to_string());
-            }
-            fs::write(
-                path,
-                content.replacen(&params.old_content, &params.new_content, 1),
-            )
-            .await
-            .map_err(|err| err.to_string())?;
-            Ok(serde_json::json!({}))
-        }
-        .await;
-        responder.respond(result.map_err(crate::tools::ToolError::new));
-    }
-}
+file_tool!(
+    UpdateFileTool,
+    UpdateFileParams,
+    "update_file",
+    "Make one targeted edit to an existing UTF-8 file. Read the file first, then provide its exact old_content and replacement new_content.",
+    update
+);
 
 #[cfg(test)]
 mod tests {

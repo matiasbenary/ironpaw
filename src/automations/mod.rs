@@ -44,6 +44,7 @@ pub struct Automations {
     agent_task_queues: Mutex<HashMap<String, AgentTaskQueue>>,
 }
 
+#[derive(Default)]
 struct AgentTaskQueue {
     running: Option<String>,
     pending: VecDeque<PendingInvocation>,
@@ -132,7 +133,7 @@ impl Automations {
             self.remove_runtime(&name);
             self.store.delete(&name)?;
         }
-        if !self.is_registered("handle-conversation") {
+        if !self.contains("handle-conversation") {
             let automation = Automations::handle_conversation();
             self.add(automation)?;
         }
@@ -159,7 +160,11 @@ impl Automations {
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.is_registered(name)
+        self.automations
+            .read()
+            .expect("automations lock")
+            .iter()
+            .any(|automation| automation.name == name)
     }
 
     pub fn automation_from_spec(&self, spec: AutomationSpec) -> Result<Automation, String> {
@@ -236,14 +241,6 @@ impl Automations {
             return Err(format!("an automation named '{name}' already exists"));
         }
         Ok(())
-    }
-
-    fn is_registered(&self, name: &str) -> bool {
-        self.automations
-            .read()
-            .expect("automations lock")
-            .iter()
-            .any(|automation| automation.name == name)
     }
 
     fn remove_runtime(&self, name: &str) -> bool {
@@ -391,7 +388,7 @@ impl Automations {
                 .to_std()
                 .unwrap_or_default();
             tokio::time::sleep(wait).await;
-            if !this.is_registered(&automation.name) {
+            if !this.contains(&automation.name) {
                 return;
             }
             let (context, trigger) = invocation::from_timer("at", &automation.name);
@@ -409,13 +406,10 @@ impl Automations {
                     return;
                 }
             };
-            loop {
-                let Some(next) = schedule.upcoming(chrono::Local).next() else {
-                    break;
-                };
+            while let Some(next) = schedule.upcoming(chrono::Local).next() {
                 let wait = (next - chrono::Local::now()).to_std().unwrap_or_default();
                 tokio::time::sleep(wait).await;
-                if !this.is_registered(&automation.name) {
+                if !this.contains(&automation.name) {
                     break;
                 }
                 let (context, trigger) = invocation::from_timer("cron", &automation.name);
@@ -468,12 +462,7 @@ impl Automations {
                 .agent_task_queues
                 .lock()
                 .expect("agent task queues lock");
-            let queue = queues
-                .entry(automation_id.to_string())
-                .or_insert_with(|| AgentTaskQueue {
-                    running: None,
-                    pending: VecDeque::new(),
-                });
+            let queue = queues.entry(automation_id.to_string()).or_default();
             if queue.running.is_some() {
                 queue.pending.push_back(invocation);
                 return;
@@ -533,35 +522,8 @@ impl Automations {
 fn automation_info(automation: &Automation) -> AutomationInfo {
     AutomationInfo {
         name: automation.name.clone(),
-        trigger: trigger_json(&automation.trigger),
+        trigger: serde_json::to_value(&automation.trigger).expect("serialize automation trigger"),
         effect: serde_json::to_value(&automation.effect).expect("serialize automation effect"),
-    }
-}
-
-fn trigger_json(trigger: &Trigger) -> serde_json::Value {
-    match trigger {
-        Trigger::Cron { expression, .. } => serde_json::json!({
-            "type": "cron",
-            "expression": expression,
-        }),
-        Trigger::At { datetime } => serde_json::json!({
-            "type": "at",
-            "datetime": datetime.to_rfc3339(),
-        }),
-        Trigger::MessageIn {
-            sender,
-            conversation,
-        } => serde_json::json!({
-            "type": "message_in",
-            "sender": sender,
-            "conversation": conversation,
-        }),
-        Trigger::ToolResult => serde_json::json!({
-            "type": "tool_result",
-        }),
-        Trigger::ApiKeyError => serde_json::json!({
-            "type": "api_key_error",
-        }),
     }
 }
 
@@ -571,11 +533,9 @@ mod tests {
     use crate::{
         bus::{ConversationKey, InvocationScope, Sender},
         history::SqliteHistory,
+        inference::Inference,
         message::Message,
-        tools::{
-            ExecutionContext, InternalTools, messages::SendMessageTool,
-            raw_inference::ModelInference,
-        },
+        tools::{ExecutionContext, InternalTools, messages::SendMessageTool},
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
@@ -593,7 +553,7 @@ mod tests {
         Arc::new(InternalTools::new(
             bus.clone(),
             layout,
-            ModelInference::new(secrets.tools.clone()).unwrap(),
+            Inference::new(bus.clone(), secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
             crate::tools::messages::DeleteMessageTool::new(bus.clone()),
             files_dir,
@@ -927,7 +887,7 @@ mod tests {
 
         automations.delete("daily-news").unwrap();
 
-        assert!(!automations.is_registered("daily-news"));
+        assert!(!automations.contains("daily-news"));
         assert!(store.load_all().unwrap().is_empty());
     }
 
@@ -945,6 +905,6 @@ mod tests {
         let result = automations.delete("handle-conversation");
 
         assert!(result.is_ok());
-        assert!(!automations.is_registered("handle-conversation"));
+        assert!(!automations.contains("handle-conversation"));
     }
 }

@@ -4,7 +4,9 @@ use crate::{
     bus::{Bus, Event, InvocationScope},
     history::{History, HistoryEntry, HistoryScope, MessageMetadata},
     message::{Message, ToolCall},
-    tools::{ExecutionContext, ToolError, ToolRegistry, run_registered_tool_for_context},
+    tools::{
+        ExecutionContext, ToolError, ToolRegistry, ToolResponder, run_registered_tool_for_context,
+    },
 };
 
 pub struct ToolHandler {
@@ -62,17 +64,16 @@ impl ToolHandler {
             return;
         }
         tokio::spawn(async move {
-            run_registered_tool_for_context(
+            let responder = ToolResponder::bus(
                 bus,
-                Arc::clone(&history),
-                &registry,
-                &context,
+                history,
+                context.clone(),
                 tool_call.id,
-                tool_call.name,
-                args,
+                tool_call.name.clone(),
                 record_in_history,
-            )
-            .await;
+            );
+            run_registered_tool_for_context(&registry, &context, tool_call.name, args, responder)
+                .await;
         });
     }
 

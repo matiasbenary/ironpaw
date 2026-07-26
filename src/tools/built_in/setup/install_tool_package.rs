@@ -46,20 +46,8 @@ pub fn install_packaged_tool(
     name: &str,
 ) -> Result<WasmToolManifest, String> {
     let name = normalize_tool_name(name)?;
-    let tools_dir = layout.tools_dir();
-    let wasm_path = tools_dir.join(format!("{name}.wasm"));
-    let config_path = tools_dir.join(format!("{name}.config.json"));
-    if wasm_path.exists() && config_path.exists() {
-        let config_json = std::fs::read_to_string(&config_path).map_err(|err| err.to_string())?;
-        let config: WasmToolConfig =
-            serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
-        return Ok(WasmToolManifest {
-            name,
-            wasm_path,
-            config_path,
-            config_json,
-            config,
-        });
+    if let Some(manifest) = installed_tool_manifest(layout, &name)? {
+        return Ok(manifest);
     }
 
     let package = locate_tool_package(layout, &name)?;
@@ -70,6 +58,27 @@ pub fn install_packaged_tool(
         ));
     }
     install_package(layout, &package, &BTreeMap::new())
+}
+
+pub(super) fn installed_tool_manifest(
+    layout: &RuntimeLayout,
+    name: &str,
+) -> Result<Option<WasmToolManifest>, String> {
+    let tools_dir = layout.tools_dir();
+    let wasm_path = tools_dir.join(format!("{name}.wasm"));
+    let config_path = tools_dir.join(format!("{name}.config.json"));
+    if !wasm_path.exists() || !config_path.exists() {
+        return Ok(None);
+    }
+    let config_json = std::fs::read_to_string(&config_path).map_err(|err| err.to_string())?;
+    let config = serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
+    Ok(Some(WasmToolManifest {
+        name: name.to_string(),
+        wasm_path,
+        config_path,
+        config_json,
+        config,
+    }))
 }
 
 impl ListToolsTool {
@@ -203,14 +212,7 @@ fn installed_tool_names(layout: &RuntimeLayout) -> Result<Vec<String>, String> {
 }
 
 fn tool_source_dirs(layout: &RuntimeLayout) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(path) = std::env::var("IRONPAW_TOOLS_SRC") {
-        dirs.push(PathBuf::from(path));
-    }
-    dirs.push(layout.root().join("tool-store"));
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    dirs.push(manifest_dir.join("tools-src"));
-    dirs
+    vec![layout.root().join("tool-store")]
 }
 
 fn locate_wasm(source_dir: &Path, dir_name: &str) -> Result<PathBuf, String> {
@@ -264,4 +266,21 @@ pub(super) fn install_package(
         config_json,
         config: parsed,
     })
+}
+
+pub(super) fn reconfigure_package(
+    layout: &RuntimeLayout,
+    package: &ToolPackage,
+    config_values: &BTreeMap<String, serde_json::Value>,
+) -> Result<WasmToolManifest, String> {
+    let Some(mut manifest) = installed_tool_manifest(layout, &package.name)? else {
+        return Err(format!("tool '{}' is not installed", package.name));
+    };
+    let mut config: serde_json::Value =
+        serde_json::from_str(&manifest.config_json).map_err(|err| err.to_string())?;
+    crate::tools::setup::install_common::apply_config_values(&mut config, config_values)?;
+    manifest.config_json = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
+    std::fs::write(&manifest.config_path, &manifest.config_json).map_err(|err| err.to_string())?;
+    manifest.config = serde_json::from_value(config).map_err(|err| err.to_string())?;
+    Ok(manifest)
 }

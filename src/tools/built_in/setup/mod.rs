@@ -8,14 +8,14 @@ use std::sync::Arc;
 
 use crate::{
     automations::Automations,
-    bus::InvocationScope,
+    bus::{InvocationScope, MessageRef},
     tools::{self, ExecutionContext, InternalTools, ToolResponder},
 };
 
 pub use install_channel::{
     InstallChannelTool, ListChannelsTool, RemoveChannelTool, SetupChannelTool,
 };
-pub use install_tool::{InstallToolTool, ListToolsTool};
+pub use install_tool::{ConfigureToolTool, InstallToolTool, ListToolsTool};
 pub use onboarding::OnboardingTool;
 pub use services::SetupServices;
 
@@ -56,6 +56,28 @@ pub(super) async fn send(
     result.map(|_| ()).map_err(|error| error.message)
 }
 
+pub(super) async fn request_choice(
+    tools: &InternalTools,
+    question: &str,
+    options: &[(&str, &str)],
+    ctx: &ExecutionContext,
+) -> Result<(), String> {
+    let result = tools::run_tool(
+        tools,
+        "request_user_input",
+        serde_json::json!({
+            "question": question,
+            "options": options
+                .iter()
+                .map(|(label, value)| serde_json::json!({ "label": label, "value": value }))
+                .collect::<Vec<_>>(),
+        }),
+        ctx,
+    )
+    .await;
+    result.map(|_| ()).map_err(|error| error.message)
+}
+
 pub(super) async fn delete_current_message(
     tools: &InternalTools,
     ctx: &ExecutionContext,
@@ -66,6 +88,14 @@ pub(super) async fn delete_current_message(
         eprintln!("{label} could not delete inbound setup message: missing message_id");
         return;
     };
+    if let InvocationScope::Conversation(conversation) = &ctx.invoked_by
+        && let Err(error) = tools.history.delete_external_message(&MessageRef {
+            conversation: conversation.clone(),
+            message_id: message_id.to_string(),
+        })
+    {
+        eprintln!("{label} could not delete inbound setup history: {error}");
+    }
     let result = tools::run_tool(
         tools,
         "delete_message",

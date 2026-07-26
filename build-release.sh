@@ -67,4 +67,11 @@ build_wasm_packages() {
 build_wasm_packages "$SCRIPT_DIR/channels-src" "$CHANNELS_DIR" "$CHANNEL_STORE_DIR"
 build_wasm_packages "$SCRIPT_DIR/tools-src" "$RELEASE_DIR/tools" "$TOOL_STORE_DIR"
 
+mkdir -p "$RELEASE_DIR/tools"
+cp "$TOOL_STORE_DIR/web-search/web-search.wasm" "$RELEASE_DIR/tools/web_search.wasm"
+if [ ! -f "$RELEASE_DIR/tools/web_search.config.json" ]; then
+  cp "$TOOL_STORE_DIR/web-search/web-search.config.example.json" \
+    "$RELEASE_DIR/tools/web_search.config.json"
+fi
+
 echo "release assembled at $RELEASE_DIR"

@@ -236,11 +236,13 @@ mod tests {
 
         assert!(required.contains(&serde_json::json!("channel")));
         assert!(!required.contains(&serde_json::json!("chat_id")));
-        assert!(serde_json::from_value::<SendMessageToolInput>(serde_json::json!({
-            "channel": "telegram",
-            "content": "hi"
-        }))
-        .is_ok());
+        assert!(
+            serde_json::from_value::<SendMessageToolInput>(serde_json::json!({
+                "channel": "telegram",
+                "content": "hi"
+            }))
+            .is_ok()
+        );
     }
 
     #[test]

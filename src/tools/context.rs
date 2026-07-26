@@ -82,14 +82,14 @@ impl ToolResponder {
                     tool_name: tool_name.clone(),
                     result: result_json,
                 };
-                if *record_in_history {
-                    if let Err(error) = crate::tools::handler::persist_tool_result(
+                if *record_in_history
+                    && let Err(error) = crate::tools::handler::persist_tool_result(
                         history.as_ref(),
                         context,
                         &message,
-                    ) {
-                        eprintln!("could not persist tool result: {error}");
-                    }
+                    )
+                {
+                    eprintln!("could not persist tool result: {error}");
                 }
                 bus.publish(Event::ToolResult {
                     context: context.clone(),

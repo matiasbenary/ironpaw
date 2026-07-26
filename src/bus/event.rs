@@ -94,6 +94,13 @@ impl ExecutionContext {
         }
     }
 
+    pub fn conversation(&self) -> Option<&ConversationKey> {
+        match &self.invoked_by {
+            InvocationScope::Conversation(conversation) => Some(conversation),
+            InvocationScope::ScheduledAutomation { .. } => None,
+        }
+    }
+
     pub(crate) fn drain_tool_budget_messages(&self) -> Vec<Message> {
         std::mem::take(
             &mut self

@@ -3,10 +3,10 @@ use std::time::Duration;
 use reqwest::Client;
 
 use crate::{
+    inference::{Inference, InferenceRequest},
     message::Message,
     models,
     secrets::ToolSecrets,
-    tools::raw_inference::{ModelInference, RawInferenceRequest},
 };
 
 use super::sqlite::MemoryRecord;
@@ -31,11 +31,11 @@ pub(super) struct MemoryInference {
     client: Client,
     base_url: String,
     secrets: ToolSecrets,
-    inference: ModelInference,
+    inference: Inference,
 }
 
 impl MemoryInference {
-    pub fn new(secrets: ToolSecrets, inference: ModelInference) -> Result<Self, String> {
+    pub fn new(secrets: ToolSecrets, inference: Inference) -> Result<Self, String> {
         let client = Client::builder()
             .timeout(Duration::from_secs(180))
             .build()
@@ -70,17 +70,20 @@ impl MemoryInference {
         });
         let response = self
             .inference
-            .execute(RawInferenceRequest {
-                model: models::text_model(),
-                messages: vec![
-                    Message::System(EXTRACTION_PROMPT.to_string()),
-                    Message::User {
-                        text: input.to_string(),
-                        attachments: Vec::new(),
-                    },
-                ],
-                tools: Vec::new(),
-            })
+            .execute(
+                InferenceRequest {
+                    model: models::text_model(),
+                    messages: vec![
+                        Message::System(EXTRACTION_PROMPT.to_string()),
+                        Message::User {
+                            text: input.to_string(),
+                            attachments: Vec::new(),
+                        },
+                    ],
+                    tools: Vec::new(),
+                },
+                None,
+            )
             .await
             .map_err(|error| error.to_string())?;
         let Message::Assistant {

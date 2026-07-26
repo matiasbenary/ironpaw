@@ -3,21 +3,19 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 
 use crate::{
+    inference::{Inference, InferenceRequest},
     message::{Attachment, Message},
     models,
-    tools::{
-        self, InternalTool,
-        raw_inference::{ModelInference, RawInferenceRequest},
-    },
+    tools::{self, InternalTool},
 };
 
 pub struct InspectFileTool {
     file_dirs: Vec<PathBuf>,
-    inference: ModelInference,
+    inference: Inference,
 }
 
 impl InspectFileTool {
-    pub fn new(file_dirs: Vec<PathBuf>, inference: ModelInference) -> Self {
+    pub fn new(file_dirs: Vec<PathBuf>, inference: Inference) -> Self {
         Self {
             file_dirs,
             inference,
@@ -52,7 +50,7 @@ impl InternalTool for InspectFileTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &crate::tools::ExecutionContext,
+        ctx: &crate::tools::ExecutionContext,
         responder: crate::tools::ToolResponder,
     ) {
         let result: Result<serde_json::Value, String> = async {
@@ -77,7 +75,9 @@ impl InternalTool for InspectFileTool {
             let query = params.query.as_deref().unwrap_or("describe this file");
 
             if attachment.mime_type.starts_with("image/") {
-                let answer = self.inspect_image(attachment, query).await?;
+                let answer = self
+                    .inspect_image(attachment, query, ctx.conversation())
+                    .await?;
                 return Ok(inspection_output(params.file_id, query, answer));
             }
 
@@ -90,7 +90,7 @@ impl InternalTool for InspectFileTool {
                 bounded_raw_text(&data)
             };
 
-            let answer = self.inspect_text(&text, query).await?;
+            let answer = self.inspect_text(&text, query, ctx.conversation()).await?;
             Ok(inspection_output(params.file_id, query, answer))
         }
         .await;
@@ -99,15 +99,29 @@ impl InternalTool for InspectFileTool {
 }
 
 impl InspectFileTool {
-    async fn inspect_text(&self, content: &str, query: &str) -> Result<String, String> {
+    async fn inspect_text(
+        &self,
+        content: &str,
+        query: &str,
+        conversation: Option<&crate::bus::ConversationKey>,
+    ) -> Result<String, String> {
         let prompt = format!(
             "Query: {query}\n\nFile content:\n{content}\n\nAnswer the query using only the file content."
         );
-        self.call_model(models::text_model(), vec![system_item(), text_item(prompt)])
-            .await
+        self.call_model(
+            models::text_model(),
+            vec![system_item(), text_item(prompt)],
+            conversation,
+        )
+        .await
     }
 
-    async fn inspect_image(&self, attachment: Attachment, query: &str) -> Result<String, String> {
+    async fn inspect_image(
+        &self,
+        attachment: Attachment,
+        query: &str,
+        conversation: Option<&crate::bus::ConversationKey>,
+    ) -> Result<String, String> {
         self.call_model(
             models::vision_model(),
             vec![
@@ -117,18 +131,27 @@ impl InspectFileTool {
                     attachments: vec![attachment],
                 },
             ],
+            conversation,
         )
         .await
     }
 
-    async fn call_model(&self, model: String, input: Vec<Message>) -> Result<String, String> {
+    async fn call_model(
+        &self,
+        model: String,
+        input: Vec<Message>,
+        conversation: Option<&crate::bus::ConversationKey>,
+    ) -> Result<String, String> {
         let response = self
             .inference
-            .execute(RawInferenceRequest {
-                model,
-                messages: input,
-                tools: Vec::new(),
-            })
+            .execute(
+                InferenceRequest {
+                    model,
+                    messages: input,
+                    tools: Vec::new(),
+                },
+                conversation,
+            )
             .await
             .map_err(|error| error.to_string())?;
         let Message::Assistant { text, .. } = response.message else {

@@ -66,15 +66,8 @@ struct InstallSession {
     secrets: Vec<SetupSecret>,
     stage: InstallStage,
     config_values: BTreeMap<String, serde_json::Value>,
-    setup_conversation: Option<SetupConversation>,
+    setup_conversation: Option<ConversationKey>,
     continuation: Option<ToolResponder>,
-}
-
-#[derive(Clone)]
-struct SetupConversation {
-    channel: String,
-    chat_id: String,
-    thread_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -216,9 +209,10 @@ impl InstallChannelTool {
         });
         pause_conversation(automations)?;
         automations.add(Self::automation(name, SenderKind::User, user_conversation))?;
-        send(
+        super::request_choice(
             tools,
-            &format!("Install the {name} channel? Reply yes to continue, or no to cancel."),
+            &format!("Install the {name} channel?"),
+            &[("Install", "yes"), ("Cancel", "no")],
             ctx,
         )
         .await?;
@@ -230,16 +224,11 @@ impl InstallChannelTool {
     }
 }
 
-fn setup_conversation(ctx: &ExecutionContext) -> Option<SetupConversation> {
-    let conversation = match &ctx.invoked_by {
-        InvocationScope::Conversation(conversation) => conversation,
-        InvocationScope::ScheduledAutomation { .. } => return None,
-    };
-    Some(SetupConversation {
-        channel: conversation.channel.clone(),
-        chat_id: conversation.chat_id.clone(),
-        thread_id: conversation.thread_id.clone(),
-    })
+fn setup_conversation(ctx: &ExecutionContext) -> Option<ConversationKey> {
+    match &ctx.invoked_by {
+        InvocationScope::Conversation(conversation) => Some(conversation.clone()),
+        InvocationScope::ScheduledAutomation { .. } => None,
+    }
 }
 
 fn is_setup_conversation(session: &InstallSession, ctx: &ExecutionContext) -> bool {
@@ -250,9 +239,7 @@ fn is_setup_conversation(session: &InstallSession, ctx: &ExecutionContext) -> bo
         InvocationScope::Conversation(conversation) => conversation,
         InvocationScope::ScheduledAutomation { .. } => return false,
     };
-    expected.channel == conversation.channel
-        && expected.chat_id == conversation.chat_id
-        && expected.thread_id == conversation.thread_id
+    expected == conversation
 }
 
 impl RemoveChannelTool {

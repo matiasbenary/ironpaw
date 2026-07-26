@@ -53,7 +53,7 @@ On a fresh install, Ironpaw starts the bus, loads the TUI channel, runs the boot
 
 Once unlocked, Ironpaw installs a transient onboarding automation if required setup secrets such as `NEAR_API_KEY` are missing. It exists only for that process lifetime; a later startup recreates it whenever setup is still required.
 
-After onboarding, it sets `handle-conversation` as the default automation, which routes inbound messages to the agent and sends answers back to the user through the same channel. Web search is implemented as an external WASM tool, so it is available after the `web_search` tool package has been installed into the runtime tools directory.
+After onboarding, it sets `handle-conversation` as the default automation, which routes inbound messages to the agent and sends answers back to the user through the same channel. Web search is an external WASM tool installed by default into the runtime tools directory; its Brave key remains optional until configured.
 
 ---
 
@@ -391,7 +391,7 @@ At startup, Ironpaw discovers installed WASM tools from the runtime tools direct
 
 External tools do not receive raw secrets directly. They use host-provided imports for external effects. HTTP tools call `http_request`, which the host wraps with `HttpTool<ToolSecrets>` so the installed tool config decides which hosts are allowed and where credentials are injected. Email tools call IMAP/SMTP-specific host imports, so the host owns the configured mail server connections and injects credentials without exposing passwords to WASM.
 
-The install flow is implemented through `list_tools`, `install_tool`, and `setup_tool`. `install_tool` discovers local packages from `IRONPAW_TOOLS_SRC`, `<runtime-root>/tool-store`, and the built-in `tools-src` directory, then registers a temporary automation scoped to the starting conversation. That automation calls `setup_tool` for follow-up replies. `setup_tool` asks deterministic setup questions, stores required secrets in the encrypted secret store, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers the tool immediately.
+The install flow is implemented through `list_tools`, `install_tool`, `configure_tool`, and `setup_tool`. `install_tool` discovers packages only from `<runtime-root>/tool-store`, then registers a temporary automation scoped to the starting conversation. `configure_tool` uses the same flow for an installed tool and asks before replacing every saved value; secret values are never displayed. That automation calls `setup_tool` for follow-up replies. `setup_tool` asks deterministic setup questions, stores required secrets in the encrypted secret store, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers or reloads the tool immediately.
 
 The first external WASM tool is `web_search`. It searches Brave Search through `https://api.search.brave.com/res/v1/web/search`, while the `BRAVE_SEARCH_API` key is injected by the host as `X-Subscription-Token`. The `email` tool demonstrates a non-HTTP external tool: it can list and read messages through the configured IMAP server, and send plain-text mail through the configured SMTP server.
 

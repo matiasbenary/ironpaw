@@ -6,12 +6,12 @@ use ironpaw::{
     automations::{Automations, FileAutomations},
     bus::{AutomationAction, Bus, ConversationKey, Event, Sender},
     history::{History, HistoryEntry, HistoryScope, MessageMetadata, SqliteHistory},
+    inference::Inference,
     memory::Memory,
     message::{Attachment, Message},
     tools::{
         InternalTools, ToolHandler,
         messages::{DeleteMessageTool, SendMessageTool},
-        raw_inference::RawInferenceTool,
         setup::{OnboardingTool, SetupServices},
         wasm::{self, WasmTool},
     },
@@ -60,10 +60,11 @@ fn start_ironpaw_config(
     if let Ok(brave_search_api) = std::env::var("BRAVE_SEARCH_API") {
         secrets.set("BRAVE_SEARCH_API", &brave_search_api).unwrap();
     }
+    let inference = Inference::new(bus.clone(), secrets.tools.clone()).expect("create inference");
     let tools = InternalTools::new(
         bus.clone(),
         layout.clone(),
-        RawInferenceTool::new(secrets.tools.clone()).unwrap(),
+        inference,
         send_message_tool(bus, files_dir.clone()),
         DeleteMessageTool::new(bus.clone()),
         files_dir,
@@ -80,7 +81,7 @@ fn start_ironpaw_config(
         Memory::new(
             layout.data_dir().join("memory.db"),
             secrets.tools.clone(),
-            tools.raw_inference.clone(),
+            tools.inference.clone(),
         )
         .expect("create native memory"),
     );
@@ -88,7 +89,7 @@ fn start_ironpaw_config(
         bus.clone(),
         Arc::clone(&tools.registry),
         Arc::clone(&history),
-        tools.raw_inference.clone(),
+        tools.inference.clone(),
         Arc::clone(&memory),
     );
     let agent = Arc::new(agent);
@@ -116,6 +117,9 @@ fn start_ironpaw_config(
         .registry
         .add(Arc::new(OnboardingTool::new(setup_services)))
         .expect("onboarding registers");
+    automations
+        .add_transient(OnboardingTool::api_key_recovery_automation())
+        .expect("API-key recovery registers");
     automations
         .add(Automations::handle_conversation())
         .expect("stock automation registers");
