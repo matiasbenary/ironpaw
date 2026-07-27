@@ -2,7 +2,6 @@ use std::{
     collections::HashMap,
     fs,
     hash::{Hash, Hasher},
-    io::Cursor,
     path::PathBuf,
     time::Duration,
 };
@@ -19,7 +18,12 @@ use crate::{
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
-const CFT_STABLE: &str = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json";
+mod install;
+mod proxy;
+
+use install::ensure_chrome;
+use proxy::BrowserProxy;
+
 pub const UPDATE_AUTOMATION_NAME: &str = "browser-update";
 
 #[derive(Clone, serde::Deserialize, schemars::JsonSchema)]
@@ -77,6 +81,7 @@ struct BrowserOption {
 
 struct Session {
     _browser: Browser,
+    _proxy: BrowserProxy,
     page: Page,
     handler: tokio::task::JoinHandle<()>,
     log_path: PathBuf,
@@ -149,6 +154,7 @@ impl BrowserTool {
                 .join(format!("{:x}", hasher.finish()));
             let replacement = launch_session(&self.layout, profile).await?;
             if let Some(url) = last_url.filter(|url| !url.is_empty() && url != "about:blank") {
+                validate_navigation_url(&url)?;
                 replacement.page.goto(url).await.map_err(|err| {
                     format!("browser restarted but could not restore its page: {err}")
                 })?;
@@ -188,11 +194,17 @@ impl BrowserUpdateTool {
 }
 
 async fn launch_session(layout: &RuntimeLayout, profile: PathBuf) -> Result<Session, String> {
-    let chrome = ensure_chrome_async(layout.clone()).await?;
+    let chrome = ensure_chrome(layout.clone()).await?;
+    let proxy = BrowserProxy::start().await?;
     let log_path = profile.join("chrome.log");
     let config = BrowserConfig::builder()
         .chrome_executable(chrome)
         .user_data_dir(profile)
+        .arg(format!("--proxy-server=http://{}", proxy.address()))
+        .arg("--proxy-bypass-list=<-loopback>")
+        .arg("--disable-quic")
+        .arg("--dns-prefetch-disable")
+        .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
         .arg("--enable-logging")
         .arg(format!("--log-file={}", log_path.display()))
         .build()
@@ -207,6 +219,7 @@ async fn launch_session(layout: &RuntimeLayout, profile: PathBuf) -> Result<Sess
         .map_err(|err| err.to_string())?;
     Ok(Session {
         _browser: browser,
+        _proxy: proxy,
         page,
         handler,
         log_path,
@@ -224,6 +237,7 @@ async fn execute_session(
             act(&session.page, kind.clone(), r#ref, value.as_deref()).await
         }
         BrowserParams::Goto { url } => {
+            validate_navigation_url(url)?;
             session
                 .page
                 .goto(url)
@@ -234,18 +248,20 @@ async fn execute_session(
     }
 }
 
+fn validate_navigation_url(url: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(url).map_err(|err| format!("invalid browser url: {err}"))?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err("browser navigation requires a public https url".to_string());
+    }
+    Ok(())
+}
+
 fn is_connection_error(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
     error.contains("connection closed")
         || error.contains("channel closed")
         || error.contains("websocket")
         || error.contains("broken pipe")
-}
-
-async fn ensure_chrome_async(layout: RuntimeLayout) -> Result<PathBuf, String> {
-    tokio::task::spawn_blocking(move || ensure_chrome(&layout))
-        .await
-        .map_err(|err| format!("browser installer task failed: {err}"))?
 }
 
 fn chrome_log_tail(path: &PathBuf) -> String {
@@ -378,94 +394,6 @@ async fn evaluate_action(page: &Page, script: String) -> Result<(), String> {
     })?;
     Ok(())
 }
-fn ensure_chrome(layout: &RuntimeLayout) -> Result<PathBuf, String> {
-    fs::create_dir_all(layout.bin_dir()).map_err(|e| e.to_string())?;
-    let metadata: serde_json::Value = reqwest::blocking::get(CFT_STABLE)
-        .map_err(|e| e.to_string())?
-        .json()
-        .map_err(|e| e.to_string())?;
-    let platform = chrome_platform();
-    let version = metadata["channels"]["Stable"]["version"]
-        .as_str()
-        .ok_or_else(|| "Chrome for Testing response has no Stable version".to_string())?;
-    let install_root = layout.bin_dir().join("chrome-headless-shell").join(version);
-    let binary = install_root.join(chrome_relative_path());
-    if binary.exists() {
-        make_executable(&binary)?;
-        return Ok(binary);
-    }
-    let downloads = &metadata["channels"]["Stable"]["downloads"]["chrome-headless-shell"];
-    let url = downloads
-        .as_array()
-        .and_then(|items| items.iter().find(|item| item["platform"] == platform))
-        .and_then(|item| item["url"].as_str())
-        .ok_or_else(|| format!("Chrome Headless Shell has no Stable download for {platform}"))?;
-    let bytes = reqwest::blocking::get(url)
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .map_err(|e| e.to_string())?;
-    let staging = layout
-        .bin_dir()
-        .join(format!(".chrome-headless-shell-{version}.installing"));
-    fs::remove_dir_all(&staging).ok();
-    fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    for index in 0..zip.len() {
-        let mut entry = zip.by_index(index).map_err(|e| e.to_string())?;
-        let Some(name) = entry.enclosed_name() else {
-            continue;
-        };
-        let path = staging.join(name);
-        if entry.is_dir() {
-            fs::create_dir_all(path).map_err(|e| e.to_string())?;
-        } else {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            let mut out = fs::File::create(path).map_err(|e| e.to_string())?;
-            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
-        }
-    }
-    if let Some(parent) = install_root.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    fs::rename(staging.join(chrome_archive_dir()), &install_root).map_err(|e| e.to_string())?;
-    make_executable(&binary)?;
-    Ok(binary)
-}
-
-fn make_executable(path: &PathBuf) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = fs::metadata(path)
-            .map_err(|err| err.to_string())?
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).map_err(|err| err.to_string())?;
-    }
-    Ok(())
-}
-fn chrome_platform() -> &'static str {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "linux64",
-        ("macos", "aarch64") => "mac-arm64",
-        ("macos", "x86_64") => "mac-x64",
-        _ => "linux64",
-    }
-}
-fn chrome_relative_path() -> &'static str {
-    "chrome-headless-shell"
-}
-
-fn chrome_archive_dir() -> &'static str {
-    match chrome_platform() {
-        "mac-arm64" => "chrome-headless-shell-mac-arm64",
-        "mac-x64" => "chrome-headless-shell-mac-x64",
-        _ => "chrome-headless-shell-linux64",
-    }
-}
-
 #[async_trait]
 impl InternalTool for BrowserTool {
     fn name(&self) -> &str {
@@ -514,7 +442,7 @@ impl InternalTool for BrowserUpdateTool {
         _ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
-        let result = ensure_chrome_async(self.layout.clone())
+        let result = ensure_chrome(self.layout.clone())
             .await
             .map(|path| serde_json::json!({ "path": path }))
             .map_err(crate::tools::ToolError::new);

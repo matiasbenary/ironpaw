@@ -361,6 +361,7 @@ Implemented internal tools include:
 - `download_file`: downloads a public URL into `<runtime-root>/download` and returns a numeric `file_id` for bounded inspection with `inspect_file`.
 - `list_files`, `read_file`, `create_file`, `update_file`: access the execution-scoped agent workspace.
 - `web_fetch`: fetches a public URL with no credentials.
+- `browser`: navigates public HTTPS pages through a local `CONNECT` proxy. The proxy resolves destinations itself, rejects non-public addresses, and pins each tunnel to the validated address. Chromium direct bypasses, QUIC, and non-proxied WebRTC traffic are disabled.
 - `send_message`: publishes a message to a user through a channel.
 - `delete_message`: deletes a channel message when the channel supports it.
 - `request_user_input`: asks the current user to choose from specific answers. Telegram renders inline callback buttons; the selected value returns as a normal inbound user message.

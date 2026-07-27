@@ -1,12 +1,10 @@
-use std::{
-    net::{IpAddr, SocketAddr},
-    time::Duration,
-};
+use std::{net::SocketAddr, time::Duration};
 
 use async_trait::async_trait;
 
 use crate::{
     message::ToolDefinition,
+    network_policy::{is_public_ip, resolve_public},
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
@@ -95,8 +93,8 @@ pub(crate) async fn guard_url(url: &reqwest::Url) -> Result<Option<Vec<SocketAdd
     if url.scheme() != "https" && !(url.scheme() == "http" && is_loopback_host) {
         return Err("only https urls are allowed (http only for localhost)".to_string());
     }
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_private_ip(&ip) && !(url.scheme() == "http" && is_loopback_host) {
+    if let Ok(ip) = host.parse() {
+        if !(is_public_ip(ip) || url.scheme() == "http" && is_loopback_host) {
             return Err("requests to private/internal addresses are not allowed".to_string());
         }
         return Ok(None);
@@ -108,19 +106,7 @@ pub(crate) async fn guard_url(url: &reqwest::Url) -> Result<Option<Vec<SocketAdd
         return Err("requests to private/internal addresses are not allowed".to_string());
     }
     let port = url.port_or_known_default().unwrap_or(443);
-    let addresses: Vec<_> = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|err| format!("failed to resolve host: {err}"))?
-        .collect();
-    if addresses.is_empty() {
-        return Err("host resolved to no addresses".to_string());
-    }
-    for address in &addresses {
-        if is_private_ip(&address.ip()) {
-            return Err("requests to private/internal addresses are not allowed".to_string());
-        }
-    }
-    Ok(Some(addresses))
+    resolve_public(host, port).await.map(Some)
 }
 
 pub(crate) fn pinned_client(host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, String> {
@@ -130,28 +116,6 @@ pub(crate) fn pinned_client(host: &str, addrs: &[SocketAddr]) -> Result<reqwest:
         .resolve_to_addrs(host, addrs)
         .build()
         .map_err(|err| format!("http client should build: {err}"))
-}
-
-fn is_private_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || is_unique_local_v6(v6)
-                || is_unicast_link_local_v6(v6)
-        }
-    }
-}
-
-fn is_unique_local_v6(ip: &std::net::Ipv6Addr) -> bool {
-    (ip.segments()[0] & 0xfe00) == 0xfc00
-}
-
-fn is_unicast_link_local_v6(ip: &std::net::Ipv6Addr) -> bool {
-    (ip.segments()[0] & 0xffc0) == 0xfe80
 }
 
 #[async_trait]
