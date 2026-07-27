@@ -319,7 +319,7 @@ mod tests {
             automation_id: "morning".to_string(),
         });
 
-        let (responder, _) = ToolResponder::capture();
+        let (responder, _) = ToolResponder::pending();
         create
             .execute(
                 serde_json::json!({ "path": "state/today.txt", "content": "first" }),
@@ -327,7 +327,7 @@ mod tests {
                 responder,
             )
             .await;
-        let (responder, _) = ToolResponder::capture();
+        let (responder, _) = ToolResponder::pending();
         update
             .execute(
                 serde_json::json!({

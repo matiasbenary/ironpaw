@@ -73,42 +73,11 @@ pub async fn run_internal_tool(
             "tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"
         )));
     }
-    let (responder, captured) = ToolResponder::capture();
+    let (responder, response) = ToolResponder::pending();
     let mut ctx = ctx.with_tool(tool.name().to_string());
     ctx.depth += 1;
     tool.execute(args, &ctx, responder).await;
-    captured
-        .lock()
-        .expect("tool response lock")
-        .take()
-        .unwrap_or_else(|| Err(ToolError::new("tool finished without responding")))
-}
-
-pub(crate) async fn run_registered_tool_for_context(
-    registry: &ToolRegistry,
-    ctx: &ExecutionContext,
-    tool_name: String,
-    args: serde_json::Value,
-    responder: ToolResponder,
-) {
-    let tool = registry
-        .all()
-        .iter()
-        .find(|tool| tool.name() == tool_name)
-        .cloned();
-    let Some(tool) = tool else {
-        responder.respond(Err(ToolError::new(format!("unknown tool: {tool_name}"))));
-        return;
-    };
-    if let Err(error) = reserve_tool_call(ctx) {
-        responder.respond(Err(ToolError::new(error)));
-    } else if ctx.depth >= MAX_TOOL_DEPTH {
-        responder.respond(Err(ToolError::new(format!(
-            "tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"
-        ))));
-    } else {
-        let mut tool_ctx = ctx.with_tool(tool.name().to_string());
-        tool_ctx.depth += 1;
-        tool.execute(args, &tool_ctx, responder).await;
-    }
+    response
+        .await
+        .unwrap_or_else(|_| Err(ToolError::new("tool finished without responding")))
 }

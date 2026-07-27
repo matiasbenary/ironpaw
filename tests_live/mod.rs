@@ -55,8 +55,12 @@ fn start_ironpaw_config(
     if let Ok(near_api_key) = std::env::var("NEAR_API_KEY") {
         secrets.set("NEAR_API_KEY", &near_api_key).unwrap();
     }
-    secrets.set("TELEGRAM_BOT_TOKEN", "live-test-token").unwrap();
-    secrets.set("IRONPAW_NGROK_TOKEN", "live-test-token").unwrap();
+    secrets
+        .set("TELEGRAM_BOT_TOKEN", "live-test-token")
+        .unwrap();
+    secrets
+        .set("IRONPAW_NGROK_TOKEN", "live-test-token")
+        .unwrap();
     if let Ok(brave_search_api) = std::env::var("BRAVE_SEARCH_API") {
         secrets.set("BRAVE_SEARCH_API", &brave_search_api).unwrap();
     }
@@ -72,11 +76,7 @@ fn start_ironpaw_config(
         secrets.clone(),
     );
     let tools = Arc::new(tools);
-    let tool_handler = Arc::new(ToolHandler::new(
-        bus.clone(),
-        Arc::clone(&tools.registry),
-        Arc::clone(&history),
-    ));
+    let tool_handler = Arc::new(ToolHandler::new(bus.clone(), Arc::clone(&tools.registry)));
     let memory = Arc::new(
         Memory::new(
             layout.data_dir().join("memory.db"),
@@ -985,21 +985,15 @@ async fn lottery_automation() {
 
     let automation = timeout(Duration::from_secs(60), async {
         loop {
-            if let Some(automation) = automations
-                .list()
-                .into_iter()
-                .find(|automation| {
-                    !existing.contains(&automation.name)
-                        && automation.effect["type"] == "agent_task"
-                        && automation.effect["tools"]
-                            .as_array()
-                            .is_some_and(|tools| {
-                                ["send_message", "delete_automation"]
-                                    .into_iter()
-                                    .all(|name| tools.iter().any(|tool| tool == name))
-                            })
-                })
-            {
+            if let Some(automation) = automations.list().into_iter().find(|automation| {
+                !existing.contains(&automation.name)
+                    && automation.effect["type"] == "agent_task"
+                    && automation.effect["tools"].as_array().is_some_and(|tools| {
+                        ["send_message", "delete_automation"]
+                            .into_iter()
+                            .all(|name| tools.iter().any(|tool| tool == name))
+                    })
+            }) {
                 break automation;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

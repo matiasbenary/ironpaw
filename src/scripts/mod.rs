@@ -57,9 +57,7 @@ pub fn validate_source(source: &str, tools: &BTreeSet<String>) -> Result<(), Str
         globals
             .set("__source", source)
             .map_err(|err| err.to_string())?;
-        js.eval::<(), _>(
-            "Object.getPrototypeOf(async function () {}).constructor(__source);",
-        )
+        js.eval::<(), _>("Object.getPrototypeOf(async function () {}).constructor(__source);")
             .catch(&js)
             .map_err(|err| format!("script syntax error: {err}"))
     })
@@ -80,8 +78,19 @@ fn validate_tool_calls(source: &str, tools: &BTreeSet<String>) -> Result<(), Str
     let mut globals = tools.clone();
     globals.extend(
         [
-            "Array", "BigInt", "Boolean", "Error", "Number", "Object", "Promise", "String",
-            "Symbol", "TypeError", "parseFloat", "parseInt", "require",
+            "Array",
+            "BigInt",
+            "Boolean",
+            "Error",
+            "Number",
+            "Object",
+            "Promise",
+            "String",
+            "Symbol",
+            "TypeError",
+            "parseFloat",
+            "parseInt",
+            "require",
         ]
         .map(str::to_string),
     );
@@ -122,12 +131,7 @@ fn is_scope(node: Node<'_>) -> bool {
     )
 }
 
-fn collect_bindings(
-    node: Node<'_>,
-    source: &[u8],
-    names: &mut BTreeSet<String>,
-    first: bool,
-) {
+fn collect_bindings(node: Node<'_>, source: &[u8], names: &mut BTreeSet<String>, first: bool) {
     if !first && is_scope(node) {
         if node.kind() == "function_declaration"
             && let Some(name) = node.child_by_field_name("name")
@@ -289,9 +293,7 @@ mod tests {
         history::SqliteHistory,
         inference::Inference,
         message::Message,
-        tools::{
-            InternalTools, InvocationScope, messages::SendMessageTool,
-        },
+        tools::{InternalTools, InvocationScope, messages::SendMessageTool},
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
@@ -462,8 +464,8 @@ mod tests {
 
     #[test]
     fn validation_rejects_fetch_before_a_script_can_be_registered() {
-        let error = validate_source("await fetch('https://example.com');", &BTreeSet::new())
-            .unwrap_err();
+        let error =
+            validate_source("await fetch('https://example.com');", &BTreeSet::new()).unwrap_err();
 
         assert!(error.contains("unavailable function `fetch`"));
     }

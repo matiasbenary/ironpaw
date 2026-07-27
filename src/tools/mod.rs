@@ -25,7 +25,6 @@ pub use built_in::{
 };
 pub use context::ToolResponder;
 pub use handler::ToolHandler;
-pub(crate) use runner::run_registered_tool_for_context;
 pub use runner::{run_internal_tool, run_registered_tool, run_tool};
 
 use self::built_in::{
@@ -65,6 +64,13 @@ impl From<String> for ToolError {
 }
 
 pub type ToolResult = Result<serde_json::Value, ToolError>;
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct ToolCallResult {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub result: ToolResult,
+}
 
 pub fn tool_result_json(result: &ToolResult) -> serde_json::Value {
     match result {
@@ -452,13 +458,17 @@ fn validate_object(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{ConversationKey, Event};
-    use crate::history::{History, SqliteHistory};
-    use crate::message::{Message, ToolCall};
+    use crate::bus::Event;
+    use crate::message::ToolCall;
 
     struct FakeTool(&'static str);
 
     struct SchemaTool;
+
+    struct DeferredTool {
+        name: &'static str,
+        order: Arc<std::sync::Mutex<Vec<String>>>,
+    }
 
     #[async_trait]
     impl InternalTool for FakeTool {
@@ -515,6 +525,46 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl InternalTool for DeferredTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn tool_definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.name.to_string(),
+                description: String::new(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false
+                }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ExecutionContext,
+            responder: ToolResponder,
+        ) {
+            self.order
+                .lock()
+                .expect("order lock")
+                .push(format!("start-{}", self.name));
+            let name = self.name;
+            let order = Arc::clone(&self.order);
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                order
+                    .lock()
+                    .expect("order lock")
+                    .push(format!("finish-{name}"));
+                responder.respond(Ok(serde_json::json!({ "tool": name })));
+            });
+        }
+    }
+
     fn test_tools() -> InternalTools {
         let bus = crate::bus::Bus::new(4);
         let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
@@ -538,23 +588,6 @@ mod tests {
             Arc::new(crate::history::SqliteHistory::new(history).unwrap()),
             secrets,
         )
-    }
-
-    fn temp_history(prefix: &str) -> Arc<SqliteHistory> {
-        Arc::new(
-            SqliteHistory::new(
-                std::env::temp_dir().join(format!("{prefix}-{}.db", uuid::Uuid::new_v4())),
-            )
-            .unwrap(),
-        )
-    }
-
-    fn test_conversation() -> ConversationKey {
-        ConversationKey {
-            channel: "tui".to_string(),
-            chat_id: "chat-1".to_string(),
-            thread_id: None,
-        }
     }
 
     #[test]
@@ -658,8 +691,7 @@ mod tests {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());
         registry.add(Arc::new(FakeTool("fake"))).expect("add");
-        let history = temp_history("ironpaw-tool-handler-test");
-        let handler = Arc::new(ToolHandler::new(bus.clone(), registry, history));
+        let handler = Arc::new(ToolHandler::new(bus.clone(), registry));
         let task = handler.start();
         let mut events = bus.subscribe();
 
@@ -667,25 +699,18 @@ mod tests {
             context: ExecutionContext::new(InvocationScope::ScheduledAutomation {
                 automation_id: "test".to_string(),
             }),
-            tool_call: ToolCall {
+            tool_calls: vec![ToolCall {
                 id: "call-1".to_string(),
                 name: "fake".to_string(),
                 arguments: "{}".to_string(),
-            },
-            args: serde_json::json!({}),
-            record_in_history: true,
+            }],
+            allowed_tool_names: None,
         });
 
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
-                if let Event::ToolResult {
-                    tool_call_id,
-                    tool_name,
-                    result,
-                    ..
-                } = events.recv().await.expect("event")
-                {
-                    break (tool_call_id, tool_name, result);
+                if let Event::ToolResponse { result, .. } = events.recv().await.expect("event") {
+                    break result;
                 }
             }
         })
@@ -693,100 +718,103 @@ mod tests {
         .expect("tool result");
         task.abort();
 
-        assert_eq!(result.0, "call-1");
-        assert_eq!(result.1, "fake");
-        assert_eq!(result.2.unwrap()["depth"], 1);
+        let results = result.unwrap();
+        assert_eq!(results[0].result.as_ref().unwrap()["depth"], 1);
     }
 
     #[tokio::test]
-    async fn tool_handler_persists_automation_tool_transcript() {
+    async fn tool_handler_waits_for_deferred_tools_and_runs_them_in_order() {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());
-        registry.add(Arc::new(FakeTool("fake"))).expect("add");
-        let history = temp_history("ironpaw-tool-handler-automation-history");
-        let handler = Arc::new(ToolHandler::new(bus.clone(), registry, history.clone()));
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for name in ["first", "second"] {
+            registry
+                .add(Arc::new(DeferredTool {
+                    name,
+                    order: Arc::clone(&order),
+                }))
+                .expect("add");
+        }
+        let handler = Arc::new(ToolHandler::new(bus.clone(), registry));
         let task = handler.start();
         let mut events = bus.subscribe();
-        let automation_id = "daily-album";
-        let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
-            automation_id: automation_id.to_string(),
-        });
 
         bus.publish(Event::ToolRequest {
-            context: ctx,
-            tool_call: ToolCall {
-                id: "call-1".to_string(),
-                name: "fake".to_string(),
-                arguments: "{}".to_string(),
-            },
-            args: serde_json::json!({}),
-            record_in_history: true,
+            context: ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                automation_id: "serial".to_string(),
+            }),
+            tool_calls: ["first", "second"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| ToolCall {
+                    id: format!("call-{index}"),
+                    name: name.to_string(),
+                    arguments: "{}".to_string(),
+                })
+                .collect(),
+            allowed_tool_names: None,
         });
+
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 if matches!(
                     events.recv().await.expect("event"),
-                    Event::ToolResult { .. }
+                    Event::ToolResponse { .. }
                 ) {
                     break;
                 }
             }
         })
         .await
-        .expect("tool result");
+        .expect("tool response");
         task.abort();
 
-        let scope = crate::history::HistoryScope::Automation(automation_id.to_string());
-        let entries = history.load_scope(&scope).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert!(
-            entries
-                .iter()
-                .all(|entry| entry.metadata.automation_id.as_deref() == Some(automation_id))
+        assert_eq!(
+            *order.lock().expect("order lock"),
+            [
+                "start-first",
+                "finish-first",
+                "start-second",
+                "finish-second"
+            ]
         );
-        assert!(matches!(entries[0].message, Message::Assistant { .. }));
-        assert!(matches!(entries[1].message, Message::ToolResult { .. }));
     }
 
     #[tokio::test]
-    async fn tool_handler_persists_bus_tool_transcript() {
+    async fn tool_handler_returns_the_interface_for_invalid_arguments() {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());
-        registry.add(Arc::new(FakeTool("fake"))).expect("add");
-        let history = temp_history("ironpaw-tool-handler-bus-history");
-        let handler = Arc::new(ToolHandler::new(bus.clone(), registry, history.clone()));
+        registry.add(Arc::new(SchemaTool)).expect("add");
+        let handler = Arc::new(ToolHandler::new(bus.clone(), registry));
         let task = handler.start();
         let mut events = bus.subscribe();
-        let conversation = test_conversation();
 
         bus.publish(Event::ToolRequest {
-            context: ExecutionContext::new(InvocationScope::Conversation(conversation.clone())),
-            tool_call: ToolCall {
+            context: ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                automation_id: "invalid-args".to_string(),
+            }),
+            tool_calls: vec![ToolCall {
                 id: "call-1".to_string(),
-                name: "fake".to_string(),
+                name: "schema_tool".to_string(),
                 arguments: "{}".to_string(),
-            },
-            args: serde_json::json!({}),
-            record_in_history: true,
+            }],
+            allowed_tool_names: None,
         });
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        let results = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
-                if matches!(
-                    events.recv().await.expect("event"),
-                    Event::ToolResult { .. }
-                ) {
-                    break;
+                if let Event::ToolResponse { result, .. } = events.recv().await.expect("event") {
+                    break result.unwrap();
                 }
             }
         })
         .await
-        .expect("tool result");
+        .expect("tool response");
         task.abort();
 
-        let entries = history.load(&conversation).unwrap();
-        assert_eq!(entries.len(), 2);
-        assert!(matches!(entries[0].message, Message::Assistant { .. }));
-        assert!(matches!(entries[1].message, Message::ToolResult { .. }));
+        let error = &results[0].result.as_ref().unwrap_err().message;
+        assert!(error.contains("missing required field"));
+        assert!(error.contains("Expected parameters"));
+        assert!(error.contains("\"message\""));
     }
 }

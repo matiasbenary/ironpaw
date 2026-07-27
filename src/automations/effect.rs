@@ -34,13 +34,12 @@ impl AutomationEffect {
                 let args = render_args(args, trigger);
                 bus.publish(Event::ToolRequest {
                     context: context.clone(),
-                    tool_call: ToolCall {
+                    tool_calls: vec![ToolCall {
                         id: execution_id.to_string(),
                         name: tool.clone(),
                         arguments: args.to_string(),
-                    },
-                    args,
-                    record_in_history: false,
+                    }],
+                    allowed_tool_names: None,
                 });
             }
             Self::AgentTask { prompt, tools } => {

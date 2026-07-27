@@ -67,11 +67,7 @@ async fn main() -> io::Result<()> {
         Arc::clone(&history),
         secrets.clone(),
     ));
-    let tool_handler = Arc::new(ToolHandler::new(
-        bus.clone(),
-        Arc::clone(&tools.registry),
-        Arc::clone(&history),
-    ));
+    let tool_handler = Arc::new(ToolHandler::new(bus.clone(), Arc::clone(&tools.registry)));
     let memory = Arc::new(
         Memory::new(
             layout.data_dir().join("memory.db"),

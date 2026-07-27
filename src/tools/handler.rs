@@ -1,27 +1,21 @@
 use std::sync::Arc;
 
 use crate::{
-    bus::{Bus, Event, InvocationScope},
-    history::{History, HistoryEntry, HistoryScope, MessageMetadata},
-    message::{Message, ToolCall},
+    bus::{Bus, Event},
+    message::ToolCall,
     tools::{
-        ExecutionContext, ToolError, ToolRegistry, ToolResponder, run_registered_tool_for_context,
+        ExecutionContext, ToolCallResult, ToolError, ToolRegistry, ToolResult, run_registered_tool,
     },
 };
 
 pub struct ToolHandler {
     bus: Bus,
     registry: Arc<ToolRegistry>,
-    history: Arc<dyn History>,
 }
 
 impl ToolHandler {
-    pub fn new(bus: Bus, registry: Arc<ToolRegistry>, history: Arc<dyn History>) -> Self {
-        Self {
-            bus,
-            registry,
-            history,
-        }
+    pub fn new(bus: Bus, registry: Arc<ToolRegistry>) -> Self {
+        Self { bus, registry }
     }
 
     pub fn start(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -32,10 +26,9 @@ impl ToolHandler {
                 match events.recv().await {
                     Ok(Event::ToolRequest {
                         context,
-                        tool_call,
-                        args,
-                        record_in_history,
-                    }) => this.spawn_tool_request(context, tool_call, args, record_in_history),
+                        tool_calls,
+                        allowed_tool_names,
+                    }) => this.spawn_tool_request(context, tool_calls, allowed_tool_names),
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -47,175 +40,103 @@ impl ToolHandler {
     fn spawn_tool_request(
         &self,
         context: ExecutionContext,
-        tool_call: ToolCall,
-        args: serde_json::Value,
-        record_in_history: bool,
+        tool_calls: Vec<ToolCall>,
+        allowed_tool_names: Option<Vec<String>>,
     ) {
         let bus = self.bus.clone();
         let registry = Arc::clone(&self.registry);
-        let history = Arc::clone(&self.history);
-        if record_in_history && let Err(err) = self.persist_tool_call(&context, &tool_call) {
-            bus.publish(Event::ToolResult {
-                context,
-                tool_call_id: tool_call.id,
-                tool_name: tool_call.name,
-                result: Err(ToolError::new(err)),
-            });
-            return;
-        }
         tokio::spawn(async move {
-            let responder = ToolResponder::bus(
-                bus,
-                history,
-                context.clone(),
-                tool_call.id,
-                tool_call.name.clone(),
-                record_in_history,
-            );
-            run_registered_tool_for_context(&registry, &context, tool_call.name, args, responder)
-                .await;
+            let tool_call_ids = tool_calls.iter().map(|call| call.id.clone()).collect();
+            let result = execute_tool_request(
+                &bus,
+                registry.as_ref(),
+                &context,
+                tool_calls,
+                allowed_tool_names.as_deref(),
+            )
+            .await;
+            bus.publish(Event::ToolResponse {
+                context,
+                tool_call_ids,
+                result,
+            });
         });
     }
+}
 
-    fn persist_tool_call(
-        &self,
-        ctx: &ExecutionContext,
-        tool_call: &ToolCall,
-    ) -> Result<(), String> {
-        let scope = history_scope(ctx);
-        self.history.append_scope(
-            &scope,
-            &[HistoryEntry {
-                message: Message::Assistant {
-                    text: None,
-                    attachments: Vec::new(),
-                    tool_calls: vec![tool_call.clone()],
-                },
-                metadata: history_metadata(&scope),
-            }],
-        )
+async fn execute_tool_request(
+    bus: &Bus,
+    registry: &ToolRegistry,
+    context: &ExecutionContext,
+    tool_calls: Vec<ToolCall>,
+    allowed_tool_names: Option<&[String]>,
+) -> Result<Vec<ToolCallResult>, String> {
+    if tool_calls.is_empty() {
+        return Err("tool request did not contain any tool calls".to_string());
+    }
+
+    let mut results = Vec::with_capacity(tool_calls.len());
+    for tool_call in &tool_calls {
+        let result = execute_tool_call(registry, context, tool_call, allowed_tool_names).await;
+        results.push(ToolCallResult {
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.name.clone(),
+            result: result.clone(),
+        });
+        publish_tool_result(bus, context, tool_call, result);
+    }
+    Ok(results)
+}
+
+async fn execute_tool_call(
+    registry: &ToolRegistry,
+    context: &ExecutionContext,
+    tool_call: &ToolCall,
+    allowed_tool_names: Option<&[String]>,
+) -> ToolResult {
+    if allowed_tool_names.is_some_and(|names| !names.iter().any(|name| name == &tool_call.name)) {
+        return Err(ToolError::new("tool is not allowed in this agent run"));
+    }
+    let args = match serde_json::from_str(&tool_call.arguments) {
+        Ok(args) => args,
+        Err(error) => {
+            return Err(invalid_arguments(
+                registry,
+                &tool_call.name,
+                error.to_string(),
+            ));
+        }
+    };
+    if let Err(error) = registry.validate_args_for_tool(&tool_call.name, &args) {
+        return Err(invalid_arguments(registry, &tool_call.name, error));
+    }
+    run_registered_tool(registry, &tool_call.name, args, context).await
+}
+
+fn invalid_arguments(registry: &ToolRegistry, tool_name: &str, error: String) -> ToolError {
+    let interface = registry
+        .all()
+        .into_iter()
+        .find(|tool| tool.name() == tool_name)
+        .map(|tool| tool.tool_definition().parameters.to_string());
+    match interface {
+        Some(interface) => ToolError::new(format!(
+            "invalid arguments for `{tool_name}`: {error}. Expected parameters: {interface}"
+        )),
+        None => ToolError::new(format!("unknown tool: {tool_name}")),
     }
 }
 
-pub(crate) fn persist_tool_result(
-    history: &dyn History,
-    ctx: &ExecutionContext,
-    message: &Message,
-) -> Result<(), String> {
-    let scope = history_scope(ctx);
-    let Message::ToolResult { .. } = message else {
-        return Ok(());
-    };
-    history.append_scope(
-        &scope,
-        &[HistoryEntry {
-            message: bounded_history_message(message),
-            metadata: history_metadata(&scope),
-        }],
-    )
-}
-
-fn bounded_history_message(message: &Message) -> Message {
-    const MAX_STRING_BYTES: usize = 8_000;
-    const MAX_ARRAY_ITEMS: usize = 100;
-    let Message::ToolResult {
-        tool_call_id,
-        tool_name,
+fn publish_tool_result(
+    bus: &Bus,
+    context: &ExecutionContext,
+    tool_call: &ToolCall,
+    result: ToolResult,
+) {
+    bus.publish(Event::ToolResult {
+        context: context.clone(),
+        tool_call_id: tool_call.id.clone(),
+        tool_name: tool_call.name.clone(),
         result,
-    } = message
-    else {
-        return message.clone();
-    };
-    Message::ToolResult {
-        tool_call_id: tool_call_id.clone(),
-        tool_name: tool_name.clone(),
-        result: bound_json(result, MAX_STRING_BYTES, MAX_ARRAY_ITEMS),
-    }
-}
-
-fn bound_json(
-    value: &serde_json::Value,
-    max_string_bytes: usize,
-    max_array_items: usize,
-) -> serde_json::Value {
-    match value {
-        serde_json::Value::String(text) => {
-            if text.len() <= max_string_bytes {
-                return value.clone();
-            }
-            let mut end = max_string_bytes;
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            serde_json::Value::String(format!("{}\n[truncated in durable history]", &text[..end]))
-        }
-        serde_json::Value::Array(items) => serde_json::Value::Array(
-            items
-                .iter()
-                .take(max_array_items)
-                .map(|item| bound_json(item, max_string_bytes, max_array_items))
-                .collect(),
-        ),
-        serde_json::Value::Object(fields) => serde_json::Value::Object(
-            fields
-                .iter()
-                .map(|(key, value)| {
-                    (
-                        key.clone(),
-                        bound_json(value, max_string_bytes, max_array_items),
-                    )
-                })
-                .collect(),
-        ),
-        _ => value.clone(),
-    }
-}
-
-fn history_scope(ctx: &ExecutionContext) -> HistoryScope {
-    match &ctx.invoked_by {
-        InvocationScope::Conversation(conversation) => {
-            HistoryScope::Conversation(conversation.clone())
-        }
-        InvocationScope::ScheduledAutomation { automation_id } => {
-            HistoryScope::Automation(automation_id.clone())
-        }
-    }
-}
-
-fn history_metadata(scope: &HistoryScope) -> MessageMetadata {
-    match scope {
-        HistoryScope::Conversation(conversation) => {
-            MessageMetadata::new(conversation.clone(), None)
-        }
-        HistoryScope::Automation(automation_id) => {
-            MessageMetadata::for_automation(automation_id.clone())
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounds_large_tool_result_strings_for_history() {
-        let message = Message::ToolResult {
-            tool_call_id: "call-1".to_string(),
-            tool_name: "web_fetch".to_string(),
-            result: serde_json::json!({
-                "file_id": 7,
-                "body": "x".repeat(9_000),
-            }),
-        };
-        let Message::ToolResult { result, .. } = bounded_history_message(&message) else {
-            panic!("expected tool result");
-        };
-        assert_eq!(result["file_id"], 7);
-        assert!(
-            result["body"]
-                .as_str()
-                .unwrap()
-                .contains("truncated in durable history")
-        );
-    }
+    });
 }

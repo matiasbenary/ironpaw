@@ -248,9 +248,14 @@ pub enum Event {
     },
     ToolRequest {
         context: ExecutionContext,
-        tool_call: ToolCall,
-        args: serde_json::Value,
-        record_in_history: bool,
+        tool_calls: Vec<ToolCall>,
+        #[serde(default)]
+        allowed_tool_names: Option<Vec<String>>,
+    },
+    ToolResponse {
+        context: ExecutionContext,
+        tool_call_ids: Vec<String>,
+        result: Result<Vec<crate::tools::ToolCallResult>, String>,
     },
     ToolResult {
         context: ExecutionContext,

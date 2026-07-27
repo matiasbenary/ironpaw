@@ -372,6 +372,43 @@ mod tests {
     }
 
     #[test]
+    fn appends_a_complete_bounded_tool_turn() {
+        let history = temp_history();
+        let scope = HistoryScope::Automation("daily-album".to_string());
+        let assistant = Message::Assistant {
+            text: Some("checking".to_string()),
+            attachments: Vec::new(),
+            tool_calls: vec![crate::message::ToolCall {
+                id: "call-1".to_string(),
+                name: "web_fetch".to_string(),
+                arguments: "{}".to_string(),
+            }],
+        };
+        let result = Message::ToolResult {
+            tool_call_id: "call-1".to_string(),
+            tool_name: "web_fetch".to_string(),
+            result: serde_json::json!({ "body": "x".repeat(9_000) }),
+        };
+
+        history
+            .append_tool_turn(&scope, &assistant, &[result])
+            .unwrap();
+
+        let entries = history.load_scope(&scope).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].message, assistant);
+        let Message::ToolResult { result, .. } = &entries[1].message else {
+            panic!("expected tool result");
+        };
+        assert!(
+            result["body"]
+                .as_str()
+                .unwrap()
+                .contains("truncated in durable history")
+        );
+    }
+
+    #[test]
     fn compaction_retains_active_task_context() {
         let history = temp_history();
         let scope = HistoryScope::Automation("daily-album".to_string());

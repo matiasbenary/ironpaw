@@ -66,6 +66,32 @@ pub trait History: Send + Sync {
 
     fn append_scope(&self, scope: &HistoryScope, entries: &[HistoryEntry]) -> Result<(), String>;
 
+    fn append_tool_turn(
+        &self,
+        scope: &HistoryScope,
+        assistant: &Message,
+        results: &[Message],
+    ) -> Result<(), String> {
+        if !matches!(assistant, Message::Assistant { .. }) {
+            return Err("tool turn did not contain an assistant message".to_string());
+        }
+        if results
+            .iter()
+            .any(|message| !matches!(message, Message::ToolResult { .. }))
+        {
+            return Err("tool turn contained a non-tool result".to_string());
+        }
+        let messages =
+            std::iter::once(assistant.clone()).chain(results.iter().map(bounded_history_message));
+        let entries = messages
+            .map(|message| HistoryEntry {
+                message,
+                metadata: metadata_for_scope(scope),
+            })
+            .collect::<Vec<_>>();
+        self.append_scope(scope, &entries)
+    }
+
     fn compact_scope(
         &self,
         scope: &HistoryScope,
@@ -103,4 +129,68 @@ pub trait History: Send + Sync {
     /// Full-text search over all stored items.
     /// Returns matching items newest first.
     fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, String>;
+}
+
+fn metadata_for_scope(scope: &HistoryScope) -> MessageMetadata {
+    match scope {
+        HistoryScope::Conversation(conversation) => {
+            MessageMetadata::new(conversation.clone(), None)
+        }
+        HistoryScope::Automation(automation_id) => {
+            MessageMetadata::for_automation(automation_id.clone())
+        }
+    }
+}
+
+fn bounded_history_message(message: &Message) -> Message {
+    const MAX_STRING_BYTES: usize = 8_000;
+    const MAX_ARRAY_ITEMS: usize = 100;
+    let Message::ToolResult {
+        tool_call_id,
+        tool_name,
+        result,
+    } = message
+    else {
+        return message.clone();
+    };
+    Message::ToolResult {
+        tool_call_id: tool_call_id.clone(),
+        tool_name: tool_name.clone(),
+        result: bound_json(result, MAX_STRING_BYTES, MAX_ARRAY_ITEMS),
+    }
+}
+
+fn bound_json(
+    value: &serde_json::Value,
+    max_string_bytes: usize,
+    max_array_items: usize,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(text) if text.len() > max_string_bytes => {
+            let mut end = max_string_bytes;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            serde_json::Value::String(format!("{}\n[truncated in durable history]", &text[..end]))
+        }
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .take(max_array_items)
+                .map(|item| bound_json(item, max_string_bytes, max_array_items))
+                .collect(),
+        ),
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        key.clone(),
+                        bound_json(value, max_string_bytes, max_array_items),
+                    )
+                })
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
 }

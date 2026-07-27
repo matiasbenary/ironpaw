@@ -7,9 +7,7 @@ use crate::{
     memory::Memory,
     message::{Message, ToolCall},
     models,
-    tools::{
-        self, ExecutionContext, InternalTool, InvocationScope, ToolRegistry, tool_result_json,
-    },
+    tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolRegistry},
 };
 
 use super::{
@@ -195,43 +193,35 @@ impl Agent {
         output: Message,
         tool_calls: Vec<ToolCall>,
     ) -> Result<(), String> {
-        let mut immediate_results = Vec::new();
-        let mut requests = Vec::new();
-        for tool_call in tool_calls {
+        for tool_call in &tool_calls {
             self.publish_tool_progress(run.destination, &tool_call.name);
-            logger::raw_tool_call_logged(&tool_call);
-            match prepare_tool_request(tool_call, run.allowed_tool_names.as_deref()) {
-                PreparedToolCall::Request { tool_call, args } => requests.push((tool_call, args)),
-                PreparedToolCall::Result(message) => immediate_results.push(message),
-            }
-        }
-        if !immediate_results.is_empty() {
-            logger::raw_tool_results_logged(&immediate_results);
-            run.transient_messages
-                .push(assistant_message_for_tool_results(
-                    output,
-                    &immediate_results,
-                ));
-            run.transient_messages.extend(immediate_results);
-        }
-        if requests.is_empty() {
-            return Ok(());
+            logger::raw_tool_call_logged(tool_call);
         }
 
         let mut events = self.bus.subscribe();
-        let pending = requests
+        let expected = tool_calls
             .iter()
-            .map(|(tool_call, _)| tool_call.id.clone())
+            .map(|tool_call| tool_call.id.clone())
             .collect::<HashSet<_>>();
-        for (tool_call, args) in requests {
-            self.bus.publish(Event::ToolRequest {
-                context: run.context.clone(),
-                tool_call,
-                args,
-                record_in_history: true,
-            });
-        }
-        wait_for_tool_results(&mut events, pending).await
+        self.bus.publish(Event::ToolRequest {
+            context: run.context.clone(),
+            tool_calls,
+            allowed_tool_names: run.allowed_tool_names.clone(),
+        });
+        let results =
+            wait_for_tool_response(&mut events, &run.context.invoked_by, &expected).await?;
+        let result_messages = results
+            .iter()
+            .map(|result| Message::ToolResult {
+                tool_call_id: result.tool_call_id.clone(),
+                tool_name: result.tool_name.clone(),
+                result: crate::tools::tool_result_json(&result.result),
+            })
+            .collect::<Vec<_>>();
+        self.history
+            .append_tool_turn(&run.history_scope, &output, &result_messages)?;
+        logger::raw_tool_results_logged(&result_messages);
+        Ok(())
     }
 
     fn model_messages(&self, run: &AgentRun<'_>) -> Result<Vec<Message>, String> {
@@ -398,122 +388,29 @@ fn retained_entries(history: &[HistoryEntry]) -> Vec<HistoryEntry> {
     retained
 }
 
-async fn wait_for_tool_results(
+async fn wait_for_tool_response(
     events: &mut tokio::sync::broadcast::Receiver<Event>,
-    mut pending: HashSet<String>,
-) -> Result<(), String> {
-    while !pending.is_empty() {
+    scope: &InvocationScope,
+    expected: &HashSet<String>,
+) -> Result<Vec<crate::tools::ToolCallResult>, String> {
+    loop {
         match events.recv().await {
-            Ok(Event::ToolResult { tool_call_id, .. }) if pending.remove(&tool_call_id) => {}
+            Ok(Event::ToolResponse {
+                context,
+                tool_call_ids,
+                result,
+            }) if &context.invoked_by == scope
+                && tool_call_ids.iter().collect::<HashSet<_>>()
+                    == expected.iter().collect::<HashSet<_>>() =>
+            {
+                return result;
+            }
             Ok(_) => {}
             Err(error) => return Err(format!("failed waiting for tool result: {error}")),
         }
-    }
-    Ok(())
-}
-
-enum PreparedToolCall {
-    Request {
-        tool_call: ToolCall,
-        args: serde_json::Value,
-    },
-    Result(Message),
-}
-
-fn prepare_tool_request(
-    tool_call: ToolCall,
-    allowed_tool_names: Option<&[String]>,
-) -> PreparedToolCall {
-    let tool_name = tool_call.name.clone();
-    if allowed_tool_names.is_some_and(|names| !names.iter().any(|name| name == &tool_name)) {
-        return PreparedToolCall::Result(Message::ToolResult {
-            tool_call_id: tool_call.id,
-            tool_name,
-            result: error_result("tool is not allowed in this agent run"),
-        });
-    }
-    let args = match serde_json::from_str(&tool_call.arguments) {
-        Ok(args) => args,
-        Err(err) => {
-            return PreparedToolCall::Result(Message::ToolResult {
-                tool_call_id: tool_call.id,
-                tool_name,
-                result: error_result(err.to_string()),
-            });
-        }
-    };
-    PreparedToolCall::Request { tool_call, args }
-}
-
-fn error_result(error: impl Into<String>) -> serde_json::Value {
-    tool_result_json(&Err(tools::ToolError::new(error.into())))
-}
-
-fn assistant_message_for_tool_results(message: Message, results: &[Message]) -> Message {
-    let Message::Assistant {
-        text,
-        attachments,
-        tool_calls,
-    } = message
-    else {
-        return message;
-    };
-    let result_ids = results
-        .iter()
-        .filter_map(|message| match message {
-            Message::ToolResult { tool_call_id, .. } => Some(tool_call_id.as_str()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
-    Message::Assistant {
-        text,
-        attachments,
-        tool_calls: tool_calls
-            .into_iter()
-            .filter(|tool_call| result_ids.contains(tool_call.id.as_str()))
-            .collect(),
     }
 }
 
 fn debug_log(message: impl AsRef<str>) {
     eprintln!("{}", message.as_ref());
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn immediate_tool_results_keep_original_arguments_and_matching_calls() {
-        let message = Message::Assistant {
-            text: None,
-            attachments: Vec::new(),
-            tool_calls: vec![
-                ToolCall {
-                    id: "call_good".to_string(),
-                    name: "list_tools".to_string(),
-                    arguments: "{}".to_string(),
-                },
-                ToolCall {
-                    id: "call_bad".to_string(),
-                    name: "list_channels".to_string(),
-                    arguments: "{}\"\"".to_string(),
-                },
-            ],
-        };
-        let results = vec![Message::ToolResult {
-            tool_call_id: "call_bad".to_string(),
-            tool_name: "list_channels".to_string(),
-            result: error_result("invalid arguments"),
-        }];
-
-        let Message::Assistant { tool_calls, .. } =
-            assistant_message_for_tool_results(message, &results)
-        else {
-            panic!("expected assistant message");
-        };
-        assert_eq!(tool_calls.len(), 1);
-        assert_eq!(tool_calls[0].id, "call_bad");
-        assert_eq!(tool_calls[0].arguments, "{}\"\"");
-    }
 }

@@ -653,21 +653,19 @@ mod tests {
 
         bus.publish(message_in("tui", Sender::User("local".to_string())));
 
-        let record_in_history = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
-                if let Event::ToolRequest {
-                    record_in_history, ..
-                } = events.recv().await.expect("event")
-                {
-                    break record_in_history;
+                if matches!(
+                    events.recv().await.expect("event"),
+                    Event::ToolRequest { .. }
+                ) {
+                    break;
                 }
             }
         })
         .await
-        .expect("tool request");
+        .expect("tool invocation");
         task.abort();
-
-        assert!(!record_in_history);
     }
 
     #[tokio::test]
