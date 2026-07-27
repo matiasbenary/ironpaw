@@ -395,6 +395,23 @@ mod tests {
         assert_eq!(payload["ChannelAction"]["conversation"]["chat_id"], "chat");
         assert_eq!(payload["ChannelAction"]["conversation"]["thread_id"], "7");
         assert_eq!(payload["ChannelAction"]["action"], "typing");
+
+        let progress = Event::ChannelAction {
+            conversation: ConversationKey {
+                channel: "telegram".to_string(),
+                chat_id: "chat".to_string(),
+                thread_id: None,
+            },
+            action: ChannelAction::Progress {
+                text: "calling web_search".to_string(),
+            },
+        };
+        let payload: serde_json::Value =
+            serde_json::from_str(&channel_outbound_event_json(&progress).unwrap()).unwrap();
+        assert_eq!(
+            payload["ChannelAction"]["action"]["progress"]["text"],
+            "calling web_search"
+        );
     }
 
     #[test]

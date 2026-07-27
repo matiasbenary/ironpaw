@@ -128,7 +128,7 @@ impl Guest for TelegramChannel {
                 conversation,
                 action,
             } => {
-                send_chat_action(&bot_token_placeholder, &conversation, action)?;
+                send_channel_action(&bot_token_placeholder, &conversation, action)?;
                 return Ok(Some(String::new()));
             }
             OutboundEvent::UserInputRequested {
@@ -197,6 +197,8 @@ enum OutboundEvent {
 enum ChannelAction {
     #[serde(rename = "typing")]
     Typing,
+    #[serde(rename = "progress")]
+    Progress { text: String },
 }
 
 #[derive(Deserialize)]
@@ -554,18 +556,27 @@ fn delete_message(bot_token_placeholder: &str, message: &MessageRef) -> Result<(
     Ok(())
 }
 
-fn send_chat_action(
+fn send_channel_action(
     bot_token_placeholder: &str,
     conversation: &ConversationKey,
     action: ChannelAction,
 ) -> Result<(), String> {
-    let action = match action {
-        ChannelAction::Typing => "typing",
+    let (method, mut body) = match action {
+        ChannelAction::Typing => (
+            "sendChatAction",
+            serde_json::json!({
+                "chat_id": conversation.chat_id,
+                "action": "typing",
+            }),
+        ),
+        ChannelAction::Progress { text } => (
+            "sendMessage",
+            serde_json::json!({
+                "chat_id": conversation.chat_id,
+                "text": text,
+            }),
+        ),
     };
-    let mut body = serde_json::json!({
-        "chat_id": conversation.chat_id,
-        "action": action,
-    });
     if let Some(thread_id) = &conversation.thread_id {
         let message_thread_id = thread_id.parse::<i64>().map_err(|err| err.to_string())?;
         body["message_thread_id"] = serde_json::json!(message_thread_id);
@@ -573,7 +584,7 @@ fn send_chat_action(
 
     channel_host::http_request(
         "POST",
-        &format!("https://api.telegram.org/bot{bot_token_placeholder}/sendChatAction"),
+        &format!("https://api.telegram.org/bot{bot_token_placeholder}/{method}"),
         &body.to_string(),
     )?;
     Ok(())

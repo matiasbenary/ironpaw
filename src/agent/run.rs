@@ -10,11 +10,7 @@ use crate::{
     tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolRegistry},
 };
 
-use super::{
-    logger,
-    preamble::system_preamble,
-    utils::{publish_channel_action, publish_progress},
-};
+use super::{logger, preamble::system_preamble, utils::publish_channel_action};
 
 const DEFAULT_TASK_TOOLS: [&str; 4] = ["list_files", "read_file", "create_file", "update_file"];
 const COMPACT_AT_PROMPT_TOKENS: u64 = 256_000;
@@ -147,7 +143,13 @@ impl Agent {
             logger::raw_inference_response_logged(&inference);
             if inference.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS {
                 if let Some(conversation) = run.destination {
-                    publish_progress(&self.bus, conversation, "compacting history...".to_string());
+                    publish_channel_action(
+                        &self.bus,
+                        conversation,
+                        ChannelAction::Progress {
+                            text: "compacting history...".to_string(),
+                        },
+                    );
                 }
                 if let Err(error) = self.compact_history(&run.history_scope).await {
                     debug_log(format!("history compaction failed: {error}"));
@@ -164,22 +166,27 @@ impl Agent {
             run.transient_messages.clear();
             if tool_calls.is_empty() {
                 if text.as_deref().is_some_and(|text| !text.is_empty()) {
-                    let metadata = match &run.history_scope {
-                        HistoryScope::Conversation(conversation) => {
-                            MessageMetadata::new(conversation.clone(), None)
-                        }
-                        HistoryScope::Automation(automation_id) => {
-                            MessageMetadata::for_automation(automation_id.clone())
-                        }
-                    };
-                    self.history.append_scope(
+                    if run.destination.is_none() {
+                        let metadata = match &run.history_scope {
+                            HistoryScope::Conversation(conversation) => {
+                                MessageMetadata::new(conversation.clone(), None)
+                            }
+                            HistoryScope::Automation(automation_id) => {
+                                MessageMetadata::for_automation(automation_id.clone())
+                            }
+                        };
+                        self.history.append_scope(
+                            &run.history_scope,
+                            &[HistoryEntry {
+                                message: output.clone(),
+                                metadata,
+                            }],
+                        )?;
+                    }
+                    self.ingest_memory(
                         &run.history_scope,
-                        &[HistoryEntry {
-                            message: output,
-                            metadata,
-                        }],
-                    )?;
-                    self.ingest_memory(&run.history_scope);
+                        run.destination.is_some().then_some(output),
+                    );
                 }
                 return Ok(text.filter(|text| !text.is_empty()));
             }
@@ -194,8 +201,16 @@ impl Agent {
         tool_calls: Vec<ToolCall>,
     ) -> Result<(), String> {
         for tool_call in &tool_calls {
-            self.publish_tool_progress(run.destination, &tool_call.name);
             logger::raw_tool_call_logged(tool_call);
+            if let Some(conversation) = run.destination {
+                publish_channel_action(
+                    &self.bus,
+                    conversation,
+                    ChannelAction::Progress {
+                        text: format!("calling {}", tool_call.name),
+                    },
+                );
+            }
         }
 
         let mut events = self.bus.subscribe();
@@ -275,7 +290,7 @@ impl Agent {
             }))
     }
 
-    fn ingest_memory(&self, scope: &HistoryScope) {
+    fn ingest_memory(&self, scope: &HistoryScope, final_message: Option<Message>) {
         let Ok(entries) = self.history.load_scope(scope) else {
             return;
         };
@@ -289,24 +304,17 @@ impl Agent {
             .iter()
             .map(|entry| entry.message.clone())
             .collect::<Vec<_>>();
-        let current = entries[user_index..]
+        let mut current = entries[user_index..]
             .iter()
             .map(|entry| entry.message.clone())
             .collect::<Vec<_>>();
+        current.extend(final_message);
         let memory = Arc::clone(&self.memory);
         tokio::spawn(async move {
             if let Err(error) = memory.ingest(&previous, &current).await {
                 debug_log(format!("memory ingestion failed: {error}"));
             }
         });
-    }
-
-    fn publish_tool_progress(&self, destination: Destination<'_>, tool_name: &str) {
-        let progress_message = format!("calling {tool_name}");
-        debug_log(format!("agent: {progress_message}"));
-        if let Some(conversation) = destination {
-            publish_progress(&self.bus, conversation, progress_message);
-        }
     }
 
     async fn compact_history(&self, scope: &HistoryScope) -> Result<(), String> {

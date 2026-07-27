@@ -279,7 +279,7 @@ For each run:
 3. Use `raw_inference.execute(request)` to call the model.
 4. If the model returns no tool calls, append the assistant message to history and return the final text.
 5. If the model returns tool calls, send the calls to the tool handler. The handler validates and executes them serially, waits for deferred responders when necessary, and returns structured results. The agent then appends the original assistant message and all results to history as one tool turn.
-6. Stop after `MAX_TOOL_ROUNDS`.
+6. The tool executor enforces `MAX_TOOL_CALLS`; further calls return a failure without executing.
 
 When a run has a destination, the agent also publishes typing and progress events back to that channel.
 
@@ -305,7 +305,7 @@ History is partitioned by an explicit scope: either a `ConversationKey` or an au
 
 Each history entry stores a Ironpaw message plus metadata: a Ironpaw id, its conversation or automation owner, and an optional provider-owned external message id.
 
-Inbound user messages and outbound channel messages are persisted by the bridge. The agent owns its transcript: it stores a model response containing multiple calls as one assistant message followed by all tool results in one history operation. The tool handler only executes calls, serially and in their original order. Direct automation tool calls use the same request path but do not create an agent transcript. Final assistant text is persisted by the agent in the active conversation or automation scope.
+Inbound user messages and delivered outbound messages are persisted once, by the bridge. The agent owns its internal transcript: it stores a model response containing multiple calls as one assistant message followed by all tool results in one history operation. The tool handler only executes calls, serially and in their original order. Direct automation tool calls use the same request path but do not create an agent transcript. Final scheduled-task text is persisted by the agent because it does not cross a channel boundary. Progress updates are ephemeral channel actions, not conversation messages.
 
 Scheduled agent tasks persist their rendered prompt, tool transcript, and final assistant text under the automation's name. On later runs, the agent loads that history before inference. Tool results are bounded before durable storage so a fetched page or document extraction cannot consume the whole future context. Compaction runs before a later inference call, retains the current user request and recent tool transcript, and replaces only older context with an explicitly non-authoritative system summary. Automation history is isolated from other automations and conversations.
 

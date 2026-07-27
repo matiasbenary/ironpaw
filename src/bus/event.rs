@@ -122,6 +122,8 @@ pub enum InvocationScope {
 pub enum ChannelAction {
     #[serde(rename = "typing")]
     Typing,
+    #[serde(rename = "progress")]
+    Progress { text: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

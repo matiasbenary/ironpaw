@@ -158,7 +158,7 @@ enum OutboundEvent {
     },
     ChannelAction {
         conversation: ConversationKey,
-        action: String,
+        action: serde_json::Value,
     },
     UserInputRequested {
         conversation: ConversationKey,
