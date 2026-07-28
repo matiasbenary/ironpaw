@@ -6,10 +6,12 @@ use crate::{bus::Bus, config::RuntimeLayout, history::History, secrets::ChannelS
 
 mod bridge;
 pub mod config;
+mod inbound;
 pub mod ngrok;
 pub mod wasm;
 
 pub use bridge::DEFAULT_ADDR;
+pub use inbound::append_inbound_message;
 
 pub struct ChannelRuntime {
     pub statuses: Mutex<Vec<String>>,

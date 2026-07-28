@@ -5,6 +5,7 @@ use ironpaw::{
     agent::{Agent, AgentHandler},
     automations::{Automations, FileAutomations},
     bus::{AutomationAction, Bus, ConversationKey, Event, Sender},
+    channels::append_inbound_message,
     history::{History, HistoryEntry, HistoryScope, MessageMetadata, SqliteHistory},
     inference::Inference,
     memory::Memory,
@@ -199,14 +200,7 @@ fn publish_user_message(
     conversation: ConversationKey,
     message: Message,
 ) {
-    history
-        .append(
-            &conversation,
-            &[HistoryEntry {
-                message: message.clone(),
-                metadata: MessageMetadata::new(conversation.clone(), None),
-            }],
-        )
+    append_inbound_message(history, &conversation, None, &message)
         .expect("persist live test user message");
     bus.publish(Event::MessageIn {
         sender: Sender::User("live-test".to_string()),

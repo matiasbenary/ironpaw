@@ -9,9 +9,10 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    bus::{ConversationKey, Event, Sender},
+    bus::{ConversationKey, Event, Sender, SenderKind},
     channels::{
-        bridge::{BridgeState, LoadedChannel, auth::authorize, history::append_channel_history},
+        append_inbound_message,
+        bridge::{BridgeState, LoadedChannel, auth::authorize},
         config::{ChannelAuth, ChannelConfig},
     },
     message::{Attachment, Message},
@@ -61,14 +62,15 @@ pub(super) async fn message_channel_to_ironpaw(
         }
 
         let sender = sender_for_inbound(&channel_state.config, &inbound);
-        if sender.kind() == crate::bus::SenderKind::User {
+        let is_user = sender.kind() == SenderKind::User;
+        if is_user {
             remember_default_conversation(&channel, &inbound.conversation)
                 .await
                 .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
         }
 
-        let message = content_to_message(inbound.content, &state.files_dir);
-        append_channel_history(
+        let message = content_to_message(inbound.content, &state.files_dir, &sender);
+        append_inbound_message(
             state.history.as_ref(),
             &inbound.conversation,
             inbound.message_id.clone(),
@@ -145,7 +147,11 @@ enum InboundContent {
     },
 }
 
-fn content_to_message(content: Vec<InboundContent>, files_dir: &PathBuf) -> Message {
+fn content_to_message(
+    content: Vec<InboundContent>,
+    files_dir: &PathBuf,
+    sender: &Sender,
+) -> Message {
     let mut text_parts = Vec::new();
     let mut attachments = Vec::new();
     for part in content {
@@ -155,10 +161,13 @@ fn content_to_message(content: Vec<InboundContent>, files_dir: &PathBuf) -> Mess
                 filename,
                 mime_type,
                 data_base64,
-            } => match attachment_from_content(filename, mime_type, data_base64, files_dir) {
-                Ok(attachment) => attachments.push(attachment),
-                Err(text) => text_parts.push(text),
-            },
+            } if sender.kind() == SenderKind::User => {
+                match attachment_from_content(filename, mime_type, data_base64, files_dir) {
+                    Ok(attachment) => attachments.push(attachment),
+                    Err(text) => text_parts.push(text),
+                }
+            }
+            InboundContent::Attachment { .. } => {}
         }
     }
     Message::User {
@@ -271,6 +280,29 @@ mod tests {
         let stored = files_dir.join(format!("{file_id}.pdf"));
         assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("pdf"));
         assert_eq!(fs::read(stored).unwrap(), b"pdf");
+    }
+
+    #[test]
+    fn guest_attachment_is_discarded_without_writing_a_file() {
+        let files_dir = unique_test_files_dir();
+        let message = content_to_message(
+            vec![InboundContent::Attachment {
+                filename: Some("photo.png".to_string()),
+                mime_type: "image/png".to_string(),
+                data_base64: "aW1hZ2U=".to_string(),
+            }],
+            &files_dir,
+            &Sender::Guest("guest".to_string()),
+        );
+
+        assert_eq!(
+            message,
+            Message::User {
+                text: String::new(),
+                attachments: Vec::new(),
+            }
+        );
+        assert!(!files_dir.exists());
     }
 
     fn unique_test_files_dir() -> PathBuf {
