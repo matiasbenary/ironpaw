@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::{
     config::ProviderConfig,
-    message::available_filename,
+    message::{available_filename, execution_files_dir},
     secrets::ToolSecrets,
     tools::{self, InternalTool, ToolError},
 };
@@ -96,7 +96,7 @@ impl InternalTool for ImageGenerationTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &crate::tools::ExecutionContext,
+        ctx: &crate::tools::ExecutionContext,
         responder: crate::tools::ToolResponder,
     ) {
         let result = async {
@@ -106,14 +106,11 @@ impl InternalTool for ImageGenerationTool {
                 .generate(&params.prompt)
                 .await
                 .map_err(ToolError::new)?;
-            std::fs::create_dir_all(&self.files_dir).map_err(|e| ToolError::new(e.to_string()))?;
-            let filename = available_filename(
-                &self.files_dir,
-                Some(&params.filename),
-                "generated-image",
-                "png",
-            );
-            let path = self.files_dir.join(&filename);
+            let directory = execution_files_dir(&self.files_dir, ctx);
+            std::fs::create_dir_all(&directory).map_err(|e| ToolError::new(e.to_string()))?;
+            let filename =
+                available_filename(&directory, Some(&params.filename), "generated-image", "png");
+            let path = directory.join(&filename);
             let bytes = base64_decode(&data_base64).map_err(ToolError::new)?;
             std::fs::write(&path, bytes).map_err(|e| ToolError::new(e.to_string()))?;
             Ok(serde_json::json!({

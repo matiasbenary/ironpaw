@@ -214,8 +214,10 @@ fn publish_user_message(
 }
 
 fn send_message_tool(bus: &Bus, files_dir: PathBuf) -> SendMessageTool {
-    SendMessageTool::new(bus.clone(), move |filename| {
-        Attachment::from_filename(&files_dir, filename)
+    SendMessageTool::new(bus.clone(), move |filename, ctx| {
+        let scoped = ironpaw::message::execution_files_dir(&files_dir, ctx);
+        Attachment::from_filename(&scoped, filename)
+            .or_else(|_| Attachment::from_filename(&files_dir, filename))
     })
 }
 

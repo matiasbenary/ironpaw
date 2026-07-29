@@ -44,7 +44,6 @@ The default runtime root is the directory containing the `ironpaw` binary unless
 <runtime-root>/channels
 <runtime-root>/tools
 <runtime-root>/files
-<runtime-root>/download
 <runtime-root>/data
 <runtime-root>/secrets
 ```
@@ -102,9 +101,9 @@ Ironpaw handles files as first-class message attachments: images, PDFs, text fil
 
 Ironpaw stores files locally and passes around typed attachments containing a filename, MIME type, and source path. User messages and assistant messages both use the same attachment type on the bus; channels translate their provider-specific payloads into attachments on the way in, and the bridge translates attachments back into provider-ready outbound payloads on the way out.
 
-The model interacts with stored files through tools. `download_file(url)` stores a public URL under the runtime `download` directory and returns its filename without placing the response body in conversation history. It recognizes public Google Sheets, Docs, and Slides editor links and exports them as CSV, text, and PDF respectively. `inspect_file(filename, query)` can inspect downloaded files and message attachments, passing bounded raw text to a text model, extracting text from PDFs, or calling a vision model for images. `image_generation(prompt, filename)` stores the generated image locally; `send_message` can then publish an assistant message with that filename as an attachment.
+The model interacts with stored files through tools. `download_file(url)` stores a public URL in the current execution's directory and returns its filename without placing the response body in conversation history. It recognizes public Google Sheets, Docs, and Slides editor links and exports them as CSV, text, and PDF respectively. `inspect_file(filename, query)` can inspect files from the current execution or the shared inbound directory, passing bounded raw text to a text model, extracting text from PDFs, or calling a vision model for images. `image_generation(prompt, filename)` stores the generated image in the same execution directory; `send_message` can then publish an assistant message with that filename as an attachment.
 
-Agent-created files use a separate scoped workspace. `list_files`, `read_file`, `create_file`, and `update_file` are the only agent filesystem tools. Conversations on every channel share `<runtime-root>/files/user`; a scheduled automation gets its own directory; and tool calls get a directory matching their caller stack. The host appends every registered tool call to `ExecutionContext.tool_stack`; a file tool resolves its root from that stack without its own final entry. Relative paths only are accepted, and symlinks are rejected. Automation and tool names are encoded before becoming directory components.
+Inbound attachments share the root file directory. Tool-created files use a separate directory for each conversation or scheduled automation. Calls made by a dynamic tool through `list_files`, `read_file`, `create_file`, or `update_file` instead use that tool's private directory. The host derives these paths from `ExecutionContext`; relative paths only are accepted, and symlinks are rejected. Scope and tool names are encoded before becoming directory components.
 
 Filenames are sanitized before storage. Existing names receive a numeric suffix such as `report-2.pdf`, and tools that generate files must propose a descriptive filename.
 
@@ -362,7 +361,7 @@ Implemented internal tools include:
 - `raw_inference`: calls `/v1/chat/completions` using the configured NEAR API key.
 - `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image under the requested sanitized filename, and returns that filename for later delivery.
 - `inspect_file`: inspects a locally stored file by filename, using text extraction for documents and a vision model for images.
-- `download_file`: downloads a public URL into `<runtime-root>/download` under its sanitized original filename for bounded inspection with `inspect_file`.
+- `download_file`: downloads a public URL into the current execution's file directory under its sanitized original filename for bounded inspection with `inspect_file`.
 - `list_files`, `read_file`, `create_file`, `update_file`: access the execution-scoped agent workspace.
 - `web_fetch`: fetches a public URL with no credentials.
 - `browser`: navigates public HTTPS pages through a local `CONNECT` proxy. The proxy resolves destinations itself, rejects non-public addresses, and pins each tunnel to the validated address. Chromium direct bypasses, QUIC, and non-proxied WebRTC traffic are disabled.

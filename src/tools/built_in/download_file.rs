@@ -3,7 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use async_trait::async_trait;
 
 use crate::{
-    message::{ToolDefinition, available_filename},
+    message::{ToolDefinition, available_filename, execution_files_dir},
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
@@ -25,24 +25,25 @@ struct DownloadedFile {
 }
 
 pub struct DownloadFileTool {
-    download_dir: PathBuf,
+    files_dir: PathBuf,
     client: reqwest::Client,
 }
 
 impl DownloadFileTool {
-    pub fn new(download_dir: PathBuf) -> Self {
+    pub fn new(files_dir: PathBuf) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("http client should build");
-        Self {
-            download_dir,
-            client,
-        }
+        Self { files_dir, client }
     }
 
-    async fn download(&self, params: DownloadFileParams) -> Result<DownloadedFile, String> {
+    async fn download(
+        &self,
+        params: DownloadFileParams,
+        ctx: &ExecutionContext,
+    ) -> Result<DownloadedFile, String> {
         let url = reqwest::Url::parse(&params.url).map_err(|err| format!("invalid url: {err}"))?;
         let url = normalize_download_url(url)?;
         let resolved = guard_url(&url).await?;
@@ -94,14 +95,15 @@ impl DownloadFileTool {
             .unwrap_or("download")
             .to_string();
         let extension = extension_for(&requested_filename, &mime_type);
-        std::fs::create_dir_all(&self.download_dir).map_err(|err| err.to_string())?;
+        let directory = execution_files_dir(&self.files_dir, ctx);
+        std::fs::create_dir_all(&directory).map_err(|err| err.to_string())?;
         let filename = available_filename(
-            &self.download_dir,
+            &directory,
             Some(&requested_filename),
             "download",
             &extension,
         );
-        std::fs::write(self.download_dir.join(&filename), &bytes).map_err(|err| err.to_string())?;
+        std::fs::write(directory.join(&filename), &bytes).map_err(|err| err.to_string())?;
 
         Ok(DownloadedFile {
             filename,
@@ -127,10 +129,10 @@ impl InternalTool for DownloadFileTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &ExecutionContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
-        responder.respond(tools::execute_typed(args, |params| self.download(params)).await);
+        responder.respond(tools::execute_typed(args, |params| self.download(params, ctx)).await);
     }
 }
 
@@ -228,12 +230,20 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ironpaw-download-test-{}", uuid::Uuid::new_v4()));
         let downloaded = DownloadFileTool::new(dir.clone())
-            .download(DownloadFileParams { url })
+            .download(
+                DownloadFileParams { url },
+                &ExecutionContext::new(crate::tools::InvocationScope::ScheduledAutomation {
+                    automation_id: "download-test".to_string(),
+                }),
+            )
             .await
             .unwrap();
         assert_eq!(downloaded.mime_type, "text/csv");
         assert_eq!(downloaded.filename, "albums.csv");
-        assert!(dir.join("albums.csv").exists());
+        assert!(
+            dir.join("automations/646f776e6c6f61642d74657374/albums.csv")
+                .exists()
+        );
     }
 
     #[test]

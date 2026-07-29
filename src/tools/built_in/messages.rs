@@ -8,7 +8,8 @@ use crate::{
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
-type AttachmentResolver = Arc<dyn Fn(&str) -> Result<Attachment, String> + Send + Sync>;
+type AttachmentResolver =
+    Arc<dyn Fn(&str, &ExecutionContext) -> Result<Attachment, String> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct SendMessageTool {
@@ -19,7 +20,10 @@ pub struct SendMessageTool {
 impl SendMessageTool {
     pub fn new(
         bus: Bus,
-        attachment_resolver: impl Fn(&str) -> Result<Attachment, String> + Send + Sync + 'static,
+        attachment_resolver: impl Fn(&str, &ExecutionContext) -> Result<Attachment, String>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Self {
             bus,
@@ -27,11 +31,15 @@ impl SendMessageTool {
         }
     }
 
-    pub fn execute(&self, input: SendMessageToolInput) -> Result<serde_json::Value, String> {
+    pub fn execute(
+        &self,
+        input: SendMessageToolInput,
+        ctx: &ExecutionContext,
+    ) -> Result<serde_json::Value, String> {
         let attachments = input
             .filename
             .as_deref()
-            .map(|filename| (self.attachment_resolver)(filename))
+            .map(|filename| (self.attachment_resolver)(filename, ctx))
             .transpose()?
             .into_iter()
             .collect();
@@ -78,12 +86,12 @@ impl InternalTool for SendMessageTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &ExecutionContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
         let result = serde_json::from_value(args)
             .map_err(|err| err.to_string())
-            .and_then(|input| SendMessageTool::execute(self, input))
+            .and_then(|input| SendMessageTool::execute(self, input, ctx))
             .map_err(crate::tools::ToolError::new);
         responder.respond(result);
     }
@@ -230,7 +238,7 @@ mod tests {
     #[test]
     fn send_message_requires_channel_but_not_chat_id() {
         let definition =
-            SendMessageTool::new(Bus::new(1), |_| Err("unused".to_string())).tool_definition();
+            SendMessageTool::new(Bus::new(1), |_, _| Err("unused".to_string())).tool_definition();
         let required = definition.parameters["required"].as_array().unwrap();
 
         assert!(required.contains(&serde_json::json!("channel")));
@@ -248,16 +256,22 @@ mod tests {
     fn send_message_publishes_channel_delivery_request_when_conversation_is_known() {
         let bus = Bus::new(16);
         let mut events = bus.subscribe();
-        let tool = SendMessageTool::new(bus, |_| Err("unexpected attachment".to_string()));
+        let tool = SendMessageTool::new(bus, |_, _| Err("unexpected attachment".to_string()));
+        let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
+            automation_id: "test".to_string(),
+        });
 
-        tool.execute(SendMessageToolInput {
-            channel: "telegram".to_string(),
-            filename: None,
-            content: Some("hi".to_string()),
-            chat_id: Some("chat-1".to_string()),
-            thread_id: Some("thread-1".to_string()),
-            message_id: None,
-        })
+        tool.execute(
+            SendMessageToolInput {
+                channel: "telegram".to_string(),
+                filename: None,
+                content: Some("hi".to_string()),
+                chat_id: Some("chat-1".to_string()),
+                thread_id: Some("thread-1".to_string()),
+                message_id: None,
+            },
+            &ctx,
+        )
         .unwrap();
 
         let Event::MessageOut {

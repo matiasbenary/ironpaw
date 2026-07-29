@@ -4,19 +4,19 @@ use async_trait::async_trait;
 
 use crate::{
     inference::{Inference, InferenceRequest},
-    message::{Attachment, Message},
+    message::{Attachment, Message, execution_files_dir},
     tools::{self, InternalTool},
 };
 
 pub struct InspectFileTool {
-    file_dirs: Vec<PathBuf>,
+    files_dir: PathBuf,
     inference: Inference,
 }
 
 impl InspectFileTool {
-    pub fn new(file_dirs: Vec<PathBuf>, inference: Inference) -> Self {
+    pub fn new(files_dir: PathBuf, inference: Inference) -> Self {
         Self {
-            file_dirs,
+            files_dir,
             inference,
         }
     }
@@ -56,11 +56,10 @@ impl InternalTool for InspectFileTool {
             let params: InspectFileParams =
                 serde_json::from_value(args).map_err(|e| e.to_string())?;
 
-            let attachment = self
-                .file_dirs
-                .iter()
-                .find_map(|dir| Attachment::from_filename(dir, &params.filename).ok())
-                .ok_or_else(|| format!("file not found: {}", params.filename))?;
+            let scoped = execution_files_dir(&self.files_dir, ctx);
+            let attachment = Attachment::from_filename(&scoped, &params.filename)
+                .or_else(|_| Attachment::from_filename(&self.files_dir, &params.filename))
+                .map_err(|_| format!("file not found: {}", params.filename))?;
             let path = attachment.source.clone();
             let data =
                 std::fs::read(&path).map_err(|_| format!("file not found: {}", params.filename))?;

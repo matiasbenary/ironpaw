@@ -342,7 +342,7 @@ mod tests {
             bus.clone(),
             layout.clone(),
             Inference::new(bus.clone(), secrets.tools.clone()).unwrap(),
-            SendMessageTool::new(bus.clone(), |_| Err("no attachments".to_string())),
+            SendMessageTool::new(bus.clone(), |_, _| Err("no attachments".to_string())),
             crate::tools::messages::DeleteMessageTool::new(bus),
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),

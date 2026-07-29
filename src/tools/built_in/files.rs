@@ -5,7 +5,7 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    message::ToolDefinition,
+    message::{ToolDefinition, execution_files_dir, scope_component},
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
@@ -42,13 +42,7 @@ impl ScopedFiles {
             .split_last()
             .map_or(&[][..], |(_, stack)| stack);
         let root = if caller_stack.is_empty() {
-            match &ctx.invoked_by {
-                crate::tools::InvocationScope::Conversation(_) => self.files_dir.join("user"),
-                crate::tools::InvocationScope::ScheduledAutomation { automation_id } => self
-                    .files_dir
-                    .join("automations")
-                    .join(scope_component(automation_id)),
-            }
+            execution_files_dir(&self.files_dir, ctx)
         } else {
             caller_stack
                 .iter()
@@ -160,10 +154,6 @@ impl ScopedFiles {
         .map_err(|err| err.to_string())?;
         Ok(serde_json::json!({}))
     }
-}
-
-fn scope_component(name: &str) -> String {
-    name.bytes().map(|byte| format!("{byte:02x}")).collect()
 }
 
 macro_rules! file_tool {

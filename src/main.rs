@@ -62,7 +62,11 @@ async fn main() -> io::Result<()> {
         inference,
         SendMessageTool::new(bus.clone(), {
             let files_dir = layout.files_dir();
-            move |filename| Attachment::from_filename(&files_dir, filename)
+            move |filename, ctx| {
+                let scoped = ironpaw::message::execution_files_dir(&files_dir, ctx);
+                Attachment::from_filename(&scoped, filename)
+                    .or_else(|_| Attachment::from_filename(&files_dir, filename))
+            }
         }),
         DeleteMessageTool::new(bus.clone()),
         layout.files_dir(),

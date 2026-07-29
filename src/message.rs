@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::bus::{ExecutionContext, InvocationScope};
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Message {
     System(String),
@@ -141,6 +143,21 @@ pub fn available_filename(
         }
     }
     unreachable!()
+}
+
+pub fn execution_files_dir(files_dir: &Path, ctx: &ExecutionContext) -> PathBuf {
+    match &ctx.invoked_by {
+        InvocationScope::Conversation(conversation) => files_dir
+            .join("conversations")
+            .join(scope_component(&conversation.storage_key())),
+        InvocationScope::ScheduledAutomation { automation_id } => files_dir
+            .join("automations")
+            .join(scope_component(automation_id)),
+    }
+}
+
+pub(crate) fn scope_component(name: &str) -> String {
+    name.bytes().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn mime_from_ext(ext: &str) -> &'static str {
