@@ -11,7 +11,7 @@ use ironpaw::{
     memory::Memory,
     message::Attachment,
     tools::{
-        InternalTool, InternalTools, ToolHandler,
+        InternalTool, InternalTools, ToolHandler, ToolVisibility,
         browser::BrowserUpdateTool,
         dynamic::DynamicTool,
         messages::{DeleteMessageTool, SendMessageTool},
@@ -52,15 +52,17 @@ async fn main() -> io::Result<()> {
         .await
         .map_err(std::io::Error::other)?;
 
+    let provider = Arc::new(ironpaw::config::ProviderConfig::from_env());
     let inference =
-        Inference::new(bus.clone(), secrets.tools.clone()).map_err(std::io::Error::other)?;
+        Inference::with_config(bus.clone(), secrets.tools.clone(), Arc::clone(&provider))
+            .map_err(std::io::Error::other)?;
     let tools = Arc::new(InternalTools::new(
         bus.clone(),
         layout.clone(),
         inference,
         SendMessageTool::new(bus.clone(), {
             let files_dir = layout.files_dir();
-            move |file_id| Attachment::from_file_id(&files_dir, file_id)
+            move |filename| Attachment::from_filename(&files_dir, filename)
         }),
         DeleteMessageTool::new(bus.clone()),
         layout.files_dir(),
@@ -99,12 +101,15 @@ async fn main() -> io::Result<()> {
     let boot_events = bus.subscribe();
     tools
         .registry
-        .add(Arc::new(UnlockSecretsTool::new(
-            bus.clone(),
-            layout.clone(),
-            secrets.clone(),
-            Arc::clone(&tools),
-        )) as Arc<dyn InternalTool>)
+        .add(
+            Arc::new(UnlockSecretsTool::new(
+                bus.clone(),
+                layout.clone(),
+                secrets.clone(),
+                Arc::clone(&tools),
+            )) as Arc<dyn InternalTool>,
+            ToolVisibility::Internal,
+        )
         .map_err(std::io::Error::other)?;
     automations
         .add_transient(UnlockSecretsTool::automation())
@@ -133,7 +138,7 @@ async fn main() -> io::Result<()> {
             .map_err(std::io::Error::other)?;
         tools
             .registry
-            .add(Arc::new(tool))
+            .add(Arc::new(tool), ToolVisibility::Agent)
             .map_err(std::io::Error::other)?;
         println!("loaded tool: {name}");
     }
@@ -157,7 +162,10 @@ async fn main() -> io::Result<()> {
     ));
     tools
         .registry
-        .add(Arc::new(OnboardingTool::new(Arc::clone(&setup_services))))
+        .add(
+            Arc::new(OnboardingTool::new(Arc::clone(&setup_services))),
+            ToolVisibility::Internal,
+        )
         .map_err(std::io::Error::other)?;
     automations
         .add_transient(OnboardingTool::api_key_recovery_automation())
@@ -165,30 +173,46 @@ async fn main() -> io::Result<()> {
     let install_channel = Arc::new(InstallChannelTool::new(Arc::clone(&setup_services)));
     tools
         .registry
-        .add(Arc::clone(&install_channel) as Arc<dyn InternalTool>)
+        .add(
+            Arc::clone(&install_channel) as Arc<dyn InternalTool>,
+            ToolVisibility::Agent,
+        )
         .map_err(std::io::Error::other)?;
     tools
         .registry
-        .add(Arc::new(install_channel.setup_tool()))
+        .add(
+            Arc::new(install_channel.setup_tool()),
+            ToolVisibility::Internal,
+        )
         .map_err(std::io::Error::other)?;
     tools
         .registry
-        .add(Arc::new(RemoveChannelTool::new(Arc::clone(
-            &setup_services,
-        ))))
+        .add(
+            Arc::new(RemoveChannelTool::new(Arc::clone(&setup_services))),
+            ToolVisibility::Agent,
+        )
         .map_err(std::io::Error::other)?;
     let install_tool = Arc::new(InstallToolTool::new(Arc::clone(&setup_services)));
     tools
         .registry
-        .add(Arc::clone(&install_tool) as Arc<dyn InternalTool>)
+        .add(
+            Arc::clone(&install_tool) as Arc<dyn InternalTool>,
+            ToolVisibility::Agent,
+        )
         .map_err(std::io::Error::other)?;
     tools
         .registry
-        .add(Arc::new(install_tool.setup_tool()))
+        .add(
+            Arc::new(install_tool.setup_tool()),
+            ToolVisibility::Internal,
+        )
         .map_err(std::io::Error::other)?;
     tools
         .registry
-        .add(Arc::new(install_tool.configure_tool()))
+        .add(
+            Arc::new(install_tool.configure_tool()),
+            ToolVisibility::Agent,
+        )
         .map_err(std::io::Error::other)?;
     let stored_count = automations.load_stored().map_err(std::io::Error::other)?;
     if !automations

@@ -4,7 +4,7 @@ use crate::{
     message::{Attachment, Message},
 };
 
-/// Store a user message received by a channel with the file ids it can inspect.
+/// Store a user message received by a channel with the filenames it can inspect.
 pub fn append_inbound_message(
     history: &dyn History,
     conversation: &ConversationKey,
@@ -32,16 +32,14 @@ fn attachment_context(attachments: &[Attachment]) -> Message {
         .iter()
         .map(|attachment| {
             format!(
-                "- file_id: {}\n  filename: {}\n  mime_type: {}",
-                attachment.file_id,
-                attachment.filename.as_deref().unwrap_or("(unnamed)"),
-                attachment.mime_type,
+                "- filename: {}\n  mime_type: {}",
+                attachment.filename, attachment.mime_type,
             )
         })
         .collect::<Vec<_>>()
         .join("\n");
     Message::System(format!(
-        "[attached files]\n{files}\nUse inspect_file with a file_id to inspect an attached file."
+        "[attached files]\n{files}\nUse inspect_file with the filename to inspect an attached file."
     ))
 }
 
@@ -64,9 +62,8 @@ mod tests {
         let message = Message::User {
             text: "What is this?".to_string(),
             attachments: vec![Attachment {
-                file_id: 42,
+                filename: "dog.jpg".to_string(),
                 mime_type: "image/jpeg".to_string(),
-                filename: Some("dog.jpg".to_string()),
                 source: "ignored".into(),
             }],
         };
@@ -88,7 +85,7 @@ mod tests {
         assert_eq!(
             entries[1].message,
             Message::System(
-                "[attached files]\n- file_id: 42\n  filename: dog.jpg\n  mime_type: image/jpeg\nUse inspect_file with a file_id to inspect an attached file."
+                "[attached files]\n- filename: dog.jpg\n  mime_type: image/jpeg\nUse inspect_file with the filename to inspect an attached file."
                     .to_string()
             )
         );

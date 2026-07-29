@@ -174,10 +174,8 @@ enum ChannelOutboundMessage {
 
 #[derive(Serialize)]
 struct ChannelOutboundAttachment {
-    file_id: u32,
     mime_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    filename: Option<String>,
+    filename: String,
     source: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     data_base64: Option<String>,
@@ -185,22 +183,13 @@ struct ChannelOutboundAttachment {
 
 impl From<&Attachment> for ChannelOutboundAttachment {
     fn from(attachment: &Attachment) -> Self {
-        let filename = attachment.filename.clone().or_else(|| {
-            attachment
-                .source
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::to_string)
-                .or_else(|| Some(attachment.file_id.to_string()))
-        });
         let data_base64 = attachment.read().ok().map(|bytes| {
             use base64::Engine as _;
             base64::engine::general_purpose::STANDARD.encode(bytes)
         });
         Self {
-            file_id: attachment.file_id,
             mime_type: attachment.mime_type.clone(),
-            filename,
+            filename: attachment.filename.clone(),
             source: attachment.source.clone(),
             data_base64,
         }
@@ -335,9 +324,8 @@ mod tests {
             message: Message::Assistant {
                 text: Some("hi".to_string()),
                 attachments: vec![Attachment {
-                    file_id: 7,
+                    filename: "image.png".to_string(),
                     mime_type: "image/png".to_string(),
-                    filename: None,
                     source,
                 }],
                 tool_calls: Vec::new(),
@@ -354,7 +342,7 @@ mod tests {
         );
         assert_eq!(
             payload["MessageOut"]["message"]["Assistant"]["attachments"][0]["filename"],
-            "7.png"
+            "image.png"
         );
     }
 

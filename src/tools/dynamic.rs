@@ -316,7 +316,16 @@ mod tests {
         tools::{InternalTools, messages::SendMessageTool},
     };
 
-    fn bound_dynamic_tools() -> (Arc<InternalTools>, Arc<ScriptRuntime>, PathBuf) {
+    struct DynamicHarness {
+        tools: Arc<InternalTools>,
+        create_tool: DynamicToolTool,
+        edit_tool: DynamicToolTool,
+        delete_tool: DynamicToolTool,
+        scripts: Arc<ScriptRuntime>,
+        tools_dir: PathBuf,
+    }
+
+    fn bound_dynamic_tools() -> DynamicHarness {
         let bus = Bus::new(4);
         let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
             "ironpaw-create-tool-test-runtime-{}",
@@ -341,15 +350,33 @@ mod tests {
         ));
         let scripts = Arc::clone(&tools.scripts);
         let tools_dir = layout.tools_dir();
-        (tools, scripts, tools_dir)
+        let dynamic_tool = |kind| {
+            DynamicToolTool::new(
+                Arc::clone(&tools.registry),
+                Arc::clone(&scripts),
+                tools_dir.clone(),
+                kind,
+            )
+        };
+        let create_tool = dynamic_tool(DynamicToolKind::Create);
+        let edit_tool = dynamic_tool(DynamicToolKind::Edit);
+        let delete_tool = dynamic_tool(DynamicToolKind::Delete);
+        DynamicHarness {
+            tools,
+            create_tool,
+            edit_tool,
+            delete_tool,
+            scripts,
+            tools_dir,
+        }
     }
 
     #[test]
     fn create_tool_writes_and_registers_files() {
-        let (tools, scripts, tools_dir) = bound_dynamic_tools();
-        let tool_dir = tools_dir.join("hello_dynamic");
+        let harness = bound_dynamic_tools();
+        let tool_dir = harness.tools_dir.join("hello_dynamic");
 
-        let result = tools
+        let result = harness
             .create_tool
             .save(
                 CreateToolParams {
@@ -366,7 +393,7 @@ mod tests {
             .expect("tool should be registered");
 
         assert_eq!(result["name"], "hello_dynamic");
-        assert!(tools.registry.contains("hello_dynamic"));
+        assert!(harness.tools.registry.contains("hello_dynamic"));
         let manifest: DynamicToolManifest =
             serde_json::from_str(&std::fs::read_to_string(tool_dir.join("config.json")).unwrap())
                 .unwrap();
@@ -379,7 +406,8 @@ mod tests {
             }))
         );
 
-        let discovered = DynamicTool::discover(&tools_dir, scripts).expect("discover tools");
+        let discovered =
+            DynamicTool::discover(&harness.tools_dir, harness.scripts).expect("discover tools");
         assert_eq!(discovered.len(), 1);
         assert_eq!(discovered[0].name(), "hello_dynamic");
         assert_eq!(discovered[0].tool_definition().description, "Say hello.");
@@ -387,8 +415,8 @@ mod tests {
 
     #[test]
     fn edit_and_delete_tool_replace_the_active_tool_and_files() {
-        let (tools, _scripts, tools_dir) = bound_dynamic_tools();
-        tools
+        let harness = bound_dynamic_tools();
+        harness
             .create_tool
             .save(
                 CreateToolParams {
@@ -401,7 +429,7 @@ mod tests {
             )
             .unwrap();
 
-        tools
+        harness
             .edit_tool
             .save(
                 CreateToolParams {
@@ -414,25 +442,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            std::fs::read_to_string(tools_dir.join("weather/tool.js")).unwrap(),
+            std::fs::read_to_string(harness.tools_dir.join("weather/tool.js")).unwrap(),
             "return { temperature: 21 };"
         );
 
-        tools
+        harness
             .delete_tool
             .delete(DeleteToolParams {
                 name: "weather".to_string(),
             })
             .unwrap();
-        assert!(!tools.registry.contains("weather"));
-        assert!(!tools_dir.join("weather").exists());
+        assert!(!harness.tools.registry.contains("weather"));
+        assert!(!harness.tools_dir.join("weather").exists());
     }
 
     #[test]
     fn create_tool_rejects_internal_tool_names() {
-        let (tools, _scripts, _tools_dir) = bound_dynamic_tools();
+        let harness = bound_dynamic_tools();
 
-        let result = tools.create_tool.save(
+        let result = harness.create_tool.save(
             CreateToolParams {
                 name: "send_message".to_string(),
                 description: "Override send_message.".to_string(),
@@ -443,14 +471,14 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(tools.registry.contains("send_message"));
+        assert!(harness.tools.registry.contains("send_message"));
     }
 
     #[test]
     fn create_tool_rejects_invalid_javascript() {
-        let (tools, _scripts, _tools_dir) = bound_dynamic_tools();
+        let harness = bound_dynamic_tools();
 
-        let result = tools.create_tool.save(
+        let result = harness.create_tool.save(
             CreateToolParams {
                 name: "bad_script".to_string(),
                 description: "Bad script.".to_string(),
@@ -461,6 +489,6 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(!tools.registry.contains("bad_script"));
+        assert!(!harness.tools.registry.contains("bad_script"));
     }
 }

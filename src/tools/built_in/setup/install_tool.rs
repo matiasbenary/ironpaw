@@ -441,7 +441,10 @@ impl SetupToolTool {
         if configured {
             self.setup.tools.registry.replace(Arc::new(tool))?;
         } else {
-            self.setup.tools.registry.add(Arc::new(tool))?;
+            self.setup
+                .tools
+                .registry
+                .add(Arc::new(tool), crate::tools::ToolVisibility::Agent)?;
             self.setup.tool_state.enable(&session.package.name)?;
         }
         self.finish(session, ctx).await

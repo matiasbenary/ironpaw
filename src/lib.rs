@@ -8,7 +8,6 @@ pub mod http;
 pub mod inference;
 pub mod memory;
 pub mod message;
-pub mod models;
 pub(crate) mod network_policy;
 pub mod scripts;
 pub mod secrets;

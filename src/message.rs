@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Message {
@@ -25,31 +25,64 @@ pub enum Message {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct Attachment {
-    pub file_id: u32,
+    pub filename: String,
     pub mime_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filename: Option<String>,
     pub source: PathBuf,
 }
 
+impl<'de> Deserialize<'de> for Attachment {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct StoredAttachment {
+            #[serde(default)]
+            filename: Option<String>,
+            mime_type: String,
+            source: PathBuf,
+        }
+
+        let stored = StoredAttachment::deserialize(deserializer)?;
+        let filename = stored.filename.unwrap_or_else(|| {
+            stored
+                .source
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("attachment")
+                .to_string()
+        });
+        Ok(Self {
+            filename,
+            mime_type: stored.mime_type,
+            source: stored.source,
+        })
+    }
+}
+
 impl Attachment {
-    pub fn from_file_id(files_dir: &Path, file_id: u32) -> Result<Self, String> {
-        let source = attachment_path(files_dir, file_id)?;
+    pub fn from_filename(files_dir: &Path, filename: &str) -> Result<Self, String> {
+        if Path::new(filename)
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(filename)
+        {
+            return Err(format!("invalid filename: {filename}"));
+        }
+        let source = files_dir.join(filename);
+        if !source.is_file() {
+            return Err(format!("file not found: {filename}"));
+        }
         let ext = source
             .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let filename = source
-            .file_name()
-            .and_then(|name| name.to_str())
-            .map(str::to_string);
         Ok(Self {
-            file_id,
+            filename: filename.to_string(),
             mime_type: mime_from_ext(&ext).to_string(),
-            filename,
             source,
         })
     }
@@ -59,20 +92,55 @@ impl Attachment {
     }
 }
 
-fn attachment_path(files_dir: &Path, file_id: u32) -> Result<PathBuf, String> {
-    let prefix = format!("{file_id}.");
-    let entries = std::fs::read_dir(files_dir).map_err(|_| format!("file not found: {file_id}"))?;
-    for entry in entries {
-        let path = entry.map_err(|err| err.to_string())?.path();
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(&prefix))
-        {
-            return Ok(path);
+pub fn available_filename(
+    directory: &Path,
+    requested: Option<&str>,
+    fallback_stem: &str,
+    extension: &str,
+) -> String {
+    let extension = extension
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .take(10)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let extension = if extension.is_empty() {
+        "bin"
+    } else {
+        &extension
+    };
+    let requested_stem = requested
+        .and_then(|name| Path::new(name).file_name())
+        .and_then(|name| Path::new(name).file_stem())
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(fallback_stem);
+    let mut stem = String::new();
+    let mut separator = false;
+    for character in requested_stem.chars() {
+        if stem.len() >= 80 {
+            break;
+        }
+        if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+            stem.push(character);
+            separator = false;
+        } else if !separator && !stem.is_empty() {
+            stem.push('-');
+            separator = true;
         }
     }
-    Err(format!("file not found: {file_id}"))
+    let stem = stem.trim_matches('-');
+    let stem = if stem.is_empty() { fallback_stem } else { stem };
+    let candidate = format!("{stem}.{extension}");
+    if !directory.join(&candidate).exists() {
+        return candidate;
+    }
+    for suffix in 2.. {
+        let candidate = format!("{stem}-{suffix}.{extension}");
+        if !directory.join(&candidate).exists() {
+            return candidate;
+        }
+    }
+    unreachable!()
 }
 
 fn mime_from_ext(ext: &str) -> &'static str {

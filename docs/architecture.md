@@ -94,19 +94,19 @@ enum Message {
 }
 ```
 
-Attachments are local files identified by `file_id`, with metadata such as MIME type, optional filename, and local source path. They can appear on user messages received from channels and assistant messages produced for outbound delivery. The bus carries the same `Message` type in both directions; channel-specific payloads are only produced by the channel bridge.
+Attachments are local files identified by a filename, with their MIME type and local source path. They can appear on user messages received from channels and assistant messages produced for outbound delivery. The bus carries the same `Message` type in both directions; channel-specific payloads are only produced by the channel bridge.
 
 #### Image and File Management
 
 Ironpaw handles files as first-class message attachments: images, PDFs, text files, and eventually other documents. The core agent sees the same shape regardless of whether a file came from Telegram, TUI, image generation, or another channel.
 
-Ironpaw stores files locally and passes around typed attachments containing a numeric `file_id`, MIME type, optional filename, and source path. User messages and assistant messages both use the same attachment type on the bus; channels translate their provider-specific payloads into attachments on the way in, and the bridge translates attachments back into provider-ready outbound payloads on the way out.
+Ironpaw stores files locally and passes around typed attachments containing a filename, MIME type, and source path. User messages and assistant messages both use the same attachment type on the bus; channels translate their provider-specific payloads into attachments on the way in, and the bridge translates attachments back into provider-ready outbound payloads on the way out.
 
-The model interacts with stored files through tools. `download_file(url)` stores a public URL under the runtime `download` directory and returns a `file_id` without placing the response body in conversation history. It recognizes public Google Sheets, Docs, and Slides editor links and exports them as CSV, text, and PDF respectively. `inspect_file(file_id, query)` can inspect downloaded files and message attachments, passing bounded raw text to a text model, extracting text from PDFs, or calling a vision model for images. `image_generation` stores the generated image locally and returns a `file_id`; `send_message` can then publish an assistant message with that attachment for channel delivery.
+The model interacts with stored files through tools. `download_file(url)` stores a public URL under the runtime `download` directory and returns its filename without placing the response body in conversation history. It recognizes public Google Sheets, Docs, and Slides editor links and exports them as CSV, text, and PDF respectively. `inspect_file(filename, query)` can inspect downloaded files and message attachments, passing bounded raw text to a text model, extracting text from PDFs, or calling a vision model for images. `image_generation(prompt, filename)` stores the generated image locally; `send_message` can then publish an assistant message with that filename as an attachment.
 
 Agent-created files use a separate scoped workspace. `list_files`, `read_file`, `create_file`, and `update_file` are the only agent filesystem tools. Conversations on every channel share `<runtime-root>/files/user`; a scheduled automation gets its own directory; and tool calls get a directory matching their caller stack. The host appends every registered tool call to `ExecutionContext.tool_stack`; a file tool resolves its root from that stack without its own final entry. Relative paths only are accepted, and symlinks are rejected. Automation and tool names are encoded before becoming directory components.
 
-All file ids are `u32` values for now. The current architecture treats that as the stable attachment identifier.
+Filenames are sanitized before storage. Existing names receive a numeric suffix such as `report-2.pdf`, and tools that generate files must propose a descriptive filename.
 
 ---
 
@@ -216,6 +216,8 @@ They are exposed as separate namespaces:
 
 Both namespaces read from the same unlocked encrypted store, but the API boundary is still separated so channel code does not ask for tool secrets and tool code does not ask for channel secrets.
 
+NEAR provider configuration is loaded once into `ProviderConfig`. The chat, memory, file-inspection, and image-generation paths share its base URL, model names, and timeouts instead of reading provider environment variables independently.
+
 `HttpTool<S>` is a reusable HTTP helper for controlled credential injection. It:
 
 - only allows HTTPS except loopback HTTP.
@@ -271,6 +273,8 @@ MessageIn(User, any conversation)
 The agent is the bounded tool loop: history + raw inference + tool execution. `AgentHandler` subscribes to `AgentRequest`, starts each run in an independent task, and publishes `AgentResult`. Conversation runs also publish their final response as `MessageOut`.
 
 Agent runs keep their delivery destination separate from their history scope. A conversation run uses its `ConversationKey` for both, while a scheduled agent task has no implicit delivery destination and uses the automation name as its durable history scope. This lets recurring tasks remember previous runs without pretending that an automation is a channel conversation.
+
+The tool registry records whether each tool is agent-visible or internal. Conversation agents receive a snapshot of its visible tools, so newly installed WASM tools and user-created dynamic tools become available immediately. Maintenance and setup-callback tools remain registered for internal execution without being exposed. Scheduled agent tasks can explicitly request any registered tool by name.
 
 For each run:
 
@@ -356,16 +360,15 @@ Each tool receives an `ExecutionContext` with invocation metadata and tool-call 
 Implemented internal tools include:
 
 - `raw_inference`: calls `/v1/chat/completions` using the configured NEAR API key.
-- `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image, and returns a `file_id` for later delivery.
-- `inspect_file`: inspects a locally stored file by numeric `file_id`, using text extraction for documents and a vision model for images.
-- `download_file`: downloads a public URL into `<runtime-root>/download` and returns a numeric `file_id` for bounded inspection with `inspect_file`.
+- `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image under the requested sanitized filename, and returns that filename for later delivery.
+- `inspect_file`: inspects a locally stored file by filename, using text extraction for documents and a vision model for images.
+- `download_file`: downloads a public URL into `<runtime-root>/download` under its sanitized original filename for bounded inspection with `inspect_file`.
 - `list_files`, `read_file`, `create_file`, `update_file`: access the execution-scoped agent workspace.
 - `web_fetch`: fetches a public URL with no credentials.
 - `browser`: navigates public HTTPS pages through a local `CONNECT` proxy. The proxy resolves destinations itself, rejects non-public addresses, and pins each tunnel to the validated address. Chromium direct bypasses, QUIC, and non-proxied WebRTC traffic are disabled.
 - `send_message`: publishes a message to a user through a channel.
 - `delete_message`: deletes a channel message when the channel supports it.
 - `request_user_input`: asks the current user to choose from specific answers. Telegram renders inline callback buttons; the selected value returns as a normal inbound user message.
-- `call_agent`: runs a sub-agent and returns its final answer as a tool result.
 - `create_tool`, `edit_tool`, `delete_tool`: create, replace, or delete dynamic JavaScript tools. The host validates the complete script, writes the tool files, and updates the registry as one operation.
 - `create_automation`, `edit_automation`, `delete_automation`, `inspect_automation`, `list_automations`: validate, persist, and manage automations.
 - `list_channels`, `install_channel`, `setup_channel`: inspect and install local channel packages. `install_channel` starts the install flow and registers a temporary automation; `setup_channel` handles deterministic follow-up replies from that automation.

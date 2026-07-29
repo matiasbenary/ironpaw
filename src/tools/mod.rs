@@ -38,7 +38,7 @@ use self::built_in::{
     messages::{DeleteMessageTool, SendMessageTool},
     request_user_input::RequestUserInputTool,
     search_history::SearchHistoryTool,
-    setup::ListChannelsTool,
+    setup::{ListChannelsTool, ListToolsTool},
     todo::TodoTool,
     web::WebFetchTool,
 };
@@ -81,16 +81,24 @@ pub fn tool_result_json(result: &ToolResult) -> serde_json::Value {
 
 pub struct InternalTools {
     pub inference: crate::inference::Inference,
-    pub create_tool: Arc<DynamicToolTool>,
-    pub edit_tool: Arc<DynamicToolTool>,
-    pub delete_tool: Arc<DynamicToolTool>,
     pub scripts: Arc<ScriptRuntime>,
     pub history: Arc<dyn History>,
     pub registry: Arc<ToolRegistry>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolVisibility {
+    Agent,
+    Internal,
+}
+
+struct RegisteredTool {
+    tool: Arc<dyn InternalTool>,
+    visibility: ToolVisibility,
+}
+
 pub struct ToolRegistry {
-    tools: RwLock<Vec<Arc<dyn InternalTool>>>,
+    tools: RwLock<Vec<RegisteredTool>>,
     dynamic_names: RwLock<HashSet<String>>,
 }
 
@@ -104,14 +112,37 @@ impl ToolRegistry {
 
     /// Snapshot of every registered tool (internal and dynamic).
     pub fn all(&self) -> Vec<Arc<dyn InternalTool>> {
-        self.tools.read().expect("tools lock").clone()
+        self.tools
+            .read()
+            .expect("tools lock")
+            .iter()
+            .map(|entry| Arc::clone(&entry.tool))
+            .collect()
     }
 
-    pub fn named_tools(&self, names: &[String]) -> Result<Vec<Arc<dyn InternalTool>>, String> {
+    /// Snapshot of the tools exposed to conversation agents.
+    pub fn agent_tools(&self) -> Vec<Arc<dyn InternalTool>> {
+        self.tools
+            .read()
+            .expect("tools lock")
+            .iter()
+            .filter(|entry| entry.visibility == ToolVisibility::Agent)
+            .map(|entry| Arc::clone(&entry.tool))
+            .collect()
+    }
+
+    pub fn named_tools<S>(
+        &self,
+        names: impl IntoIterator<Item = S>,
+    ) -> Result<Vec<Arc<dyn InternalTool>>, String>
+    where
+        S: AsRef<str>,
+    {
         let tools = self.all();
         names
-            .iter()
+            .into_iter()
             .map(|name| {
+                let name = name.as_ref();
                 tools
                     .iter()
                     .find(|tool| tool.name() == name)
@@ -121,14 +152,39 @@ impl ToolRegistry {
             .collect()
     }
 
+    pub fn existing_named_tools<S>(
+        &self,
+        names: impl IntoIterator<Item = S>,
+    ) -> Vec<Arc<dyn InternalTool>>
+    where
+        S: AsRef<str>,
+    {
+        let tools = self.all();
+        names
+            .into_iter()
+            .filter_map(|name| {
+                tools
+                    .iter()
+                    .find(|tool| tool.name() == name.as_ref())
+                    .cloned()
+            })
+            .collect()
+    }
+
     /// Register a tool at runtime. Names must be unique.
-    pub fn add(&self, tool: Arc<dyn InternalTool>) -> Result<(), String> {
+    pub fn add(
+        &self,
+        tool: Arc<dyn InternalTool>,
+        visibility: ToolVisibility,
+    ) -> Result<(), String> {
         let mut tools = self.tools.write().expect("tools lock");
-        if tools.iter().any(|existing| existing.name() == tool.name()) {
+        if tools
+            .iter()
+            .any(|existing| existing.tool.name() == tool.name())
+        {
             return Err(format!("a tool named '{}' already exists", tool.name()));
         }
-        tools.push(tool);
-        drop(tools);
+        tools.push(RegisteredTool { tool, visibility });
         Ok(())
     }
 
@@ -136,11 +192,11 @@ impl ToolRegistry {
         let mut tools = self.tools.write().expect("tools lock");
         let Some(existing) = tools
             .iter_mut()
-            .find(|existing| existing.name() == tool.name())
+            .find(|existing| existing.tool.name() == tool.name())
         else {
             return Err(format!("unknown tool: {}", tool.name()));
         };
-        *existing = tool;
+        existing.tool = tool;
         Ok(())
     }
 
@@ -149,13 +205,19 @@ impl ToolRegistry {
         let name = tool.name().to_string();
         let mut tools = self.tools.write().expect("tools lock");
         let mut dynamic_names = self.dynamic_names.write().expect("dynamic tools lock");
-        if let Some(index) = tools.iter().position(|existing| existing.name() == name) {
+        if let Some(index) = tools
+            .iter()
+            .position(|existing| existing.tool.name() == name)
+        {
             if !dynamic_names.contains(&name) {
                 return Err(format!("cannot replace built-in tool '{name}'"));
             }
-            tools[index] = tool;
+            tools[index].tool = tool;
         } else {
-            tools.push(tool);
+            tools.push(RegisteredTool {
+                tool,
+                visibility: ToolVisibility::Agent,
+            });
             dynamic_names.insert(name);
         }
         Ok(())
@@ -169,7 +231,7 @@ impl ToolRegistry {
         }
         let index = tools
             .iter()
-            .position(|tool| tool.name() == name)
+            .position(|entry| entry.tool.name() == name)
             .ok_or_else(|| format!("dynamic tool registry is missing '{name}'"))?;
         tools.remove(index);
         Ok(true)
@@ -180,7 +242,7 @@ impl ToolRegistry {
             .read()
             .expect("tools lock")
             .iter()
-            .any(|tool| tool.name() == name)
+            .any(|entry| entry.tool.name() == name)
     }
 
     pub fn validate_args_for_tool(
@@ -242,6 +304,7 @@ impl InternalTools {
             tool(ImageGenerationTool::new(
                 files_dir.clone(),
                 secrets.tools.clone(),
+                Arc::clone(inference.provider()),
             )),
             tool(InspectFileTool::new(
                 vec![files_dir, layout.download_dir()],
@@ -262,22 +325,27 @@ impl InternalTools {
             )),
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::List)),
             tool(AutomationTool::new(bus, AutomationToolKind::Trigger)),
-            tool(ListChannelsTool::new(layout.clone(), secrets)),
+            tool(ListChannelsTool::new(layout.clone(), secrets.clone())),
+            tool(ListToolsTool::new(layout.clone(), secrets)),
             Arc::clone(&create_tool) as Arc<dyn InternalTool>,
             Arc::clone(&edit_tool) as Arc<dyn InternalTool>,
             Arc::clone(&delete_tool) as Arc<dyn InternalTool>,
             tool(SearchHistoryTool::new(Arc::clone(&history))),
             tool(BrowserTool::new(layout.clone())),
-            tool(BrowserUpdateTool::new(layout.clone())),
             tool(WebFetchTool::new()),
         ] {
-            registry.add(tool).expect("unique built-in tool name");
+            registry
+                .add(tool, ToolVisibility::Agent)
+                .expect("unique built-in tool name");
         }
+        registry
+            .add(
+                tool(BrowserUpdateTool::new(layout.clone())),
+                ToolVisibility::Internal,
+            )
+            .expect("unique built-in tool name");
         Self {
             inference,
-            create_tool,
-            edit_tool,
-            delete_tool,
             scripts,
             history,
             registry,
@@ -595,13 +663,18 @@ mod tests {
         let tools = test_tools();
         tools
             .registry
-            .add(Arc::new(FakeTool("fake")))
+            .add(Arc::new(FakeTool("fake")), ToolVisibility::Internal)
             .expect("first add");
-        assert!(tools.registry.add(Arc::new(FakeTool("fake"))).is_err());
         assert!(
             tools
                 .registry
-                .add(Arc::new(FakeTool("send_message")))
+                .add(Arc::new(FakeTool("fake")), ToolVisibility::Internal)
+                .is_err()
+        );
+        assert!(
+            tools
+                .registry
+                .add(Arc::new(FakeTool("send_message")), ToolVisibility::Internal,)
                 .is_err()
         );
     }
@@ -620,7 +693,7 @@ mod tests {
         let tools = test_tools();
         tools
             .registry
-            .add(Arc::new(SchemaTool))
+            .add(Arc::new(SchemaTool), ToolVisibility::Internal)
             .expect("add schema tool");
 
         assert!(
@@ -651,7 +724,10 @@ mod tests {
     #[tokio::test]
     async fn run_tool_caps_call_depth() {
         let tools = test_tools();
-        tools.registry.add(Arc::new(FakeTool("fake"))).expect("add");
+        tools
+            .registry
+            .add(Arc::new(FakeTool("fake")), ToolVisibility::Internal)
+            .expect("add");
 
         let mut deep = ExecutionContext::new(InvocationScope::ScheduledAutomation {
             automation_id: "test".to_string(),
@@ -675,7 +751,10 @@ mod tests {
     #[tokio::test]
     async fn run_tool_enforces_agent_call_budget() {
         let tools = test_tools();
-        tools.registry.add(Arc::new(FakeTool("fake"))).expect("add");
+        tools
+            .registry
+            .add(Arc::new(FakeTool("fake")), ToolVisibility::Internal)
+            .expect("add");
         let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
             automation_id: "test".to_string(),
         });
@@ -690,7 +769,9 @@ mod tests {
     async fn tool_handler_runs_tool_requests() {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());
-        registry.add(Arc::new(FakeTool("fake"))).expect("add");
+        registry
+            .add(Arc::new(FakeTool("fake")), ToolVisibility::Internal)
+            .expect("add");
         let handler = Arc::new(ToolHandler::new(bus.clone(), registry));
         let task = handler.start();
         let mut events = bus.subscribe();
@@ -729,10 +810,13 @@ mod tests {
         let order = Arc::new(std::sync::Mutex::new(Vec::new()));
         for name in ["first", "second"] {
             registry
-                .add(Arc::new(DeferredTool {
-                    name,
-                    order: Arc::clone(&order),
-                }))
+                .add(
+                    Arc::new(DeferredTool {
+                        name,
+                        order: Arc::clone(&order),
+                    }),
+                    ToolVisibility::Internal,
+                )
                 .expect("add");
         }
         let handler = Arc::new(ToolHandler::new(bus.clone(), registry));
@@ -784,7 +868,9 @@ mod tests {
     async fn tool_handler_returns_the_interface_for_invalid_arguments() {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());
-        registry.add(Arc::new(SchemaTool)).expect("add");
+        registry
+            .add(Arc::new(SchemaTool), ToolVisibility::Internal)
+            .expect("add");
         let handler = Arc::new(ToolHandler::new(bus.clone(), registry));
         let task = handler.start();
         let mut events = bus.subscribe();

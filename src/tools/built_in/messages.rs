@@ -8,7 +8,7 @@ use crate::{
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
-type AttachmentResolver = Arc<dyn Fn(u32) -> Result<Attachment, String> + Send + Sync>;
+type AttachmentResolver = Arc<dyn Fn(&str) -> Result<Attachment, String> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct SendMessageTool {
@@ -19,7 +19,7 @@ pub struct SendMessageTool {
 impl SendMessageTool {
     pub fn new(
         bus: Bus,
-        attachment_resolver: impl Fn(u32) -> Result<Attachment, String> + Send + Sync + 'static,
+        attachment_resolver: impl Fn(&str) -> Result<Attachment, String> + Send + Sync + 'static,
     ) -> Self {
         Self {
             bus,
@@ -29,8 +29,9 @@ impl SendMessageTool {
 
     pub fn execute(&self, input: SendMessageToolInput) -> Result<serde_json::Value, String> {
         let attachments = input
-            .file_id
-            .map(|file_id| (self.attachment_resolver)(file_id))
+            .filename
+            .as_deref()
+            .map(|filename| (self.attachment_resolver)(filename))
             .transpose()?
             .into_iter()
             .collect();
@@ -94,10 +95,8 @@ pub struct SendMessageToolInput {
     /// Channel to send through, for example telegram or tui.
     pub channel: String,
     #[serde(default)]
-    #[schemars(
-        description = "ID of a generated file to attach. Use this alone when delivering an image from image_generation."
-    )]
-    pub file_id: Option<u32>,
+    #[schemars(description = "Filename to attach. Use the filename returned by image_generation.")]
+    pub filename: Option<String>,
     #[serde(default)]
     #[schemars(
         description = "Optional message text to send. Omit this when sending only a generated file."
@@ -253,7 +252,7 @@ mod tests {
 
         tool.execute(SendMessageToolInput {
             channel: "telegram".to_string(),
-            file_id: None,
+            filename: None,
             content: Some("hi".to_string()),
             chat_id: Some("chat-1".to_string()),
             thread_id: Some("thread-1".to_string()),

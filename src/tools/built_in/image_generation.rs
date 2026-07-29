@@ -1,12 +1,10 @@
-use std::{
-    path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 
 use crate::{
-    models,
+    config::ProviderConfig,
+    message::available_filename,
     secrets::ToolSecrets,
     tools::{self, InternalTool, ToolError},
 };
@@ -20,15 +18,14 @@ pub struct ImageGenerationTool {
 }
 
 impl ImageGenerationTool {
-    pub fn new(files_dir: PathBuf, secrets: ToolSecrets) -> Self {
+    pub fn new(files_dir: PathBuf, secrets: ToolSecrets, provider: Arc<ProviderConfig>) -> Self {
         Self {
             client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(120))
+                .timeout(provider.image_timeout)
                 .build()
                 .expect("image generation HTTP client"),
-            base_url: std::env::var("NEAR_BASE_URL")
-                .unwrap_or_else(|_| "https://cloud-api.near.ai".to_string()),
-            model: models::image_model(),
+            base_url: provider.base_url.clone(),
+            model: provider.image_model.clone(),
             files_dir,
             secrets,
         }
@@ -77,6 +74,10 @@ impl ImageGenerationTool {
 pub struct ImageGenerationParams {
     #[schemars(description = "A detailed description of the image to generate.")]
     pub prompt: String,
+    #[schemars(
+        description = "A short descriptive filename for the generated image. The .png extension is enforced."
+    )]
+    pub filename: String,
 }
 
 #[async_trait]
@@ -88,7 +89,7 @@ impl InternalTool for ImageGenerationTool {
     fn tool_definition(&self) -> crate::message::ToolDefinition {
         tools::tool_definition::<ImageGenerationParams>(
             self.name(),
-            "Generate an image from a text description and return a file_id. To deliver the image, call send_message with that file_id.",
+            "Generate an image from a text description, store it as a PNG, and return its filename. To deliver the image, call send_message with that filename.",
         )
     }
 
@@ -105,16 +106,18 @@ impl InternalTool for ImageGenerationTool {
                 .generate(&params.prompt)
                 .await
                 .map_err(ToolError::new)?;
-            let file_id = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as u32;
             std::fs::create_dir_all(&self.files_dir).map_err(|e| ToolError::new(e.to_string()))?;
-            let path = self.files_dir.join(format!("{file_id}.png"));
+            let filename = available_filename(
+                &self.files_dir,
+                Some(&params.filename),
+                "generated-image",
+                "png",
+            );
+            let path = self.files_dir.join(&filename);
             let bytes = base64_decode(&data_base64).map_err(ToolError::new)?;
             std::fs::write(&path, bytes).map_err(|e| ToolError::new(e.to_string()))?;
             Ok(serde_json::json!({
-                "file_id": file_id,
+                "filename": filename,
             }))
         }
         .await;

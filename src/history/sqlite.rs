@@ -73,10 +73,8 @@ fn extract_search_text(item: &Message) -> String {
             let mut parts = vec![text.clone()];
             parts.extend(attachments.iter().map(|attachment| {
                 format!(
-                    "file_id:{} mime_type:{} {}",
-                    attachment.file_id,
-                    attachment.mime_type,
-                    attachment.filename.as_deref().unwrap_or("")
+                    "filename:{} mime_type:{}",
+                    attachment.filename, attachment.mime_type,
                 )
             }));
             parts.join(" ")
@@ -89,10 +87,8 @@ fn extract_search_text(item: &Message) -> String {
             let mut parts = text.clone().into_iter().collect::<Vec<_>>();
             parts.extend(attachments.iter().map(|attachment| {
                 format!(
-                    "file_id:{} mime_type:{} {}",
-                    attachment.file_id,
-                    attachment.mime_type,
-                    attachment.filename.as_deref().unwrap_or("")
+                    "filename:{} mime_type:{}",
+                    attachment.filename, attachment.mime_type,
                 )
             }));
             parts.extend(

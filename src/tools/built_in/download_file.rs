@@ -3,7 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use async_trait::async_trait;
 
 use crate::{
-    message::ToolDefinition,
+    message::{ToolDefinition, available_filename},
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
@@ -19,7 +19,6 @@ pub struct DownloadFileParams {
 
 #[derive(serde::Serialize)]
 struct DownloadedFile {
-    file_id: u32,
     filename: String,
     mime_type: String,
     size_bytes: usize,
@@ -88,23 +87,23 @@ impl DownloadFileTool {
             bytes.extend_from_slice(&chunk);
         }
 
-        let filename = url
+        let requested_filename = url
             .path_segments()
             .and_then(|mut segments| segments.next_back())
             .filter(|name| !name.is_empty())
             .unwrap_or("download")
             .to_string();
-        let extension = extension_for(&filename, &mime_type);
-        let file_id = random_file_id();
+        let extension = extension_for(&requested_filename, &mime_type);
         std::fs::create_dir_all(&self.download_dir).map_err(|err| err.to_string())?;
-        std::fs::write(
-            self.download_dir.join(format!("{file_id}.{extension}")),
-            &bytes,
-        )
-        .map_err(|err| err.to_string())?;
+        let filename = available_filename(
+            &self.download_dir,
+            Some(&requested_filename),
+            "download",
+            &extension,
+        );
+        std::fs::write(self.download_dir.join(&filename), &bytes).map_err(|err| err.to_string())?;
 
         Ok(DownloadedFile {
-            file_id,
             filename,
             mime_type,
             size_bytes: bytes.len(),
@@ -121,7 +120,7 @@ impl InternalTool for DownloadFileTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<DownloadFileParams>(
             self.name(),
-            "Download a public URL into Ironpaw's managed download directory and return a file_id. Public Google Sheets, Docs, and Slides editor links are exported as CSV, text, and PDF. Use inspect_file with the file_id to query contents without putting the whole download into conversation history.",
+            "Download a public URL into Ironpaw's managed download directory and return its filename. Public Google Sheets, Docs, and Slides editor links are exported as CSV, text, and PDF. Use inspect_file with the filename to query contents without putting the whole download into conversation history.",
         )
     }
 
@@ -159,11 +158,6 @@ fn extension_for_mime(mime_type: &str) -> &'static str {
         "image/gif" => "gif",
         _ => "bin",
     }
-}
-
-fn random_file_id() -> u32 {
-    let bytes = *uuid::Uuid::new_v4().as_bytes();
-    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
 fn normalize_download_url(mut url: reqwest::Url) -> Result<reqwest::Url, String> {
@@ -238,7 +232,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(downloaded.mime_type, "text/csv");
-        assert!(dir.join(format!("{}.csv", downloaded.file_id)).exists());
+        assert_eq!(downloaded.filename, "albums.csv");
+        assert!(dir.join("albums.csv").exists());
     }
 
     #[test]

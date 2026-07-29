@@ -6,7 +6,6 @@ use crate::{
     inference::{Inference, InferenceError, InferenceRequest},
     memory::Memory,
     message::{Message, ToolCall},
-    models,
     tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolRegistry},
 };
 
@@ -59,8 +58,7 @@ impl Agent {
             history_scope: HistoryScope::Conversation(conversation.clone()),
             context,
             transient_messages: Vec::new(),
-            tools: self.tools.all(),
-            allowed_tool_names: None,
+            tool_selection: ToolSelection::AgentVisible,
             recalled_memories: Vec::new(),
         })
         .await
@@ -94,8 +92,7 @@ impl Agent {
             history_scope,
             context: ExecutionContext::new(InvocationScope::ScheduledAutomation { automation_id }),
             transient_messages: Vec::new(),
-            tools,
-            allowed_tool_names: Some(tool_names),
+            tool_selection: ToolSelection::Selected(tools),
             recalled_memories: Vec::new(),
         })
         .await
@@ -118,8 +115,15 @@ impl Agent {
                 publish_channel_action(&self.bus, conversation, ChannelAction::Typing);
             }
 
-            let tools = run
-                .tools
+            let active_tools = match &run.tool_selection {
+                ToolSelection::AgentVisible => self.tools.agent_tools(),
+                ToolSelection::Selected(tools) => tools.clone(),
+            };
+            let allowed_tool_names = active_tools
+                .iter()
+                .map(|tool| tool.name().to_string())
+                .collect::<Vec<_>>();
+            let tools = active_tools
                 .iter()
                 .map(|tool| tools::definition_for_model(tool.as_ref()))
                 .collect::<Vec<_>>();
@@ -130,7 +134,7 @@ impl Agent {
                 tools.len()
             ));
             let request = InferenceRequest {
-                model: models::text_model(),
+                model: self.inference.provider().text_model.clone(),
                 messages,
                 tools,
             };
@@ -190,7 +194,8 @@ impl Agent {
                 }
                 return Ok(text.filter(|text| !text.is_empty()));
             }
-            self.handle_tool_calls(&mut run, output, tool_calls).await?;
+            self.handle_tool_calls(&mut run, output, tool_calls, allowed_tool_names)
+                .await?;
         }
     }
 
@@ -199,6 +204,7 @@ impl Agent {
         run: &mut AgentRun<'_>,
         output: Message,
         tool_calls: Vec<ToolCall>,
+        allowed_tool_names: Vec<String>,
     ) -> Result<(), String> {
         for tool_call in &tool_calls {
             logger::raw_tool_call_logged(tool_call);
@@ -221,7 +227,7 @@ impl Agent {
         self.bus.publish(Event::ToolRequest {
             context: run.context.clone(),
             tool_calls,
-            allowed_tool_names: run.allowed_tool_names.clone(),
+            allowed_tool_names: Some(allowed_tool_names),
         });
         let results =
             wait_for_tool_response(&mut events, &run.context.invoked_by, &expected).await?;
@@ -340,7 +346,7 @@ impl Agent {
             .inference
             .execute(
                 InferenceRequest {
-                    model: models::text_model(),
+                    model: self.inference.provider().text_model.clone(),
                     messages: vec![
                         Message::System(
                             "Summarize older history for future runs. This summary is not an action ledger. Do not claim an action, delivery, user acknowledgement, recommendation, date, or research finding unless the transcript explicitly proves it. Omit uncertain information. Preserve only user preferences, durable source ids, verified tool evidence, and unresolved work."
@@ -375,9 +381,13 @@ struct AgentRun<'a> {
     history_scope: HistoryScope,
     context: ExecutionContext,
     transient_messages: Vec<Message>,
-    tools: Vec<Arc<dyn InternalTool>>,
-    allowed_tool_names: Option<Vec<String>>,
+    tool_selection: ToolSelection,
     recalled_memories: Vec<String>,
+}
+
+enum ToolSelection {
+    AgentVisible,
+    Selected(Vec<Arc<dyn InternalTool>>),
 }
 
 fn retained_entries(history: &[HistoryEntry]) -> Vec<HistoryEntry> {

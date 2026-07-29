@@ -15,7 +15,7 @@ use crate::{
         bridge::{BridgeState, LoadedChannel, auth::authorize},
         config::{ChannelAuth, ChannelConfig},
     },
-    message::{Attachment, Message},
+    message::{Attachment, Message, available_filename},
 };
 
 pub(super) async fn message_channel_to_ironpaw(
@@ -190,39 +190,36 @@ fn attachment_from_content(
     }
 
     let ext = attachment_ext(filename.as_deref(), &mime_type);
-    let file_id = received_file_id();
-    let source = store_file(files_dir, file_id, &ext, &data);
+    let filename = available_filename(files_dir, filename.as_deref(), "attachment", &ext);
+    let source = store_file(files_dir, &filename, &data)?;
     Ok(Attachment {
-        file_id,
-        mime_type,
         filename,
+        mime_type,
         source,
     })
 }
 
-fn store_file(files_dir: &PathBuf, file_id: u32, ext: &str, data: &[u8]) -> PathBuf {
-    let path = files_dir.join(format!("{file_id}.{ext}"));
-    if let Err(e) = fs::create_dir_all(files_dir) {
-        eprintln!("bridge: failed to create files_dir: {e}");
-        return path;
-    }
-    if let Err(e) = fs::write(&path, data) {
-        eprintln!("bridge: failed to write file {file_id}: {e}");
-    }
-    path
-}
-
-fn received_file_id() -> u32 {
-    let bytes = *uuid::Uuid::new_v4().as_bytes();
-    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+fn store_file(files_dir: &PathBuf, filename: &str, data: &[u8]) -> Result<PathBuf, String> {
+    fs::create_dir_all(files_dir)
+        .map_err(|error| format!("failed to create files directory: {error}"))?;
+    let path = files_dir.join(filename);
+    fs::write(&path, data).map_err(|error| format!("failed to store {filename}: {error}"))?;
+    Ok(path)
 }
 
 fn attachment_ext(filename: Option<&str>, mime_type: &str) -> String {
     filename
         .and_then(|name| std::path::Path::new(name).extension())
         .and_then(|ext| ext.to_str())
+        .filter(|ext| {
+            !ext.is_empty()
+                && ext.len() <= 10
+                && ext
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric())
+        })
         .unwrap_or_else(|| ext_from_mime(mime_type))
-        .to_string()
+        .to_ascii_lowercase()
 }
 
 fn decode_base64(data_base64: &str) -> Option<Vec<u8>> {
@@ -249,7 +246,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn image_attachment_is_stored_with_numeric_id() {
+    fn image_attachment_keeps_its_filename() {
         let files_dir = unique_test_files_dir();
         let attachment = attachment_from_content(
             Some("photo.png".to_string()),
@@ -259,14 +256,14 @@ mod tests {
         )
         .unwrap();
 
-        let file_id = attachment.file_id;
-        let stored = files_dir.join(format!("{file_id}.png"));
+        let stored = files_dir.join("photo.png");
+        assert_eq!(attachment.filename, "photo.png");
         assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("png"));
         assert_eq!(fs::read(stored).unwrap(), b"image");
     }
 
     #[test]
-    fn file_attachment_is_stored_with_numeric_id() {
+    fn file_attachment_keeps_its_filename() {
         let files_dir = unique_test_files_dir();
         let attachment = attachment_from_content(
             Some("report.pdf".to_string()),
@@ -276,8 +273,8 @@ mod tests {
         )
         .unwrap();
 
-        let file_id = attachment.file_id;
-        let stored = files_dir.join(format!("{file_id}.pdf"));
+        let stored = files_dir.join("report.pdf");
+        assert_eq!(attachment.filename, "report.pdf");
         assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("pdf"));
         assert_eq!(fs::read(stored).unwrap(), b"pdf");
     }

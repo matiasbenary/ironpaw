@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use crate::{
     inference::{Inference, InferenceRequest},
     message::{Attachment, Message},
-    models,
     tools::{self, InternalTool},
 };
 
@@ -25,8 +24,8 @@ impl InspectFileTool {
 
 #[derive(schemars::JsonSchema, serde::Deserialize, serde::Serialize)]
 struct InspectFileParams {
-    #[schemars(description = "The file_id of the attached file to inspect.")]
-    file_id: u32,
+    #[schemars(description = "The filename of the attached or downloaded file to inspect.")]
+    filename: String,
     #[serde(default)]
     #[schemars(
         description = "Optional focused question or extraction request for the file. Defaults to 'describe this file'."
@@ -43,7 +42,7 @@ impl InternalTool for InspectFileTool {
     fn tool_definition(&self) -> crate::message::ToolDefinition {
         tools::tool_definition::<InspectFileParams>(
             self.name(),
-            "Inspect a stored file by file_id. If query is omitted, it defaults to 'describe this file'. PDFs use text extraction, text files are passed through as bounded raw content, and images use vision.",
+            "Inspect a stored file by filename. If query is omitted, it defaults to 'describe this file'. PDFs use text extraction, text files are passed through as bounded raw content, and images use vision.",
         )
     }
 
@@ -60,11 +59,11 @@ impl InternalTool for InspectFileTool {
             let attachment = self
                 .file_dirs
                 .iter()
-                .find_map(|dir| Attachment::from_file_id(dir, params.file_id).ok())
-                .ok_or_else(|| format!("file not found: {}", params.file_id))?;
+                .find_map(|dir| Attachment::from_filename(dir, &params.filename).ok())
+                .ok_or_else(|| format!("file not found: {}", params.filename))?;
             let path = attachment.source.clone();
             let data =
-                std::fs::read(&path).map_err(|_| format!("file not found: {}", params.file_id))?;
+                std::fs::read(&path).map_err(|_| format!("file not found: {}", params.filename))?;
 
             let ext = attachment
                 .source
@@ -78,20 +77,20 @@ impl InternalTool for InspectFileTool {
                 let answer = self
                     .inspect_image(attachment, query, ctx.conversation())
                     .await?;
-                return Ok(inspection_output(params.file_id, query, answer));
+                return Ok(serde_json::Value::String(answer));
             }
 
             let text = if ext == "pdf" {
                 match pdf_extract::extract_text_from_mem(&data) {
                     Ok(t) => t,
-                    Err(_) => format!("[Could not extract text from PDF: {}]", params.file_id),
+                    Err(_) => format!("[Could not extract text from PDF: {}]", params.filename),
                 }
             } else {
                 bounded_raw_text(&data)
             };
 
             let answer = self.inspect_text(&text, query, ctx.conversation()).await?;
-            Ok(inspection_output(params.file_id, query, answer))
+            Ok(serde_json::Value::String(answer))
         }
         .await;
         responder.respond(result.map_err(crate::tools::ToolError::new));
@@ -109,7 +108,7 @@ impl InspectFileTool {
             "Query: {query}\n\nFile content:\n{content}\n\nAnswer the query using only the file content."
         );
         self.call_model(
-            models::text_model(),
+            self.inference.provider().text_model.clone(),
             vec![system_item(), text_item(prompt)],
             conversation,
         )
@@ -123,7 +122,7 @@ impl InspectFileTool {
         conversation: Option<&crate::bus::ConversationKey>,
     ) -> Result<String, String> {
         self.call_model(
-            models::vision_model(),
+            self.inference.provider().vision_model.clone(),
             vec![
                 system_item(),
                 Message::User {
@@ -176,10 +175,6 @@ fn text_item(text: String) -> Message {
         text,
         attachments: Vec::new(),
     }
-}
-
-fn inspection_output(_file_id: u32, _query: &str, answer: String) -> serde_json::Value {
-    serde_json::Value::String(answer)
 }
 
 fn bounded_raw_text(data: &[u8]) -> String {

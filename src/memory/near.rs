@@ -1,19 +1,14 @@
-use std::time::Duration;
-
 use reqwest::Client;
 
 use crate::{
     inference::{Inference, InferenceRequest},
     message::Message,
-    models,
     secrets::ToolSecrets,
 };
 
 use super::sqlite::MemoryRecord;
 
 const EXTRACTION_PROMPT: &str = include_str!("extraction_prompt.txt");
-const EMBEDDING_MODEL: &str = "Qwen/Qwen3-Embedding-0.6B";
-
 #[derive(serde::Deserialize)]
 pub(super) struct ExtractedMemory {
     pub text: String,
@@ -29,7 +24,6 @@ struct ExtractionResponse {
 
 pub(super) struct MemoryInference {
     client: Client,
-    base_url: String,
     secrets: ToolSecrets,
     inference: Inference,
 }
@@ -37,13 +31,11 @@ pub(super) struct MemoryInference {
 impl MemoryInference {
     pub fn new(secrets: ToolSecrets, inference: Inference) -> Result<Self, String> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(180))
+            .timeout(inference.provider().chat_timeout)
             .build()
             .map_err(|error| error.to_string())?;
         Ok(Self {
             client,
-            base_url: std::env::var("NEAR_BASE_URL")
-                .unwrap_or_else(|_| "https://cloud-api.near.ai".to_string()),
             secrets,
             inference,
         })
@@ -72,7 +64,7 @@ impl MemoryInference {
             .inference
             .execute(
                 InferenceRequest {
-                    model: models::text_model(),
+                    model: self.inference.provider().text_model.clone(),
                     messages: vec![
                         Message::System(EXTRACTION_PROMPT.to_string()),
                         Message::User {
@@ -116,11 +108,11 @@ impl MemoryInference {
             .client
             .post(format!(
                 "{}/v1/embeddings",
-                self.base_url.trim_end_matches('/')
+                self.inference.provider().base_url.trim_end_matches('/')
             ))
             .bearer_auth(api_key)
             .json(&serde_json::json!({
-                "model": EMBEDDING_MODEL,
+                "model": &self.inference.provider().embedding_model,
                 "input": texts,
                 "encoding_format": "float",
             }))

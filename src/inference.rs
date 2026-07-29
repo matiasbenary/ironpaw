@@ -1,19 +1,18 @@
-use std::time::Duration;
+use std::sync::Arc;
 
 use base64::Engine as _;
 use reqwest::Client;
 
 use crate::{
     bus::{ApiKeyError, Bus, ConversationKey, Event},
+    config::ProviderConfig,
     http::HttpError,
     message::{Attachment, Message, ToolCall, ToolDefinition},
-    models,
     secrets::ToolSecrets,
 };
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct InferenceRequest {
-    #[serde(default = "models::text_model")]
     pub model: String,
     pub messages: Vec<Message>,
     #[serde(default)]
@@ -87,26 +86,34 @@ impl std::fmt::Display for InferenceError {
 pub struct Inference {
     bus: Bus,
     client: Client,
-    base_url: String,
+    provider: Arc<ProviderConfig>,
     secrets: ToolSecrets,
 }
 
 impl Inference {
     pub fn new(bus: Bus, secrets: ToolSecrets) -> Result<Self, HttpError> {
+        Self::with_config(bus, secrets, Arc::new(ProviderConfig::from_env()))
+    }
+
+    pub fn with_config(
+        bus: Bus,
+        secrets: ToolSecrets,
+        provider: Arc<ProviderConfig>,
+    ) -> Result<Self, HttpError> {
         let client = Client::builder()
-            .timeout(Duration::from_secs(env_timeout_secs(
-                "NEAR_CHAT_TIMEOUT_SECS",
-                180,
-            )))
+            .timeout(provider.chat_timeout)
             .build()
             .map_err(sanitize_reqwest_error)?;
         Ok(Self {
             bus,
             client,
-            base_url: std::env::var("NEAR_BASE_URL")
-                .unwrap_or_else(|_| "https://cloud-api.near.ai".to_string()),
+            provider,
             secrets,
         })
+    }
+
+    pub fn provider(&self) -> &Arc<ProviderConfig> {
+        &self.provider
     }
 
     pub async fn execute(
@@ -141,7 +148,7 @@ impl Inference {
             .client
             .post(format!(
                 "{}/v1/chat/completions",
-                self.base_url.trim_end_matches('/')
+                self.provider.base_url.trim_end_matches('/')
             ))
             .bearer_auth(near_api_key)
             .json(&request)
@@ -320,13 +327,6 @@ fn sanitize_reqwest_error(error: reqwest::Error) -> HttpError {
         "request"
     };
     HttpError::Http(format!("{kind}: {}", error.without_url()))
-}
-
-fn env_timeout_secs(name: &str, default: u64) -> u64 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
 }
 
 #[cfg(test)]

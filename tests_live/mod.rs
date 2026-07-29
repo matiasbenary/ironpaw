@@ -116,7 +116,10 @@ fn start_ironpaw_config(
     ));
     tools
         .registry
-        .add(Arc::new(OnboardingTool::new(setup_services)))
+        .add(
+            Arc::new(OnboardingTool::new(setup_services)),
+            ironpaw::tools::ToolVisibility::Internal,
+        )
         .expect("onboarding registers");
     automations
         .add_transient(OnboardingTool::api_key_recovery_automation())
@@ -184,7 +187,7 @@ fn install_web_search_for_live_tests(
         WasmTool::from_manifest(manifest, secrets.tools.clone()).expect("load web_search tool");
     tools
         .registry
-        .add(Arc::new(tool))
+        .add(Arc::new(tool), ironpaw::tools::ToolVisibility::Agent)
         .expect("register web_search tool");
 }
 
@@ -211,8 +214,8 @@ fn publish_user_message(
 }
 
 fn send_message_tool(bus: &Bus, files_dir: PathBuf) -> SendMessageTool {
-    SendMessageTool::new(bus.clone(), move |file_id| {
-        Attachment::from_file_id(&files_dir, file_id)
+    SendMessageTool::new(bus.clone(), move |filename| {
+        Attachment::from_filename(&files_dir, filename)
     })
 }
 
@@ -590,20 +593,16 @@ async fn agent_reads_pdf_content() {
     // Mimic what the bridge does: store the file to disk, then tell the model about it.
     let pdf_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests_live/files/test.pdf");
     let pdf_bytes = std::fs::read(pdf_path).expect("test PDF should be readable");
-    let file_id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as u32;
-    let source = files_dir.join(format!("{file_id}.pdf"));
+    let filename = "test.pdf".to_string();
+    let source = files_dir.join(&filename);
     std::fs::write(&source, &pdf_bytes).unwrap();
 
     let message = Message::User {
         text: "Call the inspect_file tool to read the attached PDF, then tell me what text it contains."
             .to_string(),
         attachments: vec![Attachment {
-            file_id,
+            filename,
             mime_type: "application/pdf".to_string(),
-            filename: Some("test.pdf".to_string()),
             source,
         }],
     };
@@ -657,8 +656,8 @@ async fn agent_identifies_dog_image() {
     let (_task, history) = start_ironpaw(&bus, files_dir.clone());
 
     let image_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests_live/files/test.jpg");
-    let file_id = 123456789u32;
-    let source = files_dir.join(format!("{file_id}.jpg"));
+    let filename = "test.jpg".to_string();
+    let source = files_dir.join(&filename);
     std::fs::write(
         &source,
         std::fs::read(image_path).expect("test image should be readable"),
@@ -668,9 +667,8 @@ async fn agent_identifies_dog_image() {
         text: "Use inspect_file with query 'What animal is in this image? Answer with one word.'"
             .to_string(),
         attachments: vec![Attachment {
-            file_id,
+            filename,
             mime_type: "image/jpeg".to_string(),
-            filename: Some("test.jpg".to_string()),
             source,
         }],
     };
