@@ -5,6 +5,7 @@ use std::{
 
 use crate::{
     config::RuntimeLayout,
+    shell_tools::ShellToolManifest,
     tools::{
         setup::{
             install_common::{
@@ -16,6 +17,8 @@ use crate::{
         wasm::{WasmToolConfig, WasmToolManifest},
     },
 };
+
+use super::installable_tool::discover_shell_packages;
 
 #[derive(Clone)]
 pub(super) struct ToolPackage {
@@ -99,6 +102,7 @@ impl ListToolsTool {
             package_names.insert(package.name.clone());
             tool_rows.push(serde_json::json!({
                 "name": package.name,
+                "kind": "wasm",
                 "display_name": package.display_name,
                 "description": package.manifest.description,
                 "installed": installed,
@@ -111,11 +115,40 @@ impl ListToolsTool {
         for name in installed.difference(&package_names) {
             tool_rows.push(serde_json::json!({
                 "name": name,
+                "kind": "wasm",
                 "installed": true,
                 "installable": false,
                 "required_secrets": [],
                 "required_config": [],
             }));
+        }
+
+        let enabled = crate::tools::state::EnabledTools::new(self.layout.tools_state_path());
+        let installed_shell = ShellToolManifest::discover(&self.layout.tools_dir())?;
+        let installed_shell_names = installed_shell
+            .iter()
+            .map(|manifest| manifest.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for package in discover_shell_packages(&self.layout) {
+            let package = package?;
+            if installed_shell_names.contains(package.manifest.name.as_str()) {
+                continue;
+            }
+            tool_rows.push(shell_inventory_row(
+                &package.manifest,
+                false,
+                false,
+                &self.secrets,
+            ));
+        }
+        for manifest in installed_shell {
+            let is_enabled = enabled.is_enabled(&manifest.name)?;
+            tool_rows.push(shell_inventory_row(
+                &manifest,
+                true,
+                is_enabled,
+                &self.secrets,
+            ));
         }
 
         tool_rows.sort_by(|left, right| {
@@ -130,6 +163,38 @@ impl ListToolsTool {
             "tools": tool_rows,
         }))
     }
+}
+
+fn shell_inventory_row(
+    manifest: &ShellToolManifest,
+    installed: bool,
+    enabled: bool,
+    secrets: &crate::secrets::Secrets,
+) -> serde_json::Value {
+    let required_secrets = manifest
+        .secrets
+        .iter()
+        .map(|secret| {
+            serde_json::json!({
+                "name": secret.name,
+                "env": secret.env,
+                "configured": secrets.exists(&secret.name),
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "name": manifest.name,
+        "kind": "shell",
+        "description": manifest.description,
+        "installed": installed,
+        "enabled": enabled,
+        "installable": !installed,
+        "installer": manifest.install,
+        "commands": manifest.commands,
+        "allowed_hosts": manifest.allowed_hosts,
+        "required_secrets": required_secrets,
+        "required_config": [],
+    })
 }
 
 pub(super) fn normalize_tool_name(name: &str) -> Result<String, String> {

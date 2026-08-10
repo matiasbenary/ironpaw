@@ -19,8 +19,8 @@ use crate::{
 use super::{
     ChannelPackage, InstallSession, InstallStage, SetupChannelTool,
     install_channel_package::{
-        remove_installed_package, required_config, secret_prompt, set_channel_owner_id,
-        verification_code, write_package,
+        configure_generated_secrets, remove_installed_package, required_config, secret_prompt,
+        set_channel_owner_id, verification_code, write_package,
     },
     is_setup_conversation,
 };
@@ -61,6 +61,7 @@ impl SetupChannelTool {
                     return Ok(serde_json::json!({ "ok": true, "cancelled": true }));
                 }
                 let mut session = session;
+                configure_generated_secrets(&mut session.secrets, &self.setup.secrets)?;
                 if session.secrets.is_empty() {
                     self.prompt_config_or_finish(session, layout, tools, ctx)
                         .await?;

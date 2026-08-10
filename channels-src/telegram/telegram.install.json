@@ -6,13 +6,11 @@
   "secrets": [
     {
       "name": "telegram_bot_token",
-      "prompt": "Enter your Telegram Bot API token from @BotFather.",
+      "prompt": "Talk with @BotFather to create a bot in telegram, then enter your Telegram Bot API token here.",
       "optional": false
     },
     {
       "name": "telegram_webhook_secret",
-      "prompt": "Webhook secret. Leave empty to auto-generate.",
-      "optional": true,
       "auto_generate": {
         "length": 64
       }

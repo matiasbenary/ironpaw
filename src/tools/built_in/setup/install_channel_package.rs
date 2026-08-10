@@ -11,7 +11,7 @@ use crate::{
         install_channel::{ListChannelsTool, NGROK_SECRET},
         install_common::{
             SetupConfig, SetupSecret, config_statuses, discover_package_dir_names, generate_secret,
-            locate_config_template, secret_statuses, write_package_artifacts,
+            locate_config_template, secret_statuses, stored_secret_name, write_package_artifacts,
         },
     },
 };
@@ -220,6 +220,25 @@ pub(super) fn required_secrets(
     secrets
 }
 
+pub(super) fn configure_generated_secrets(
+    secrets: &mut Vec<SetupSecret>,
+    secrets_store: &Secrets,
+) -> Result<(), String> {
+    for (name, auto_generate) in secrets.iter().filter_map(|secret| {
+        secret
+            .auto_generate
+            .as_ref()
+            .map(|auto| (&secret.name, auto))
+    }) {
+        secrets_store.set(
+            &stored_secret_name(name),
+            &generate_secret(auto_generate.length),
+        )?;
+    }
+    secrets.retain(|secret| secret.auto_generate.is_none());
+    Ok(())
+}
+
 pub(super) fn required_config(package: &ChannelPackage) -> Vec<SetupConfig> {
     package.manifest.config.clone()
 }
@@ -308,4 +327,45 @@ pub(super) fn remove_channel_files(layout: &RuntimeLayout, name: &str) -> bool {
         }
     }
     removed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::setup::install_common::AutoGenerate;
+
+    #[test]
+    fn generated_secrets_are_configured_without_prompting() {
+        let secrets_store = Secrets::for_tests();
+        secrets_store
+            .set("GENERATED_SECRET", "previous-value")
+            .unwrap();
+        let mut secrets = vec![
+            SetupSecret {
+                name: "user_supplied_secret".to_string(),
+                prompt: Some("User supplied secret".to_string()),
+                optional: false,
+                auto_generate: None,
+            },
+            SetupSecret {
+                name: "generated_secret".to_string(),
+                prompt: None,
+                optional: false,
+                auto_generate: Some(AutoGenerate { length: 32 }),
+            },
+        ];
+
+        configure_generated_secrets(&mut secrets, &secrets_store).unwrap();
+
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets[0].name, "user_supplied_secret");
+        let generated = secrets_store.get("GENERATED_SECRET").unwrap();
+        assert_ne!(generated, "previous-value");
+        assert_eq!(generated.len(), 64);
+        assert!(
+            generated
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        );
+    }
 }
