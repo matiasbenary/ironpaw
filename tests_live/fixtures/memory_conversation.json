@@ -143,6 +143,6 @@
     {"name":"resolved_task","question":"Do I still need to renew my library books?","required":["no","returned"],"forbidden":["still need to renew"]},
     {"name":"current_possession","question":"Which desk is in my current bedroom?","required":["birch"],"forbidden":["oak desk is in"]},
     {"name":"recommendation_preference","question":"What constraints should you follow when recommending music to me?","required":["non-english","obscure"],"forbidden":[]},
-    {"name":"indirect_dog_name","question":"What is my dog called?","required":["colin"],"forbidden":["miso"]}
+    {"name":"indirect_dog_name","question":"What is my dog called? Answer with only the name.","required":["colin"],"forbidden":["miso"]}
   ]
 }

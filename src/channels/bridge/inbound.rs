@@ -176,7 +176,7 @@ fn content_to_message(
     }
 }
 
-fn attachment_from_content(
+pub(super) fn attachment_from_content(
     filename: Option<String>,
     mime_type: String,
     data_base64: String,

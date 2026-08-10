@@ -39,7 +39,10 @@ pub(super) fn authorize(
     }
 }
 
-fn authorize_bearer(headers: &HeaderMap, token: &str) -> Result<(), (StatusCode, String)> {
+pub(super) fn authorize_bearer(
+    headers: &HeaderMap,
+    token: &str,
+) -> Result<(), (StatusCode, String)> {
     let Some(value) = headers.get(header::AUTHORIZATION) else {
         return Err((
             StatusCode::UNAUTHORIZED,

@@ -24,6 +24,9 @@ pub(super) async fn message_ironpaw_to_channel(
                 message_id,
                 message,
             }) => {
+                if channel == "local-client" && thread_id.is_some() {
+                    continue;
+                }
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
                     eprintln!("bridge: no loaded channel named {channel} for message out");
                     continue;
@@ -67,6 +70,9 @@ pub(super) async fn message_ironpaw_to_channel(
             }
             Ok(Event::DeleteMessage { message }) => {
                 let channel = message.conversation.channel.clone();
+                if channel == "local-client" && message.conversation.thread_id.is_some() {
+                    continue;
+                }
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
                     eprintln!("bridge: no loaded channel named {channel} for delete message");
                     continue;
@@ -89,6 +95,9 @@ pub(super) async fn message_ironpaw_to_channel(
                 action,
             }) => {
                 let channel = conversation.channel.clone();
+                if channel == "local-client" && conversation.thread_id.is_some() {
+                    continue;
+                }
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
                     eprintln!("bridge: no loaded channel named {channel} for channel action");
                     continue;
@@ -111,6 +120,9 @@ pub(super) async fn message_ironpaw_to_channel(
                 request,
             }) => {
                 let channel = conversation.channel.clone();
+                if channel == "local-client" && conversation.thread_id.is_some() {
+                    continue;
+                }
                 let Some(channel_runtime) = registry.by_name(&channel).await else {
                     eprintln!("bridge: no loaded channel named {channel} for user input request");
                     continue;

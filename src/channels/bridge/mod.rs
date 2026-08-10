@@ -1,9 +1,9 @@
 use std::{io, path::PathBuf, sync::Arc};
 
-use axum::{Router, routing::post};
+use axum::{Router, extract::DefaultBodyLimit, routing::post};
 use tokio::{
     net::TcpListener,
-    sync::{Mutex, RwLock},
+    sync::{Mutex, RwLock, broadcast},
 };
 
 use crate::{
@@ -14,6 +14,7 @@ use crate::{
 };
 
 mod auth;
+mod client;
 mod history;
 mod inbound;
 mod outbound;
@@ -43,6 +44,7 @@ pub(super) struct BridgeState {
     pub(super) secrets: ChannelSecrets,
     pub(super) registry: Arc<ChannelRegistry>,
     pub(super) files_dir: PathBuf,
+    pub(super) client_events: broadcast::Sender<client::ClientEvent>,
 }
 
 #[derive(Default)]
@@ -102,8 +104,20 @@ pub async fn run_server(listener: TcpListener, addr: &str, state: BridgeState) -
                 .await;
     });
 
+    let client_bus = state.bus.clone();
+    let client_history = Arc::clone(&state.history);
+    let client_events = state.client_events.clone();
+    tokio::spawn(async move {
+        client::forward_events(client_bus, client_history, client_events).await;
+    });
+
     let app = Router::new()
-        .route("/{*path}", post(inbound::message_channel_to_ironpaw))
+        .merge(client::routes())
+        .route(
+            "/{*path}",
+            post(inbound::message_channel_to_ironpaw)
+                .layer(DefaultBodyLimit::max(56 * 1024 * 1024)),
+        )
         .with_state(state);
 
     println!("channel bridge listening on http://{addr}");

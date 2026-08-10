@@ -1,4 +1,3 @@
-use axum::{Json, Router, extract::State, routing::post};
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
@@ -14,12 +13,15 @@ use ratatui::{
     text::{Line, Text},
     widgets::{Block, Borders, Paragraph},
 };
-use serde::Deserialize;
 use std::{
     io::{self, Stdout},
     time::Duration,
 };
 use tokio::sync::mpsc;
+
+mod client;
+
+use client::Event as CallbackPayload;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:7878";
 
@@ -37,22 +39,6 @@ enum AppEvent {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Callback(CallbackPayload),
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind")]
-enum CallbackPayload {
-    #[serde(rename = "message")]
-    Message {
-        #[serde(default)]
-        id: Option<String>,
-        #[serde(default)]
-        content: String,
-        #[serde(default)]
-        tool_calls: Vec<serde_json::Value>,
-    },
-    #[serde(rename = "delete")]
-    Delete { message_id: String },
 }
 
 #[tokio::main]
@@ -73,8 +59,16 @@ async fn run(addr: &str, token: &str) -> io::Result<()> {
 
     let (events_tx, events_rx) = mpsc::channel::<AppEvent>(64);
     let client = reqwest::Client::new();
-    let url = bridge_url(addr);
-    let callback_url = start_callback_server(events_tx.clone()).await?;
+    let client_id = uuid::Uuid::new_v4().to_string();
+    let conversation_id = uuid::Uuid::new_v4().to_string();
+    let base_url = client::url(addr);
+    client::subscribe(
+        client.clone(),
+        format!("{base_url}/events"),
+        token.to_string(),
+        client_id.clone(),
+        events_tx.clone(),
+    );
     spawn_key_poller(events_tx.clone());
 
     let mut terminal = enter_terminal()?;
@@ -83,9 +77,9 @@ async fn run(addr: &str, token: &str) -> io::Result<()> {
         events_rx,
         events_tx,
         client,
-        url,
+        format!("{base_url}/conversations/{conversation_id}/messages"),
         token.to_string(),
-        callback_url,
+        client_id,
     )
     .await;
     leave_terminal(terminal)?;
@@ -99,7 +93,7 @@ async fn run_app(
     client: reqwest::Client,
     url: String,
     token: String,
-    callback_url: String,
+    client_id: String,
 ) -> io::Result<()> {
     let mut messages: Vec<DisplayMessage> = Vec::new();
     let mut input = String::new();
@@ -140,11 +134,11 @@ async fn run_app(
                             text: format!("you> {content}"),
                         });
                         scroll_from_bottom = 0;
-                        spawn_send(
+                        client::send(
                             client.clone(),
                             url.clone(),
                             token.clone(),
-                            callback_url.clone(),
+                            client_id.clone(),
                             content,
                             id,
                             events_tx.clone(),
@@ -206,6 +200,26 @@ async fn run_app(
                     message.text = format!("{prefix} [redacted]");
                     message.id = None;
                 }
+            }
+            AppEvent::Callback(CallbackPayload::Activity { action }) => {
+                let _ = action;
+            }
+            AppEvent::Callback(CallbackPayload::Choice { question, options }) => {
+                let options = options
+                    .into_iter()
+                    .map(|option| format!("- {} (`{}`)", option.label, option.value))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                messages.push(DisplayMessage {
+                    id: None,
+                    text: format!("ironpaw> {question}\n\n{options}"),
+                });
+            }
+            AppEvent::Callback(CallbackPayload::Error { message }) => {
+                messages.push(DisplayMessage {
+                    id: None,
+                    text: format!("error> {message}"),
+                });
             }
         }
     }
@@ -328,79 +342,6 @@ fn spawn_key_poller(events_tx: mpsc::Sender<AppEvent>) {
     });
 }
 
-fn spawn_send(
-    client: reqwest::Client,
-    url: String,
-    token: String,
-    callback_url: String,
-    content: String,
-    message_id: String,
-    events_tx: mpsc::Sender<AppEvent>,
-) {
-    tokio::spawn(async move {
-        let response = client
-            .post(&url)
-            .bearer_auth(&token)
-            .json(&serde_json::json!({
-                "content": content,
-                "callback_url": callback_url,
-                "message_id": message_id,
-            }))
-            .send()
-            .await;
-
-        let error = match response {
-            Ok(response) if response.status().is_success() => return,
-            Ok(response) => {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                format!("ironpaw bridge returned {status}: {body}")
-            }
-            Err(err) => err.to_string(),
-        };
-
-        let _ = events_tx
-            .send(AppEvent::Callback(CallbackPayload::Message {
-                id: None,
-                content: format!("error: {error}"),
-                tool_calls: Vec::new(),
-            }))
-            .await;
-    });
-}
-
-async fn start_callback_server(events_tx: mpsc::Sender<AppEvent>) -> io::Result<String> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    let app = Router::new()
-        .route("/", post(receive_callback))
-        .with_state(events_tx);
-
-    tokio::spawn(async move {
-        if let Err(err) = axum::serve(listener, app).await {
-            eprintln!("TUI callback server failed: {err}");
-        }
-    });
-
-    Ok(format!("http://{addr}"))
-}
-
-async fn receive_callback(
-    State(events_tx): State<mpsc::Sender<AppEvent>>,
-    Json(payload): Json<CallbackPayload>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    events_tx
-        .send(AppEvent::Callback(payload))
-        .await
-        .map_err(|_| {
-            (
-                axum::http::StatusCode::GONE,
-                "TUI receiver closed".to_string(),
-            )
-        })?;
-    Ok(Json(serde_json::json!({ "ok": true })))
-}
-
 fn enter_terminal() -> io::Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -419,15 +360,6 @@ fn leave_terminal(mut terminal: Terminal<CrosstermBackend<Stdout>>) -> io::Resul
     terminal.show_cursor()
 }
 
-fn bridge_url(addr: &str) -> String {
-    let base = if addr.starts_with("http://") || addr.starts_with("https://") {
-        addr.trim_end_matches('/').to_string()
-    } else {
-        format!("http://{}", addr.trim_end_matches('/'))
-    };
-    format!("{base}/channel/local-client/message")
-}
-
 fn display_content(content: &str, tool_calls: &[serde_json::Value]) -> String {
     if !content.is_empty() {
         return content.to_string();
@@ -442,15 +374,7 @@ fn display_content(content: &str, tool_calls: &[serde_json::Value]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{bridge_url, display_content, scroll_offset};
-
-    #[test]
-    fn builds_bridge_url() {
-        assert_eq!(
-            bridge_url("127.0.0.1:7878"),
-            "http://127.0.0.1:7878/channel/local-client/message"
-        );
-    }
+    use super::{display_content, scroll_offset};
 
     #[test]
     fn displays_assistant_message_content() {
