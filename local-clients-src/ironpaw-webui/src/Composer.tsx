@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 
 import { Icon } from './Icon';
 
-export function Composer({ onSend }: { onSend: (text: string, files: File[]) => Promise<boolean> }) {
+export function Composer({ disabled, onSend }: { disabled?: boolean; onSend: (text: string, files: File[]) => Promise<boolean> }) {
   const [text, setText] = useState('');
   const [files, setFiles] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
@@ -12,7 +12,7 @@ export function Composer({ onSend }: { onSend: (text: string, files: File[]) => 
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (sending || (!text.trim() && !files.length)) return;
+    if (disabled || sending || (!text.trim() && !files.length)) return;
     setSending(true);
     if (await onSend(text, files)) {
       setText('');
@@ -29,14 +29,15 @@ export function Composer({ onSend }: { onSend: (text: string, files: File[]) => 
         {files.map((file) => <span className="pending-file" key={`${file.name}:${file.lastModified}`}>{file.name}</span>)}
       </div>
       <div className="composer">
-        <button className="attach-button" type="button" aria-label="Attach file" onClick={() => fileInput.current?.click()}>
+        <button className="attach-button" type="button" aria-label="Attach file" disabled={disabled} onClick={() => fileInput.current?.click()}>
           <Icon name="attach" />
         </button>
         <input ref={fileInput} type="file" multiple hidden onChange={(event) => setFiles(Array.from(event.target.files || []))} />
         <textarea
           ref={textarea}
+          disabled={disabled}
           rows={1}
-          placeholder="Message Ironpaw"
+          placeholder={disabled ? 'Reconnect to send messages' : 'Message Ironpaw'}
           aria-label="Message"
           value={text}
           onChange={(event) => {
@@ -51,7 +52,7 @@ export function Composer({ onSend }: { onSend: (text: string, files: File[]) => 
             }
           }}
         />
-        <button className="send-button" type="submit" aria-label="Send" disabled={sending}>
+        <button className="send-button" type="submit" aria-label="Send" disabled={disabled || sending}>
           <Icon name="send" />
         </button>
       </div>

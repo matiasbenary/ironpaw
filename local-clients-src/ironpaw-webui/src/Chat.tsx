@@ -58,6 +58,7 @@ function ChatHeader({ title, canRename, onMenu, onRename }: HeaderProps) {
 }
 
 interface Props {
+  connectionState: 'connected' | 'offline' | 'authentication-required';
   conversationId: string | null;
   title: string;
   canRename: boolean;
@@ -65,16 +66,19 @@ interface Props {
   transient: TransientState;
   onMenu: () => void;
   onRename: (title: string) => Promise<void>;
+  onReconnect: () => void;
   onChoice: (value: string, message: StoredMessage) => void;
+  onLink: (href: string) => void;
   onSend: (text: string, files: File[]) => Promise<boolean>;
 }
 
 export function Chat(props: Props) {
+  const disconnected = props.connectionState !== 'connected';
   return (
     <section className="chat">
       <ChatHeader title={props.title} canRename={props.canRename} onMenu={props.onMenu} onRename={props.onRename} />
-      <MessageList key={props.conversationId} messages={props.messages} transient={props.transient} onChoice={props.onChoice} />
-      <Composer onSend={props.onSend} />
+      <MessageList connectionState={props.connectionState} disabled={disconnected} key={props.conversationId} messages={props.messages} transient={props.transient} onChoice={props.onChoice} onLink={props.onLink} onReconnect={props.onReconnect} />
+      <Composer disabled={disconnected} onSend={props.onSend} />
     </section>
   );
 }

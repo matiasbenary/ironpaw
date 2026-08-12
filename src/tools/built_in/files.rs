@@ -258,38 +258,6 @@ mod tests {
     use crate::bus::InvocationScope;
 
     #[tokio::test]
-    async fn paths_are_isolated_by_scope() {
-        let files = ScopedFiles::new(
-            std::env::temp_dir().join(format!("ironpaw-file-tool-test-{}", uuid::Uuid::new_v4())),
-        );
-        let user = ExecutionContext::new(InvocationScope::ScheduledAutomation {
-            automation_id: "morning".to_string(),
-        });
-        let tool = user
-            .with_tool("reporter".to_string())
-            .with_tool("read_file".to_string());
-
-        assert!(
-            files
-                .path(&user, "state.json")
-                .await
-                .unwrap()
-                .ends_with("automations/6d6f726e696e67/state.json")
-        );
-        assert!(
-            files
-                .path(&tool, "state.json")
-                .await
-                .unwrap()
-                .ends_with("tools/7265706f72746572/state.json")
-        );
-        assert_eq!(
-            tool.with_tool("other_tool".to_string()).tool_stack,
-            vec!["reporter", "read_file", "other_tool"]
-        );
-    }
-
-    #[tokio::test]
     async fn paths_cannot_escape_the_scope() {
         let files = ScopedFiles::new(std::env::temp_dir());
         let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {

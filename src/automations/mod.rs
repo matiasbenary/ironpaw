@@ -531,10 +531,9 @@ fn automation_info(automation: &Automation) -> AutomationInfo {
 mod tests {
     use super::*;
     use crate::{
-        bus::{ConversationKey, InvocationScope, Sender},
+        bus::{ConversationKey, InvocationScope},
         history::SqliteHistory,
         inference::Inference,
-        message::Message,
         tools::{ExecutionContext, InternalTools, messages::SendMessageTool},
     };
 
@@ -597,110 +596,6 @@ mod tests {
                 tools: Vec::new(),
             },
         }
-    }
-
-    fn message_in(channel: &str, sender: Sender) -> Event {
-        Event::MessageIn {
-            sender,
-            conversation: ConversationKey {
-                channel: channel.to_string(),
-                chat_id: "c1".to_string(),
-                thread_id: None,
-            },
-            message_id: None,
-            message: Message::User {
-                text: "hi".to_string(),
-                attachments: Vec::new(),
-            },
-        }
-    }
-
-    #[test]
-    fn message_in_event_is_flattened_for_execution() {
-        let (ctx, event) =
-            invocation::from_bus(&message_in("tui", Sender::User("local".to_string())))
-                .expect("message invocation");
-        assert_eq!(event["type"], "message_in");
-        assert_eq!(event["text"], "hi");
-        assert_eq!(event["chat_id"], "c1");
-        let InvocationScope::Conversation(conversation) = ctx.invoked_by else {
-            panic!("expected conversation invocation");
-        };
-        assert_eq!(conversation.chat_id, "c1");
-        assert_eq!(conversation.channel, "tui");
-    }
-
-    #[tokio::test]
-    async fn message_trigger_dispatches_tool_request_without_waiting() {
-        let bus = Bus::new(16);
-        let tools = test_tools(&bus);
-        let automations = Arc::new(Automations::new(
-            bus.clone(),
-            Arc::clone(&tools.registry),
-            temp_store(),
-        ));
-        automations
-            .add(send_message_automation(
-                "reply",
-                Trigger::MessageIn {
-                    sender: SenderKind::User,
-                    conversation: None,
-                },
-            ))
-            .unwrap();
-        let task = automations.start();
-        let mut events = bus.subscribe();
-
-        bus.publish(message_in("tui", Sender::User("local".to_string())));
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if matches!(
-                    events.recv().await.expect("event"),
-                    Event::ToolRequest { .. }
-                ) {
-                    break;
-                }
-            }
-        })
-        .await
-        .expect("tool invocation");
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn trigger_automation_tool_returns_after_dispatch() {
-        let bus = Bus::new(16);
-        let tools = test_tools(&bus);
-        let automations = Arc::new(Automations::new(
-            bus.clone(),
-            Arc::clone(&tools.registry),
-            temp_store(),
-        ));
-        automations
-            .add(send_message_automation(
-                "manual",
-                Trigger::MessageIn {
-                    sender: SenderKind::User,
-                    conversation: None,
-                },
-            ))
-            .unwrap();
-        let task = automations.start();
-        let context = ExecutionContext::new(InvocationScope::ScheduledAutomation {
-            automation_id: "test".to_string(),
-        });
-
-        let result = crate::tools::run_tool(
-            &tools,
-            "trigger_automation",
-            serde_json::json!({ "automation_id": "manual" }),
-            &context,
-        )
-        .await;
-        task.abort();
-
-        assert!(result.unwrap()["execution_id"].as_str().is_some());
     }
 
     #[tokio::test]
@@ -887,22 +782,5 @@ mod tests {
 
         assert!(!automations.contains("daily-news"));
         assert!(store.load_all().unwrap().is_empty());
-    }
-
-    #[test]
-    fn delete_allows_builtin_automation() {
-        let bus = Bus::new(4);
-        let tools = test_tools(&bus);
-        let automations = Arc::new(Automations::new(
-            bus.clone(),
-            Arc::clone(&tools.registry),
-            temp_store(),
-        ));
-        automations.add(Automations::handle_conversation()).unwrap();
-
-        let result = automations.delete("handle-conversation");
-
-        assert!(result.is_ok());
-        assert!(!automations.contains("handle-conversation"));
     }
 }

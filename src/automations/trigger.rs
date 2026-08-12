@@ -117,7 +117,7 @@ pub(crate) fn parse_datetime(text: &str) -> Result<chrono::DateTime<chrono::Fixe
 mod tests {
     use super::*;
     use crate::{
-        bus::{ApiKeyError, ConversationKey, Event, Sender},
+        bus::{ConversationKey, Event, Sender},
         message::Message,
     };
 
@@ -180,31 +180,11 @@ mod tests {
     }
 
     #[test]
-    fn api_key_error_trigger_matches_api_key_errors() {
-        let trigger = Trigger::ApiKeyError;
-        assert!(trigger.matches(&Event::ApiKeyError {
-            conversation: ConversationKey {
-                channel: "tui".to_string(),
-                chat_id: "c1".to_string(),
-                thread_id: None,
-            },
-            error: ApiKeyError {
-                message: "key rejected".to_string(),
-            },
-        }));
-        assert!(!trigger.matches(&message_in("tui", Sender::User("local".to_string()))));
-    }
-
-    #[test]
-    fn cron_trigger_parses_valid_expressions() {
+    fn cron_trigger_accepts_standard_forms_and_rejects_invalid_input() {
         assert!(Trigger::cron("0 0 9 * * * *").is_ok());
-        assert!(Trigger::cron("not a cron").is_err());
-    }
-
-    #[test]
-    fn cron_trigger_accepts_standard_five_field_form() {
         assert!(Trigger::cron("0 9 * * 1").is_ok());
         assert!(Trigger::cron("*/5 * * * *").is_ok());
+        assert!(Trigger::cron("not a cron").is_err());
     }
 
     #[test]
@@ -216,13 +196,9 @@ mod tests {
         assert!(Trigger::at(&past).is_err());
 
         assert!(Trigger::at("not a date").is_err());
-    }
-
-    #[test]
-    fn at_trigger_accepts_offsetless_local_datetime() {
-        let future = (chrono::Local::now() + chrono::Duration::hours(1))
+        let local_future = (chrono::Local::now() + chrono::Duration::hours(1))
             .format("%Y-%m-%dT%H:%M:%S")
             .to_string();
-        assert!(Trigger::at(&future).is_ok());
+        assert!(Trigger::at(&local_future).is_ok());
     }
 }

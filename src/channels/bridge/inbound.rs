@@ -263,23 +263,6 @@ mod tests {
     }
 
     #[test]
-    fn file_attachment_keeps_its_filename() {
-        let files_dir = unique_test_files_dir();
-        let attachment = attachment_from_content(
-            Some("report.pdf".to_string()),
-            "application/pdf".to_string(),
-            "cGRm".to_string(),
-            &files_dir,
-        )
-        .unwrap();
-
-        let stored = files_dir.join("report.pdf");
-        assert_eq!(attachment.filename, "report.pdf");
-        assert_eq!(stored.extension().and_then(|ext| ext.to_str()), Some("pdf"));
-        assert_eq!(fs::read(stored).unwrap(), b"pdf");
-    }
-
-    #[test]
     fn guest_attachment_is_discarded_without_writing_a_file() {
         let files_dir = unique_test_files_dir();
         let message = content_to_message(

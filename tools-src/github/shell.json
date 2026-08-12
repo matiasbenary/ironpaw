@@ -1,0 +1,236 @@
+{
+  "name": "github",
+  "description": "Work with GitHub repositories, issues, pull requests, branches, and commits.",
+  "install": {
+    "kind": "curl",
+    "url": "https://webi.sh/gh",
+    "run_with_sh": true
+  },
+  "skill": "SKILL.md",
+  "secrets": [
+    {
+      "name": "GITHUB_TOKEN",
+      "env": "GH_TOKEN"
+    }
+  ],
+  "allowed_hosts": [
+    "api.github.com",
+    "codeload.github.com",
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "uploads.github.com",
+    "webi.sh",
+    "webinstall.dev"
+  ],
+  "commands": [
+    {
+      "name": "gh",
+      "invocations": [
+        {
+          "args_prefix": ["version"],
+          "max_positionals": 0
+        },
+        {
+          "args_prefix": ["auth", "status"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--hostname", "takes_value": true }
+          ],
+          "max_positionals": 0
+        },
+        {
+          "args_prefix": ["issue", "list"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--repo", "takes_value": true },
+            { "name": "--state", "takes_value": true },
+            { "name": "--limit", "takes_value": true },
+            { "name": "--label", "takes_value": true, "repeatable": true },
+            { "name": "--assignee", "takes_value": true },
+            { "name": "--author", "takes_value": true },
+            { "name": "--search", "takes_value": true },
+            { "name": "--json", "takes_value": true },
+            { "name": "--jq", "takes_value": true },
+            { "name": "--template", "takes_value": true }
+          ],
+          "max_positionals": 0
+        },
+        {
+          "args_prefix": ["issue", "view"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--repo", "takes_value": true },
+            { "name": "--comments" },
+            { "name": "--json", "takes_value": true },
+            { "name": "--jq", "takes_value": true },
+            { "name": "--template", "takes_value": true }
+          ],
+          "max_positionals": 1
+        },
+        {
+          "args_prefix": ["issue", "create"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--repo", "takes_value": true },
+            { "name": "--title", "takes_value": true },
+            { "name": "--body", "takes_value": true },
+            { "name": "--body-file", "takes_value": true },
+            { "name": "--label", "takes_value": true, "repeatable": true },
+            { "name": "--assignee", "takes_value": true, "repeatable": true },
+            { "name": "--milestone", "takes_value": true },
+            { "name": "--project", "takes_value": true, "repeatable": true }
+          ],
+          "max_positionals": 0
+        },
+        {
+          "args_prefix": ["issue", "comment"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--repo", "takes_value": true },
+            { "name": "--body", "takes_value": true },
+            { "name": "--body-file", "takes_value": true },
+            { "name": "--edit-last" },
+            { "name": "--delete-last" }
+          ],
+          "min_positionals": 1,
+          "max_positionals": 1
+        },
+        {
+          "args_prefix": ["pr", "list"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--repo", "takes_value": true },
+            { "name": "--state", "takes_value": true },
+            { "name": "--limit", "takes_value": true },
+            { "name": "--base", "takes_value": true },
+            { "name": "--head", "takes_value": true },
+            { "name": "--author", "takes_value": true },
+            { "name": "--label", "takes_value": true, "repeatable": true },
+            { "name": "--search", "takes_value": true },
+            { "name": "--json", "takes_value": true },
+            { "name": "--jq", "takes_value": true },
+            { "name": "--template", "takes_value": true },
+            { "name": "--draft" }
+          ],
+          "max_positionals": 0
+        },
+        {
+          "args_prefix": ["pr", "view"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--repo", "takes_value": true },
+            { "name": "--comments" },
+            { "name": "--json", "takes_value": true },
+            { "name": "--jq", "takes_value": true },
+            { "name": "--template", "takes_value": true }
+          ],
+          "max_positionals": 1
+        },
+        {
+          "args_prefix": ["pr", "create"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--repo", "takes_value": true },
+            { "name": "--title", "takes_value": true },
+            { "name": "--body", "takes_value": true },
+            { "name": "--body-file", "takes_value": true },
+            { "name": "--base", "takes_value": true },
+            { "name": "--head", "takes_value": true },
+            { "name": "--draft" },
+            { "name": "--fill" },
+            { "name": "--fill-first" },
+            { "name": "--fill-verbose" },
+            { "name": "--reviewer", "takes_value": true, "repeatable": true },
+            { "name": "--assignee", "takes_value": true, "repeatable": true },
+            { "name": "--label", "takes_value": true, "repeatable": true },
+            { "name": "--milestone", "takes_value": true },
+            { "name": "--project", "takes_value": true, "repeatable": true }
+          ],
+          "max_positionals": 0
+        },
+        {
+          "args_prefix": ["pr", "comment"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--repo", "takes_value": true },
+            { "name": "--body", "takes_value": true },
+            { "name": "--body-file", "takes_value": true },
+            { "name": "--edit-last" },
+            { "name": "--delete-last" }
+          ],
+          "max_positionals": 1
+        },
+        {
+          "args_prefix": ["pr", "checkout"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--repo", "takes_value": true },
+            { "name": "--branch", "takes_value": true },
+            { "name": "--detach" },
+            { "name": "--force" },
+            { "name": "--recurse-submodules" }
+          ],
+          "min_positionals": 1,
+          "max_positionals": 1
+        },
+        {
+          "args_prefix": ["repo", "clone"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--upstream-remote-name", "takes_value": true }
+          ],
+          "min_positionals": 1,
+          "max_positionals": 2
+        },
+        {
+          "args_prefix": ["repo", "view"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--branch", "takes_value": true },
+            { "name": "--json", "takes_value": true },
+            { "name": "--jq", "takes_value": true },
+            { "name": "--template", "takes_value": true }
+          ],
+          "max_positionals": 1
+        }
+      ]
+    },
+    {
+      "name": "git",
+      "git_credential_helper": {
+        "command": "gh",
+        "args": ["auth", "git-credential"]
+      },
+      "invocations": [
+        {
+          "args_prefix": ["clone"],
+          "secrets": ["GITHUB_TOKEN"],
+          "options": [
+            { "name": "--branch", "takes_value": true },
+            { "name": "--depth", "takes_value": true },
+            { "name": "--single-branch" },
+            { "name": "--recurse-submodules" }
+          ],
+          "min_positionals": 1,
+          "max_positionals": 2
+        },
+        { "args_prefix": ["status"], "options": [{ "name": "--short" }, { "name": "--branch" }], "max_positionals": 0 },
+        { "args_prefix": ["switch"], "options": [{ "name": "-c", "takes_value": true }, { "name": "-C", "takes_value": true }, { "name": "--detach" }, { "name": "--discard-changes" }], "max_positionals": 1 },
+        { "args_prefix": ["checkout"], "options": [{ "name": "-b", "takes_value": true }, { "name": "-B", "takes_value": true }, { "name": "--detach" }, { "name": "--force" }], "max_positionals": 1 },
+        { "args_prefix": ["branch"], "options": [{ "name": "-d" }, { "name": "-D" }, { "name": "--list" }, { "name": "--show-current" }], "max_positionals": 1 },
+        { "args_prefix": ["add"], "options": [{ "name": "--all" }, { "name": "--update" }, { "name": "--patch" }], "min_positionals": 0 },
+        { "args_prefix": ["commit"], "options": [{ "name": "-m", "takes_value": true }, { "name": "--message", "takes_value": true }, { "name": "--amend" }, { "name": "--no-edit" }, { "name": "--allow-empty" }], "max_positionals": 0 },
+        { "args_prefix": ["diff"], "options": [{ "name": "--staged" }, { "name": "--stat" }, { "name": "--name-only" }, { "name": "--check" }] },
+        { "args_prefix": ["log"], "options": [{ "name": "-n", "takes_value": true }, { "name": "--oneline" }, { "name": "--all" }, { "name": "--graph" }, { "name": "--decorate" }], "max_positionals": 1 },
+        { "args_prefix": ["push"], "secrets": ["GITHUB_TOKEN"], "options": [{ "name": "-u" }, { "name": "--set-upstream" }, { "name": "--force-with-lease" }, { "name": "--tags" }], "max_positionals": 2 },
+        { "args_prefix": ["pull"], "secrets": ["GITHUB_TOKEN"], "options": [{ "name": "--rebase" }, { "name": "--ff-only" }], "max_positionals": 2 },
+        { "args_prefix": ["fetch"], "secrets": ["GITHUB_TOKEN"], "options": [{ "name": "--all" }, { "name": "--prune" }, { "name": "--tags" }], "max_positionals": 2 },
+        { "args_prefix": ["remote"], "options": [{ "name": "-v" }], "max_positionals": 0 },
+        { "args_prefix": ["remote", "add"], "min_positionals": 2, "max_positionals": 2 },
+        { "args_prefix": ["config", "user.name"], "min_positionals": 1, "max_positionals": 1 },
+        { "args_prefix": ["config", "user.email"], "min_positionals": 1, "max_positionals": 1 }
+      ]
+    }
+  ]
+}

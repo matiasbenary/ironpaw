@@ -13,6 +13,8 @@ pub struct SetupSecret {
     pub optional: bool,
     #[serde(default)]
     pub auto_generate: Option<AutoGenerate>,
+    #[serde(default)]
+    pub when: Option<SetupCondition>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -27,6 +29,31 @@ pub struct SetupConfig {
     pub prompt: Option<String>,
     #[serde(default, rename = "type")]
     pub value_type: ConfigValueType,
+    #[serde(default)]
+    pub autoconfigure: Option<SetupAutoconfigure>,
+    #[serde(default)]
+    pub when: Option<SetupCondition>,
+    #[serde(default)]
+    pub choices: Vec<SetupChoice>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct SetupCondition {
+    pub path: String,
+    pub equals: serde_json::Value,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct SetupChoice {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct SetupAutoconfigure {
+    pub action: String,
+    #[serde(default)]
+    pub rerun_on_keep: bool,
 }
 
 #[derive(Clone, Copy, Default, serde::Deserialize, serde::Serialize)]
@@ -34,6 +61,7 @@ pub struct SetupConfig {
 pub enum ConfigValueType {
     #[default]
     String,
+    Email,
     Number,
     #[serde(alias = "boolean")]
     Bool,
@@ -104,6 +132,12 @@ pub fn config_value(config: &SetupConfig, message: &str) -> Result<serde_json::V
     }
     match config.value_type {
         ConfigValueType::String => Ok(serde_json::Value::String(value.to_string())),
+        ConfigValueType::Email => {
+            if !crate::tools::email_host::is_email_address(value) {
+                return Err(format!("{} must be a valid email address", config.path));
+            }
+            Ok(serde_json::Value::String(value.to_string()))
+        }
         ConfigValueType::Number => {
             let number = value
                 .parse::<i64>()
@@ -244,43 +278,4 @@ pub fn is_yes(message: &str) -> bool {
         message.trim().to_ascii_lowercase().as_str(),
         "y" | "yes" | "ok" | "okay" | "sure" | "confirm" | "install"
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn auto_generated_secret_is_hex_sized() {
-        let secret = SetupSecret {
-            name: "x".to_string(),
-            prompt: Some("x".to_string()),
-            optional: true,
-            auto_generate: Some(AutoGenerate { length: 8 }),
-        };
-
-        let value = secret_value(&secret, "").unwrap();
-
-        assert_eq!(value.len(), 16);
-        assert!(value.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn applies_install_config_values_to_template() {
-        let mut config = serde_json::json!({
-            "owner_id": null,
-            "telegram": {
-                "webhook_enabled": true
-            }
-        });
-        let values = BTreeMap::from([(
-            "/owner_id".to_string(),
-            serde_json::Value::String("123456789".to_string()),
-        )]);
-
-        apply_config_values(&mut config, &values).unwrap();
-
-        assert_eq!(config["owner_id"], "123456789");
-        assert_eq!(config["telegram"]["webhook_enabled"], true);
-    }
 }

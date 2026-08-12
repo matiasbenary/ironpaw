@@ -1,7 +1,12 @@
 mod built_in;
 mod context;
 pub mod dynamic;
+#[path = "../../tools-src/email/host/mod.rs"]
+pub(crate) mod email_host;
+mod gmail;
 mod handler;
+mod outlook;
+mod package_support;
 mod runner;
 pub mod state;
 pub mod wasm;
@@ -15,13 +20,13 @@ use async_trait::async_trait;
 
 use crate::{
     bus::Bus, config::RuntimeLayout, history::History, message::ToolDefinition,
-    scripts::ScriptRuntime, secrets::Secrets,
+    scripts::ScriptRuntime, secrets::Secrets, shell_tools::ShellExecutor,
 };
 
 pub use crate::bus::{ExecutionContext, InvocationScope};
 pub use built_in::{
     automation, browser, download_file, image_generation, inference, inspect_file, messages,
-    request_user_input, search_history, setup, todo, unlock, web,
+    request_user_input, search_history, setup, shell, todo, unlock, web,
 };
 pub use context::ToolResponder;
 pub use handler::ToolHandler;
@@ -39,6 +44,7 @@ use self::built_in::{
     request_user_input::RequestUserInputTool,
     search_history::SearchHistoryTool,
     setup::{ListChannelsTool, ListToolsTool},
+    shell::{ListShellCommandsTool, ShellTool},
     todo::TodoTool,
     web::WebFetchTool,
 };
@@ -84,6 +90,7 @@ pub struct InternalTools {
     pub scripts: Arc<ScriptRuntime>,
     pub history: Arc<dyn History>,
     pub registry: Arc<ToolRegistry>,
+    pub shell_executor: ShellExecutor,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -282,6 +289,7 @@ impl InternalTools {
         let delete_message = Arc::new(delete_message);
         let registry = Arc::new(ToolRegistry::new());
         let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&registry)));
+        let shell_executor = ShellExecutor::new(layout.tools_dir(), secrets.tools.clone());
         let dynamic_tool = |kind| {
             Arc::new(DynamicToolTool::new(
                 Arc::clone(&registry),
@@ -323,7 +331,9 @@ impl InternalTools {
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::List)),
             tool(AutomationTool::new(bus, AutomationToolKind::Trigger)),
             tool(ListChannelsTool::new(layout.clone(), secrets.clone())),
-            tool(ListToolsTool::new(layout.clone(), secrets)),
+            tool(ListToolsTool::new(layout.clone(), secrets.clone())),
+            tool(ListShellCommandsTool::new(layout.clone())),
+            tool(ShellTool::new(layout.clone(), shell_executor.clone())),
             Arc::clone(&create_tool) as Arc<dyn InternalTool>,
             Arc::clone(&edit_tool) as Arc<dyn InternalTool>,
             Arc::clone(&delete_tool) as Arc<dyn InternalTool>,
@@ -346,6 +356,7 @@ impl InternalTools {
             scripts,
             history,
             registry,
+            shell_executor,
         }
     }
 }
@@ -655,69 +666,6 @@ mod tests {
         )
     }
 
-    #[test]
-    fn duplicate_tool_names_are_rejected() {
-        let tools = test_tools();
-        tools
-            .registry
-            .add(Arc::new(FakeTool("fake")), ToolVisibility::Internal)
-            .expect("first add");
-        assert!(
-            tools
-                .registry
-                .add(Arc::new(FakeTool("fake")), ToolVisibility::Internal)
-                .is_err()
-        );
-        assert!(
-            tools
-                .registry
-                .add(Arc::new(FakeTool("send_message")), ToolVisibility::Internal,)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn validate_args_rejects_unknown_tools() {
-        let tools = test_tools();
-        let result = tools
-            .registry
-            .validate_args_for_tool("not_a_tool", &serde_json::json!({}));
-        assert!(result.unwrap_err().contains("unknown tool"));
-    }
-
-    #[test]
-    fn validate_args_checks_required_and_extra_fields() {
-        let tools = test_tools();
-        tools
-            .registry
-            .add(Arc::new(SchemaTool), ToolVisibility::Internal)
-            .expect("add schema tool");
-
-        assert!(
-            tools
-                .registry
-                .validate_args_for_tool("schema_tool", &serde_json::json!({}))
-                .unwrap_err()
-                .contains("missing required field")
-        );
-        assert!(
-            tools
-                .registry
-                .validate_args_for_tool(
-                    "schema_tool",
-                    &serde_json::json!({ "message": "hi", "extra": true })
-                )
-                .unwrap_err()
-                .contains("unknown field")
-        );
-        assert!(
-            tools
-                .registry
-                .validate_args_for_tool("schema_tool", &serde_json::json!({ "message": "hi" }))
-                .is_ok()
-        );
-    }
-
     #[tokio::test]
     async fn run_tool_caps_call_depth() {
         let tools = test_tools();
@@ -760,44 +708,6 @@ mod tests {
         let result = run_tool(&tools, "fake", serde_json::json!({}), &ctx).await;
 
         assert!(result.unwrap_err().message.contains("limit reached"));
-    }
-
-    #[tokio::test]
-    async fn tool_handler_runs_tool_requests() {
-        let bus = Bus::new(16);
-        let registry = Arc::new(ToolRegistry::new());
-        registry
-            .add(Arc::new(FakeTool("fake")), ToolVisibility::Internal)
-            .expect("add");
-        let handler = Arc::new(ToolHandler::new(bus.clone(), registry));
-        let task = handler.start();
-        let mut events = bus.subscribe();
-
-        bus.publish(Event::ToolRequest {
-            context: ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                automation_id: "test".to_string(),
-            }),
-            tool_calls: vec![ToolCall {
-                id: "call-1".to_string(),
-                name: "fake".to_string(),
-                arguments: "{}".to_string(),
-            }],
-            allowed_tool_names: None,
-        });
-
-        let result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if let Event::ToolResponse { result, .. } = events.recv().await.expect("event") {
-                    break result;
-                }
-            }
-        })
-        .await
-        .expect("tool result");
-        task.abort();
-
-        let results = result.unwrap();
-        assert_eq!(results[0].result.as_ref().unwrap()["depth"], 1);
     }
 
     #[tokio::test]

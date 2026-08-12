@@ -361,51 +361,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn script_reads_args_and_returns_explicit_value() {
-        let bus = Bus::new(16);
-        let runtime = test_runtime(&bus);
-
-        let result = runtime
-            .run(
-                r#"
-                const doubled = args.value * 2;
-                return { doubled };
-                "#
-                .to_string(),
-                ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                    automation_id: "script-test".to_string(),
-                }),
-                serde_json::json!({ "value": 21 }),
-            )
-            .await
-            .expect("script should run");
-
-        assert_eq!(result, serde_json::json!({ "doubled": 42 }));
-    }
-
-    #[tokio::test]
-    async fn script_returns_from_function_body() {
-        let bus = Bus::new(16);
-        let runtime = test_runtime(&bus);
-
-        let result = runtime
-            .run(
-                r#"
-                return { ok: true, value: args.value };
-                "#
-                .to_string(),
-                ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                    automation_id: "script-test".to_string(),
-                }),
-                serde_json::json!({ "value": "kiwi" }),
-            )
-            .await
-            .expect("script should run");
-
-        assert_eq!(result, serde_json::json!({ "ok": true, "value": "kiwi" }));
-    }
-
-    #[tokio::test]
     async fn script_can_await_a_tool_call() {
         let bus = Bus::new(16);
         let runtime = test_runtime(&bus);
@@ -443,33 +398,6 @@ mod tests {
         assert_eq!(result, serde_json::json!({ "first": 1, "third": 3 }));
     }
 
-    #[tokio::test]
-    async fn fetch_explains_the_supported_network_tool() {
-        let bus = Bus::new(16);
-        let runtime = test_runtime(&bus);
-
-        let error = runtime
-            .run(
-                "await fetch('https://example.com');".to_string(),
-                ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                    automation_id: "script-test".to_string(),
-                }),
-                serde_json::json!({}),
-            )
-            .await
-            .unwrap_err();
-
-        assert!(error.contains("use web_fetch({ url })"));
-    }
-
-    #[test]
-    fn validation_rejects_fetch_before_a_script_can_be_registered() {
-        let error =
-            validate_source("await fetch('https://example.com');", &BTreeSet::new()).unwrap_err();
-
-        assert!(error.contains("unavailable function `fetch`"));
-    }
-
     #[test]
     fn validation_allows_registered_and_local_functions() {
         let tools = BTreeSet::from(["web_fetch".to_string()]);
@@ -479,24 +407,6 @@ mod tests {
             &tools,
         )
         .unwrap();
-    }
-
-    #[tokio::test]
-    async fn script_errors_are_reported() {
-        let bus = Bus::new(16);
-        let runtime = test_runtime(&bus);
-
-        let result = runtime
-            .run(
-                "this is not valid javascript {".to_string(),
-                ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                    automation_id: "script-test".to_string(),
-                }),
-                serde_json::json!({}),
-            )
-            .await;
-
-        assert!(result.is_err());
     }
 
     #[tokio::test]

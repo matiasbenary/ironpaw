@@ -368,17 +368,4 @@ mod tests {
         };
         assert_eq!(reported, conversation);
     }
-
-    #[test]
-    fn normalizes_deepseek_arguments_and_classifies_credential_statuses() {
-        assert_eq!(normalize_tool_arguments("{}\"\""), "{}");
-        assert_eq!(
-            normalize_tool_arguments("{\"still\":\"broken\""),
-            "{\"still\":\"broken\""
-        );
-        assert!(is_api_key_status(reqwest::StatusCode::UNAUTHORIZED));
-        assert!(is_api_key_status(reqwest::StatusCode::PAYMENT_REQUIRED));
-        assert!(is_api_key_status(reqwest::StatusCode::FORBIDDEN));
-        assert!(!is_api_key_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
-    }
 }

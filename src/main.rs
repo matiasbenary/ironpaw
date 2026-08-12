@@ -26,6 +26,19 @@ use ironpaw::{
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    let mut arguments = std::env::args_os();
+    let _program = arguments.next();
+    if arguments.next().as_deref()
+        == Some(std::ffi::OsStr::new(
+            ironpaw::shell_tools::proxy_bridge::ARGUMENT,
+        ))
+    {
+        let status = ironpaw::shell_tools::proxy_bridge::run(arguments.collect())
+            .await
+            .map_err(io::Error::other)?;
+        std::process::exit(status);
+    }
+
     let layout = RuntimeLayout::discover();
     let _ = dotenvy::from_path(layout.root().join(".env"));
     let token = uuid::Uuid::new_v4().to_string();
@@ -47,11 +60,6 @@ async fn main() -> io::Result<()> {
         .await
         .map_err(std::io::Error::other)?,
     );
-    channel_runtime
-        .load_only_channels(&["local-client".to_string()])
-        .await
-        .map_err(std::io::Error::other)?;
-
     let provider = Arc::new(ironpaw::config::ProviderConfig::from_env());
     let inference =
         Inference::with_config(bus.clone(), secrets.tools.clone(), Arc::clone(&provider))

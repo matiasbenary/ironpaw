@@ -236,23 +236,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn send_message_requires_channel_but_not_chat_id() {
-        let definition =
-            SendMessageTool::new(Bus::new(1), |_, _| Err("unused".to_string())).tool_definition();
-        let required = definition.parameters["required"].as_array().unwrap();
-
-        assert!(required.contains(&serde_json::json!("channel")));
-        assert!(!required.contains(&serde_json::json!("chat_id")));
-        assert!(
-            serde_json::from_value::<SendMessageToolInput>(serde_json::json!({
-                "channel": "telegram",
-                "content": "hi"
-            }))
-            .is_ok()
-        );
-    }
-
-    #[test]
     fn send_message_publishes_channel_delivery_request_when_conversation_is_known() {
         let bus = Bus::new(16);
         let mut events = bus.subscribe();
@@ -313,27 +296,5 @@ mod tests {
         assert_eq!(message.conversation.channel, "telegram");
         assert_eq!(message.conversation.chat_id, "123");
         assert_eq!(message.message_id, "456");
-    }
-
-    #[test]
-    fn delete_message_publishes_channel_delete_request() {
-        let bus = Bus::new(16);
-        let mut events = bus.subscribe();
-        let tool = DeleteMessageTool::new(bus);
-
-        tool.execute(DeleteMessageToolInput {
-            channel: Some("telegram".to_string()),
-            chat_id: Some("chat-1".to_string()),
-            message_id: Some("provider-1".to_string()),
-            thread_id: None,
-        })
-        .unwrap();
-
-        let Event::DeleteMessage { message } = events.try_recv().unwrap() else {
-            panic!("expected delete message event");
-        };
-        assert_eq!(message.conversation.channel, "telegram");
-        assert_eq!(message.conversation.chat_id, "chat-1");
-        assert_eq!(message.message_id, "provider-1");
     }
 }

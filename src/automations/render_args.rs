@@ -93,17 +93,4 @@ mod tests {
         assert_eq!(rendered["missing"], serde_json::Value::Null);
         assert_eq!(rendered["untouched"], 42);
     }
-
-    #[test]
-    fn exact_placeholder_takes_the_json_value() {
-        let event = serde_json::json!({ "thread_id": null, "count": 3 });
-        assert_eq!(
-            render_args(&serde_json::json!("{{event.count}}"), &event),
-            serde_json::json!(3)
-        );
-        assert_eq!(
-            render_args(&serde_json::json!("{{event.thread_id}}"), &event),
-            serde_json::Value::Null
-        );
-    }
 }

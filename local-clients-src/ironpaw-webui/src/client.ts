@@ -16,6 +16,17 @@ const CLIENT_ID_KEY = 'ironpaw-client-id';
 const ADDR_KEY = 'ironpaw-address';
 const TOKEN_KEY = 'ironpaw-token';
 
+export class AuthenticationError extends Error {}
+
+async function requireSuccessful(response: Response, fallback: string): Promise<void> {
+  if (response.ok) return;
+  const message = (await response.text()) || fallback;
+  if (response.status === 401 || response.status === 403) {
+    throw new AuthenticationError(message);
+  }
+  throw new Error(message);
+}
+
 export function defaultAddress(): string {
   const query = new URLSearchParams(location.search);
   return query.get('ironpaw')
@@ -69,7 +80,7 @@ export async function verifyClient(config: ClientConfig): Promise<void> {
   } catch {
     throw new Error('Could not reach Ironpaw. Make sure it is running and restart it after backend changes.');
   }
-  if (!response.ok) throw new Error((await response.text()) || 'Could not connect to Ironpaw');
+  await requireSuccessful(response, 'Could not connect to Ironpaw');
 }
 
 export async function sendMessage(
@@ -88,13 +99,24 @@ export async function sendMessage(
       body: JSON.stringify({ client_id: config.clientId, ...message }),
     },
   );
-  if (!response.ok) throw new Error((await response.text()) || 'Could not send message');
+  await requireSuccessful(response, 'Could not send message');
+}
+
+export async function emailOauthComplete(config: ClientConfig, state: string): Promise<boolean> {
+  const url = new URL(`${config.baseUrl}/oauth/status`);
+  url.searchParams.set('state', state);
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${config.token}` },
+  });
+  await requireSuccessful(response, 'Could not check Gmail authorization');
+  return Boolean((await response.json() as { complete?: boolean }).complete);
 }
 
 export async function subscribe(
   config: ClientConfig,
   onEvent: (event: CallbackEvent) => Promise<void>,
   onStatus: (connected: boolean) => void,
+  onAuthenticationRequired: () => void,
   signal?: AbortSignal,
 ): Promise<void> {
   while (!signal?.aborted) {
@@ -105,9 +127,8 @@ export async function subscribe(
         headers: { Authorization: `Bearer ${config.token}` },
         signal,
       });
-      if (!response.ok || !response.body) {
-        throw new Error((await response.text()) || `Event stream returned ${response.status}`);
-      }
+      await requireSuccessful(response, `Event stream returned ${response.status}`);
+      if (!response.body) throw new Error('Event stream did not return a body');
       onStatus(true);
       const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
       let buffer = '';
@@ -122,8 +143,12 @@ export async function subscribe(
           if (data) await onEvent(JSON.parse(data) as CallbackEvent);
         }
       }
-    } catch {
+    } catch (error) {
       if (signal?.aborted) return;
+      if (error instanceof AuthenticationError) {
+        onAuthenticationRequired();
+        return;
+      }
       onStatus(false);
     }
     await new Promise((resolve) => window.setTimeout(resolve, 1000));

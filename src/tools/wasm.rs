@@ -127,6 +127,8 @@ pub struct WasmToolConfig {
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct EmailCapabilityConfig {
+    #[serde(default = "default_email_provider")]
+    pub provider: String,
     #[serde(default)]
     pub imap: Option<EmailServerConfig>,
     #[serde(default)]
@@ -135,6 +137,18 @@ pub struct EmailCapabilityConfig {
     pub password_secret: String,
     #[serde(default)]
     pub from: Option<String>,
+    #[serde(default)]
+    pub oauth: Option<EmailOauthConfig>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct EmailOauthConfig {
+    pub access: String,
+    pub refresh_token_secret: String,
+}
+
+fn default_email_provider() -> String {
+    "imap".to_string()
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -343,6 +357,10 @@ impl ironpaw::tool::tool_host::Host for StoreData {
         self.email.read(&folder, &uid)
     }
 
+    fn email_modify(&mut self, uid: String, operation: String) -> Result<String, String> {
+        self.email.modify(&uid, &operation)
+    }
+
     fn email_send(&mut self, message_json: String) -> Result<String, String> {
         self.email.send(&message_json)
     }
@@ -374,6 +392,12 @@ impl EmailHost {
 
     fn list(&self, folder: &str, limit: u32) -> Result<String, String> {
         let config = self.config()?;
+        if config.provider == "gmail" {
+            return self.gmail(config)?.list(folder, limit);
+        }
+        if config.provider == "outlook" {
+            return self.outlook(config)?.list(folder, limit);
+        }
         let imap = config
             .imap
             .as_ref()
@@ -421,6 +445,12 @@ impl EmailHost {
 
     fn read(&self, folder: &str, uid: &str) -> Result<String, String> {
         let config = self.config()?;
+        if config.provider == "gmail" {
+            return self.gmail(config)?.read(folder, uid);
+        }
+        if config.provider == "outlook" {
+            return self.outlook(config)?.read(folder, uid);
+        }
         let imap = config
             .imap
             .as_ref()
@@ -452,6 +482,12 @@ impl EmailHost {
 
     fn send(&self, message_json: &str) -> Result<String, String> {
         let config = self.config()?;
+        if config.provider == "gmail" {
+            return self.gmail(config)?.send(message_json);
+        }
+        if config.provider == "outlook" {
+            return self.outlook(config)?.send(message_json);
+        }
         let smtp = config
             .smtp
             .as_ref()
@@ -513,6 +549,17 @@ impl EmailHost {
         .map_err(|err| err.to_string())
     }
 
+    fn modify(&self, uid: &str, operation: &str) -> Result<String, String> {
+        let config = self.config()?;
+        if config.provider == "gmail" {
+            return self.gmail(config)?.modify(uid, operation);
+        }
+        if config.provider == "outlook" {
+            return self.outlook(config)?.modify(uid, operation);
+        }
+        Err("mailbox modifications are unavailable for IMAP email".to_string())
+    }
+
     fn imap_session(
         &self,
         config: &EmailCapabilityConfig,
@@ -536,6 +583,38 @@ impl EmailHost {
         self.secrets
             .get(&config.password_secret)
             .ok_or_else(|| format!("missing email secret: {}", config.password_secret))
+    }
+
+    fn gmail<'a>(
+        &'a self,
+        config: &'a EmailCapabilityConfig,
+    ) -> Result<crate::tools::gmail::GmailClient<'a>, String> {
+        let oauth = config
+            .oauth
+            .as_ref()
+            .ok_or_else(|| "email OAuth capability is not configured".to_string())?;
+        Ok(crate::tools::gmail::GmailClient::new(
+            &self.secrets,
+            &oauth.refresh_token_secret,
+            &config.username,
+            config.from.as_deref(),
+            &oauth.access,
+        ))
+    }
+
+    fn outlook<'a>(
+        &'a self,
+        config: &'a EmailCapabilityConfig,
+    ) -> Result<crate::tools::outlook::OutlookClient<'a>, String> {
+        let oauth = config
+            .oauth
+            .as_ref()
+            .ok_or_else(|| "email OAuth capability is not configured".to_string())?;
+        Ok(crate::tools::outlook::OutlookClient::new(
+            &self.secrets,
+            &oauth.refresh_token_secret,
+            &oauth.access,
+        ))
     }
 
     fn config(&self) -> Result<&EmailCapabilityConfig, String> {

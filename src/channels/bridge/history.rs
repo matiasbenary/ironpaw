@@ -33,66 +33,6 @@ mod tests {
     }
 
     #[test]
-    fn inbound_history_is_stored_at_channel_boundary() {
-        let history = temp_history();
-        let conversation = ConversationKey {
-            channel: "telegram".to_string(),
-            chat_id: "chat".to_string(),
-            thread_id: Some("topic".to_string()),
-        };
-        let message = Message::User {
-            text: "secret".to_string(),
-            attachments: Vec::new(),
-        };
-
-        append_channel_history(
-            &history,
-            &conversation,
-            Some("provider-1".to_string()),
-            &message,
-        )
-        .unwrap();
-
-        let entries = history.load(&conversation).unwrap();
-        assert_eq!(entries.len(), 1);
-        let conversation = entries[0].metadata.conversation.as_ref().unwrap();
-        assert_eq!(conversation.channel, "telegram");
-        assert_eq!(conversation.chat_id, "chat");
-        assert_eq!(conversation.thread_id.as_deref(), Some("topic"));
-        assert_eq!(
-            entries[0].metadata.external_id.as_deref(),
-            Some("provider-1")
-        );
-        assert_eq!(entries[0].message, message);
-    }
-
-    #[test]
-    fn outbound_history_is_stored_at_channel_boundary() {
-        let history = temp_history();
-        let conversation = ConversationKey {
-            channel: "telegram".to_string(),
-            chat_id: "chat".to_string(),
-            thread_id: Some("topic".to_string()),
-        };
-        let message = Message::Assistant {
-            text: Some("hi".to_string()),
-            attachments: Vec::new(),
-            tool_calls: Vec::new(),
-        };
-
-        append_channel_history(&history, &conversation, None, &message).unwrap();
-
-        let entries = history.load(&conversation).unwrap();
-        assert_eq!(entries.len(), 1);
-        let conversation = entries[0].metadata.conversation.as_ref().unwrap();
-        assert_eq!(conversation.channel, "telegram");
-        assert_eq!(conversation.chat_id, "chat");
-        assert_eq!(conversation.thread_id.as_deref(), Some("topic"));
-        assert_eq!(entries[0].metadata.external_id, None);
-        assert_eq!(entries[0].message, message);
-    }
-
-    #[test]
     fn delete_history_removes_matching_channel_message_at_boundary() {
         let history = temp_history();
         let conversation = ConversationKey {

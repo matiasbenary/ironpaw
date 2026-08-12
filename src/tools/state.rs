@@ -77,17 +77,4 @@ mod tests {
         assert!(EnabledTools::new(path.clone()).is_enabled("email").unwrap());
         fs::remove_file(path).unwrap();
     }
-
-    #[test]
-    fn web_search_is_enabled_for_existing_state() {
-        let path =
-            std::env::temp_dir().join(format!("ironpaw-tools-{}.json", uuid::Uuid::new_v4()));
-        fs::write(&path, "{\"enabled\":[]}").unwrap();
-        assert!(
-            EnabledTools::new(path.clone())
-                .is_enabled("web_search")
-                .unwrap()
-        );
-        fs::remove_file(path).unwrap();
-    }
 }

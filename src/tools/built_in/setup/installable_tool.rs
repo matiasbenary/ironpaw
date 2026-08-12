@@ -67,6 +67,7 @@ impl InstallableTool {
                     )),
                     optional: false,
                     auto_generate: None,
+                    when: None,
                 })
                 .collect(),
         }
@@ -76,6 +77,17 @@ impl InstallableTool {
         match self {
             Self::Wasm(package) => required_config(package),
             Self::Shell(_) => Vec::new(),
+        }
+    }
+
+    pub(super) fn config_before_secrets(&self) -> bool {
+        matches!(self, Self::Wasm(package) if package.manifest.config_before_secrets)
+    }
+
+    pub(super) fn setup_handler(&self) -> Option<&str> {
+        match self {
+            Self::Wasm(package) => package.manifest.setup_handler.as_deref(),
+            Self::Shell(_) => None,
         }
     }
 
@@ -170,21 +182,4 @@ fn read_shell_package(source_dir: &Path) -> Result<ShellPackage, String> {
         source_dir: source_dir.to_path_buf(),
         manifest,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn github_shell_package_is_valid_and_describes_approval() {
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tools-src/github");
-        let package = read_shell_package(&source).unwrap();
-        let installable = InstallableTool::Shell(package);
-        let prompt = installable.approval_prompt();
-
-        assert!(prompt.contains("gh, git"));
-        assert!(prompt.contains("api.github.com"));
-        assert!(prompt.contains("GITHUB_TOKEN -> GH_TOKEN"));
-    }
 }

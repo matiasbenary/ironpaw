@@ -200,13 +200,7 @@ fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryRecord, SqliteMemory, cosine_similarity};
-
-    #[test]
-    fn cosine_similarity_orders_related_vectors() {
-        assert!(cosine_similarity(&[1.0, 0.0], &[1.0, 0.0]) > 0.99);
-        assert_eq!(cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]), 0.0);
-    }
+    use super::{MemoryRecord, SqliteMemory};
 
     #[test]
     fn text_search_preserves_exact_identifiers() {

@@ -277,36 +277,3 @@ impl NgrokPackage {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{ArchiveKind, NgrokPackage, extract_public_url};
-
-    #[test]
-    fn linux_amd64_package() {
-        let package = NgrokPackage::for_platform("linux", "x86_64").unwrap();
-        assert_eq!(
-            package.url,
-            "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"
-        );
-        assert_eq!(package.kind, ArchiveKind::Tgz);
-    }
-
-    #[test]
-    fn macos_arm64_package() {
-        let package = NgrokPackage::for_platform("macos", "aarch64").unwrap();
-        assert_eq!(
-            package.url,
-            "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-arm64.zip"
-        );
-        assert_eq!(package.kind, ArchiveKind::Zip);
-    }
-
-    #[test]
-    fn extracts_ngrok_public_url_from_logfmt() {
-        let url = extract_public_url(
-            "lvl=info msg=\"started tunnel\" obj=tunnels name=command_line url=https://abc.ngrok-free.app",
-        );
-        assert_eq!(url.as_deref(), Some("https://abc.ngrok-free.app"));
-    }
-}

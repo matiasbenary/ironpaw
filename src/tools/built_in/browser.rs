@@ -19,10 +19,8 @@ use crate::{
 };
 
 mod install;
-mod proxy;
-
+use crate::network_proxy::ConnectProxy;
 use install::ensure_chrome;
-use proxy::BrowserProxy;
 
 pub const UPDATE_AUTOMATION_NAME: &str = "browser-update";
 
@@ -81,7 +79,7 @@ struct BrowserOption {
 
 struct Session {
     _browser: Browser,
-    _proxy: BrowserProxy,
+    _proxy: ConnectProxy,
     page: Page,
     handler: tokio::task::JoinHandle<()>,
     log_path: PathBuf,
@@ -195,12 +193,12 @@ impl BrowserUpdateTool {
 
 async fn launch_session(layout: &RuntimeLayout, profile: PathBuf) -> Result<Session, String> {
     let chrome = ensure_chrome(layout.clone()).await?;
-    let proxy = BrowserProxy::start().await?;
+    let proxy = ConnectProxy::public_tcp().await?;
     let log_path = profile.join("chrome.log");
     let config = BrowserConfig::builder()
         .chrome_executable(chrome)
         .user_data_dir(profile)
-        .arg(format!("--proxy-server=http://{}", proxy.address()))
+        .arg(format!("--proxy-server=http://{}", proxy.tcp_address()))
         .arg("--proxy-bypass-list=<-loopback>")
         .arg("--disable-quic")
         .arg("--dns-prefetch-disable")

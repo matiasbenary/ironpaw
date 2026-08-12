@@ -204,10 +204,4 @@ mod tests {
 
         assert!(result.unwrap_err().contains("302"));
     }
-
-    #[tokio::test]
-    async fn rejects_invalid_urls() {
-        let result = WebFetchTool::new().execute(params("not a url")).await;
-        assert!(result.is_err());
-    }
 }

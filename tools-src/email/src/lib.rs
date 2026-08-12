@@ -14,7 +14,7 @@ impl Guest for EmailTool {
     }
 
     fn description() -> String {
-        "Read and send email through configured IMAP and SMTP servers. Supports listing recent messages, reading one message by UID, and sending plain-text email.".to_string()
+        "Read Gmail through OAuth or use configured IMAP and SMTP servers. Supports listing recent messages, reading one message, and sending when control access is enabled.".to_string()
     }
 
     fn parameters() -> String {
@@ -46,6 +46,13 @@ enum EmailParams {
         /// Stable IMAP UID returned by list.
         uid: String,
     },
+    /// Change a Gmail message. Requires Take control access.
+    Modify {
+        /// Gmail message ID returned by list.
+        uid: String,
+        /// One of mark_read, mark_unread, archive, or trash.
+        operation: EmailOperation,
+    },
     /// Send a plain-text email through the configured SMTP server.
     Send {
         /// Recipient email addresses.
@@ -61,6 +68,26 @@ enum EmailParams {
         /// Optional From address. Defaults to installed config.
         from: Option<String>,
     },
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum EmailOperation {
+    MarkRead,
+    MarkUnread,
+    Archive,
+    Trash,
+}
+
+impl EmailOperation {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::MarkRead => "mark_read",
+            Self::MarkUnread => "mark_unread",
+            Self::Archive => "archive",
+            Self::Trash => "trash",
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -93,6 +120,13 @@ fn execute_inner(args_json: &str) -> Result<String, String> {
             let folder = folder_or_inbox(folder);
             ironpaw::tool::tool_host::email_read(&folder, &uid)
                 .map_err(|err| format!("email read failed: {err}"))
+        }
+        EmailParams::Modify { uid, operation } => {
+            if uid.trim().is_empty() {
+                return Err("'uid' must not be empty".to_string());
+            }
+            ironpaw::tool::tool_host::email_modify(&uid, operation.as_str())
+                .map_err(|err| format!("email modification failed: {err}"))
         }
         EmailParams::Send {
             to,

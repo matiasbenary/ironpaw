@@ -42,6 +42,10 @@ pub(super) struct ToolInstallManifest {
     pub(super) config: Vec<SetupConfig>,
     #[serde(default)]
     pub(super) setup_url: Option<String>,
+    #[serde(default)]
+    pub(super) config_before_secrets: bool,
+    #[serde(default)]
+    pub(super) setup_handler: Option<String>,
 }
 
 pub fn install_packaged_tool(
@@ -190,7 +194,6 @@ fn shell_inventory_row(
         "enabled": enabled,
         "installable": !installed,
         "installer": manifest.install,
-        "commands": manifest.commands,
         "allowed_hosts": manifest.allowed_hosts,
         "required_secrets": required_secrets,
         "required_config": [],

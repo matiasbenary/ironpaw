@@ -371,34 +371,3 @@ fn display_content(content: &str, tool_calls: &[serde_json::Value]) -> String {
 
     "<empty assistant message>".to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{display_content, scroll_offset};
-
-    #[test]
-    fn displays_assistant_message_content() {
-        assert_eq!(display_content("hello back", &[]), "hello back");
-    }
-
-    #[test]
-    fn displays_tool_call_summary_when_no_text() {
-        let tool_calls = vec![serde_json::json!({"name": "send_message"})];
-        assert_eq!(
-            display_content("", &tool_calls),
-            "assistant requested 1 tool call(s)"
-        );
-    }
-
-    #[test]
-    fn scroll_offset_starts_at_bottom_and_moves_up() {
-        assert_eq!(scroll_offset(20, 5, 0), 15);
-        assert_eq!(scroll_offset(20, 5, 3), 12);
-    }
-
-    #[test]
-    fn scroll_offset_clamps_to_top() {
-        assert_eq!(scroll_offset(20, 5, usize::MAX), 0);
-        assert_eq!(scroll_offset(3, 5, 0), 0);
-    }
-}

@@ -1,43 +1,63 @@
 {
   "name": "email",
   "display_name": "Email",
-  "description": "Read and send email through configured IMAP and SMTP servers.",
+  "description": "Read Gmail and Outlook through OAuth or use configured IMAP and SMTP servers.",
+  "config_before_secrets": true,
+  "setup_handler": "email",
   "secrets": [
     {
       "name": "EMAIL_PASSWORD",
-      "prompt": "Paste your email password or app password."
+      "prompt": "Paste your email password or app password.",
+      "when": { "path": "/email/auth", "equals": "password" }
     }
   ],
   "config": [
     {
       "path": "/email/username",
-      "prompt": "Email username, usually your email address.",
-      "type": "string"
+      "prompt": "What is your email address? Ironpaw will try to detect the mail servers automatically.",
+      "type": "email",
+      "autoconfigure": { "action": "discover" }
+    },
+    {
+      "path": "/email/oauth/access",
+      "prompt": "How much email access should Ironpaw have?",
+      "type": "string",
+      "autoconfigure": { "action": "oauth", "rerun_on_keep": true },
+      "when": { "path": "/email/auth", "equals": "oauth" },
+      "choices": [
+        { "label": "Read only", "value": "readonly" },
+        { "label": "Take control", "value": "control" }
+      ]
     },
     {
       "path": "/email/from",
       "prompt": "Default From address for sent mail.",
-      "type": "string"
+      "type": "string",
+      "when": { "path": "/email/auth", "equals": "password" }
     },
     {
       "path": "/email/imap/host",
       "prompt": "IMAP server host, for example imap.fastmail.com.",
-      "type": "string"
+      "type": "string",
+      "when": { "path": "/email/auth", "equals": "password" }
     },
     {
       "path": "/email/imap/port",
       "prompt": "IMAP server port, usually 993.",
-      "type": "number"
+      "type": "number",
+      "when": { "path": "/email/auth", "equals": "password" }
     },
     {
       "path": "/email/smtp/host",
       "prompt": "SMTP server host, for example smtp.fastmail.com.",
-      "type": "string"
+      "type": "string",
+      "when": { "path": "/email/auth", "equals": "password" }
     },
     {
       "path": "/email/smtp/port",
       "prompt": "SMTP server port, usually 465.",
-      "type": "number"
+      "type": "number",
+      "when": { "path": "/email/auth", "equals": "password" }
     }
   ]
 }

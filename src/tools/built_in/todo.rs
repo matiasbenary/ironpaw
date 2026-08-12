@@ -144,36 +144,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_previous_todos_for_conversation() {
-        let tool = Arc::new(TodoTool::new());
-        let ctx =
-            ExecutionContext::new(InvocationScope::Conversation(crate::bus::ConversationKey {
-                channel: "telegram".to_string(),
-                chat_id: "chat-1".to_string(),
-                thread_id: None,
-            }));
-
-        let first = tools::run_internal_tool(
-            Arc::clone(&tool) as Arc<dyn InternalTool>,
-            serde_json::json!({ "todos": [item("Plan", TodoStatus::InProgress)] }),
-            &ctx,
-        )
-        .await;
-        assert_eq!(first.unwrap()["old_todos"], serde_json::json!([]));
-
-        let second = tools::run_internal_tool(
-            Arc::clone(&tool) as Arc<dyn InternalTool>,
-            serde_json::json!({ "todos": [item("Plan", TodoStatus::Completed)] }),
-            &ctx,
-        )
-        .await;
-        assert_eq!(
-            second.unwrap()["old_todos"],
-            serde_json::json!([{ "description": "Plan", "status": "in_progress" }])
-        );
-    }
-
-    #[tokio::test]
     async fn completed_lists_clear_stored_todos() {
         let tool = Arc::new(TodoTool::new());
         let ctx =

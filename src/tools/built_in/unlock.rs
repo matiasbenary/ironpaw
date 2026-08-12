@@ -132,6 +132,7 @@ impl InternalTool for UnlockSecretsTool {
 
 enum UnlockSession {
     Locked,
+    AwaitingUnlockPhrase,
     AwaitingWrittenDownConfirmation {
         phrase: String,
         checks: Vec<usize>,
@@ -146,12 +147,25 @@ enum UnlockSession {
 
 impl UnlockSession {
     fn handle(&mut self, layout: &RuntimeLayout, message: &str) -> Result<UnlockStep, String> {
-        if EncryptedSecretStore::exists(layout) {
-            return unlock_existing(layout, message);
-        }
-
         match self {
-            Self::Locked => Ok(self.start_new_phrase()),
+            Self::Locked => {
+                if EncryptedSecretStore::exists(layout) {
+                    *self = Self::AwaitingUnlockPhrase;
+                    Ok(UnlockStep {
+                        messages: vec![UnlockMessage::plain(
+                            "Ironpaw is locked. Enter Ironpaw's 6-word unlock phrase.",
+                        )],
+                        ask_written_down: false,
+                        restart: false,
+                        delete_current_message: false,
+                        delete_outbound_message_id: None,
+                        unlocked: None,
+                    })
+                } else {
+                    Ok(self.start_new_phrase())
+                }
+            }
+            Self::AwaitingUnlockPhrase => unlock_existing(layout, message),
             Self::AwaitingWrittenDownConfirmation {
                 phrase,
                 checks,
@@ -405,37 +419,25 @@ mod tests {
     }
 
     #[test]
-    fn new_phrase_is_shown_separately_before_confirmation() {
+    fn existing_store_preserves_first_message_then_deletes_unlock_phrase() {
+        let layout = layout();
+        let phrase = "alpha bravo charlie delta echo foxtrot";
+        EncryptedSecretStore::create(&layout, phrase).unwrap();
         let mut session = UnlockSession::Locked;
 
-        let step = session.handle(&layout(), "start").unwrap();
+        let first = session.handle(&layout, "hello").unwrap();
 
+        assert!(!first.delete_current_message);
         assert_eq!(
-            step.messages[0].content,
-            "Write down this 6-word unlock phrase. It will not be stored."
+            first.messages[0].content,
+            "Ironpaw is locked. Enter Ironpaw's 6-word unlock phrase."
         );
-        assert_eq!(phrase_words(&step.messages[1].content).len(), 6);
-        assert!(step.ask_written_down);
-        assert!(step.unlocked.is_none());
-    }
+        assert!(matches!(session, UnlockSession::AwaitingUnlockPhrase));
 
-    #[test]
-    fn yes_starts_word_confirmation() {
-        let mut session = UnlockSession::AwaitingWrittenDownConfirmation {
-            phrase: "alpha bravo charlie delta echo foxtrot".to_string(),
-            checks: vec![2, 4, 5],
-            phrase_message_id: "unlock-phrase-test".to_string(),
-        };
+        let unlock = session.handle(&layout, phrase).unwrap();
 
-        let step = session.handle(&layout(), "yes").unwrap();
-
-        assert_eq!(step.messages[0].content, "Word #3.");
-        assert!(!step.ask_written_down);
-        assert_eq!(
-            step.delete_outbound_message_id.as_deref(),
-            Some("unlock-phrase-test")
-        );
-        assert!(matches!(session, UnlockSession::Creating { .. }));
+        assert!(unlock.delete_current_message);
+        assert!(unlock.unlocked.is_some());
     }
 
     #[test]

@@ -160,7 +160,13 @@ impl Agent {
                 }
             }
 
-            let output = inference.message;
+            let mut output = inference.message;
+            if let Message::Assistant {
+                text: Some(text), ..
+            } = &mut output
+            {
+                *text = strip_message_id_prefix(text).to_string();
+            }
             let Message::Assistant {
                 text, tool_calls, ..
             } = output.clone()
@@ -406,6 +412,24 @@ fn retained_entries(history: &[HistoryEntry]) -> Vec<HistoryEntry> {
     retained
 }
 
+fn strip_message_id_prefix(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("[message_id:") else {
+        return text;
+    };
+    let Some((id, content)) = rest.split_once(']') else {
+        return text;
+    };
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return text;
+    }
+    content.trim_start()
+}
+
 async fn wait_for_tool_response(
     events: &mut tokio::sync::broadcast::Receiver<Event>,
     scope: &InvocationScope,
@@ -431,4 +455,27 @@ async fn wait_for_tool_response(
 
 fn debug_log(message: impl AsRef<str>) {
     eprintln!("{}", message.as_ref());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_message_id_prefix;
+
+    #[test]
+    fn strips_leaked_message_id_from_model_output() {
+        assert_eq!(
+            strip_message_id_prefix(
+                "[message_id:f17a7800-6a97-4827-a0c5-0e52221a5d9d] Is this Outlook?"
+            ),
+            "Is this Outlook?"
+        );
+    }
+
+    #[test]
+    fn preserves_non_metadata_brackets() {
+        assert_eq!(
+            strip_message_id_prefix("[message_id:example.com] text"),
+            "[message_id:example.com] text"
+        );
+    }
 }

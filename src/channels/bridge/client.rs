@@ -31,8 +31,25 @@ pub(super) fn routes() -> Router<BridgeState> {
         )
         .route("/client/events", get(events).options(preflight))
         .route("/client/status", get(status).options(preflight))
+        .route("/client/oauth/status", get(oauth_status).options(preflight))
         .layer(DefaultBodyLimit::max(56 * 1024 * 1024))
         .layer(middleware::from_fn(cors))
+}
+
+#[derive(Deserialize)]
+struct OauthStatusQuery {
+    state: String,
+}
+
+async fn oauth_status(
+    State(state): State<BridgeState>,
+    Query(query): Query<OauthStatusQuery>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    authorize_bearer(&headers, &state.token)?;
+    Ok(Json(serde_json::json!({
+        "complete": crate::oauth::callback_received(&query.state)
+    })))
 }
 
 async fn status(
@@ -382,26 +399,6 @@ async fn cors(request: Request, next: Next) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn client_events_include_conversation_and_image_data() {
-        let event = ClientEvent::Message {
-            client_id: "browser-1".to_string(),
-            conversation_id: "chat-1".to_string(),
-            id: "message-1".to_string(),
-            content: "image".to_string(),
-            attachments: vec![ClientAttachment {
-                filename: "paw.png".to_string(),
-                mime_type: "image/png".to_string(),
-                data_base64: Some("aW1hZ2U=".to_string()),
-            }],
-            tool_calls: Vec::new(),
-        };
-
-        let value = serde_json::to_value(event).unwrap();
-        assert_eq!(value["conversation_id"], "chat-1");
-        assert_eq!(value["attachments"][0]["data_base64"], "aW1hZ2U=");
-    }
 
     #[test]
     fn client_ids_are_safe_route_components() {

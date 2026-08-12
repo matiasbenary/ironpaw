@@ -117,6 +117,8 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
 .choice-options button:disabled { opacity: .45; cursor: default; }
 .choice-answer { display: block; margin-bottom: 8px; color: var(--muted); }
 .error-card { border-color: #e4aaa1; color: #8d281c; background: #fff0ed; }
+.error-card button { padding: 0; border: 0; color: inherit; font-weight: 600; background: transparent; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.error-card button:hover { color: var(--accent-hover); }
 
 .empty-chat { display: flex; height: 100%; min-height: 260px; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
 .empty-mark { width: 42px; height: 42px; margin-bottom: 18px; border-radius: 11px; }
@@ -129,6 +131,8 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
 .composer:focus-within { border-color: #8f8f89; box-shadow: 0 0 0 1px #8f8f89; }
 .composer textarea { width: 100%; max-height: 160px; resize: none; padding: 8px 7px; border: 0; outline: 0; color: #30302d; background: transparent; }
 .composer textarea::placeholder { color: #8a8a84; }
+.composer textarea:disabled { cursor: not-allowed; }
+.composer button:disabled { opacity: .45; cursor: not-allowed; }
 .attach-button, .send-button { display: grid; width: 36px; height: 36px; padding: 0; place-items: center; border: 0; border-radius: 9px; cursor: pointer; }
 .attach-button { color: var(--muted); background: transparent; }
 .attach-button:hover { color: #30302d; background: #efefec; }
@@ -138,6 +142,19 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
 .pending-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 7px; }
 .pending-file { max-width: 220px; overflow: hidden; padding: 4px 9px; border: 1px solid var(--line); border-radius: 20px; color: var(--muted); background: var(--panel); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-backdrop { display: none; }
+
+.dialog-backdrop { position: fixed; z-index: 10; inset: 0; display: grid; padding: 20px; place-items: center; background: rgba(37, 34, 31, .42); }
+.reconnect-dialog { width: min(100%, 390px); padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: #fff; box-shadow: 0 16px 50px rgba(0, 0, 0, .18); }
+.reconnect-dialog h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; }
+.reconnect-dialog > p { margin: 7px 0 20px; color: var(--muted); }
+.reconnect-dialog label { display: grid; gap: 6px; margin-top: 13px; font-size: 13px; font-weight: 550; }
+.reconnect-dialog input { width: 100%; padding: 10px 11px; border: 1px solid #a5a5a0; border-radius: 7px; outline: 0; }
+.reconnect-dialog input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(185, 79, 18, .1); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.dialog-actions button { padding: 8px 13px; border: 1px solid var(--line); border-radius: 7px; background: #fff; cursor: pointer; }
+.dialog-actions .primary-button { color: #fff; border-color: var(--accent); background: var(--accent); }
+.dialog-actions .primary-button:hover { background: var(--accent-hover); }
+.dialog-actions button:disabled { opacity: .55; cursor: wait; }
 
 @keyframes arrive { from { opacity: 0; transform: translateY(4px); } }
 @keyframes pulse { 0%, 70%, 100% { opacity: .25; } 35% { opacity: 1; transform: translateY(-2px); } }

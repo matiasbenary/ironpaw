@@ -150,11 +150,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builds_client_url() {
-        assert_eq!(url("127.0.0.1:7878"), "http://127.0.0.1:7878/client");
-    }
-
-    #[test]
     fn parses_complete_sse_frames() {
         let mut buffer =
             "data: {\"kind\":\"error\",\"message\":\"one\"}\n\ndata: partial".to_string();

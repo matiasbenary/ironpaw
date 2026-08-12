@@ -1,5 +1,7 @@
 {
   "email": {
+    "provider": "",
+    "auth": "",
     "imap": {
       "host": "",
       "port": 993,
@@ -12,7 +14,11 @@
     },
     "username": "",
     "password_secret": "EMAIL_PASSWORD",
-    "from": ""
+    "from": "",
+    "oauth": {
+      "access": "",
+      "refresh_token_secret": "EMAIL_GOOGLE_REFRESH_TOKEN"
+    }
   },
   "config": {}
 }

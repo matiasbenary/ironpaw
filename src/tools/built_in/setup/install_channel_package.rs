@@ -214,6 +214,7 @@ pub(super) fn required_secrets(
             ),
             optional: false,
             auto_generate: None,
+            when: None,
         });
     }
     secrets.extend(package.manifest.secrets.clone());
@@ -346,12 +347,14 @@ mod tests {
                 prompt: Some("User supplied secret".to_string()),
                 optional: false,
                 auto_generate: None,
+                when: None,
             },
             SetupSecret {
                 name: "generated_secret".to_string(),
                 prompt: None,
                 optional: false,
                 auto_generate: Some(AutoGenerate { length: 32 }),
+                when: None,
             },
         ];
 

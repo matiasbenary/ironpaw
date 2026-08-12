@@ -22,7 +22,7 @@ function AttachmentView({ attachment }: { attachment: Attachment }) {
   );
 }
 
-function MessageView({ message, onChoice }: { message: StoredMessage; onChoice: (value: string, message: StoredMessage) => void }) {
+function MessageView({ disabled, message, onChoice, onLink }: { disabled: boolean; message: StoredMessage; onChoice: (value: string, message: StoredMessage) => void; onLink: (href: string) => void }) {
   if (message.role === 'choice') {
     return (
       <section className="choice-card">
@@ -30,7 +30,7 @@ function MessageView({ message, onChoice }: { message: StoredMessage; onChoice: 
         {message.answered && <small className="choice-answer">Answered: {message.answered}</small>}
         <div className="choice-options">
           {(message.options || []).map((option) => (
-            <button type="button" key={option.value} disabled={Boolean(message.answered)} onClick={() => onChoice(option.value, message)}>
+            <button type="button" key={option.value} disabled={disabled || Boolean(message.answered)} onClick={() => onChoice(option.value, message)}>
               {option.label}
             </button>
           ))}
@@ -43,7 +43,7 @@ function MessageView({ message, onChoice }: { message: StoredMessage; onChoice: 
       <div className="message-bubble">
         {message.text && (
           <div className="message-text">
-            {message.role === 'assistant' ? <Markdown>{message.text}</Markdown> : message.text}
+            {message.role === 'assistant' ? <Markdown onLink={onLink}>{message.text}</Markdown> : message.text}
           </div>
         )}
         {(message.attachments || []).map((attachment, index) => (
@@ -61,12 +61,16 @@ function MessageView({ message, onChoice }: { message: StoredMessage; onChoice: 
 }
 
 interface Props {
+  connectionState: 'connected' | 'offline' | 'authentication-required';
+  disabled?: boolean;
   messages: StoredMessage[];
   transient: TransientState;
   onChoice: (value: string, message: StoredMessage) => void;
+  onLink: (href: string) => void;
+  onReconnect: () => void;
 }
 
-export function MessageList({ messages, transient, onChoice }: Props) {
+export function MessageList({ connectionState, disabled = false, messages, transient, onChoice, onLink, onReconnect }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
 
@@ -74,7 +78,7 @@ export function MessageList({ messages, transient, onChoice }: Props) {
     if (followLatest.current && container.current) {
       container.current.scrollTop = container.current.scrollHeight;
     }
-  }, [messages, transient]);
+  }, [messages, transient, connectionState]);
 
   return (
     <div
@@ -92,8 +96,14 @@ export function MessageList({ messages, transient, onChoice }: Props) {
           <p>Start a conversation with your personal agent.</p>
         </section>
       ) : messages.map((message) => (
-        <MessageView message={message} onChoice={onChoice} key={message.key} />
+        <MessageView disabled={disabled} message={message} onChoice={onChoice} onLink={onLink} key={message.key} />
       ))}
+      {connectionState === 'offline' && <div className="error-card">Ironpaw is down.</div>}
+      {connectionState === 'authentication-required' && (
+        <div className="error-card">
+          Ironpaw needs to <button type="button" onClick={onReconnect}>reconnect</button>.
+        </div>
+      )}
       {transient.error && <div className="error-card">{transient.error}</div>}
       {transient.activity && (
         <div className="activity-row">

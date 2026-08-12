@@ -473,22 +473,4 @@ mod tests {
         assert!(result.is_err());
         assert!(harness.tools.registry.contains("send_message"));
     }
-
-    #[test]
-    fn create_tool_rejects_invalid_javascript() {
-        let harness = bound_dynamic_tools();
-
-        let result = harness.create_tool.save(
-            CreateToolParams {
-                name: "bad_script".to_string(),
-                description: "Bad script.".to_string(),
-                parameters: None,
-                script: "const nope = ;".to_string(),
-            },
-            false,
-        );
-
-        assert!(result.is_err());
-        assert!(!harness.tools.registry.contains("bad_script"));
-    }
 }

@@ -172,6 +172,7 @@ impl OnboardingTool {
             &self.setup.tools,
             "raw_inference",
             serde_json::json!({
+                "model": self.setup.tools.inference.provider().text_model.clone(),
                 "messages": [
                     { "User": { "text": "Reply with exactly OK.", "attachments": [] } }
                 ]

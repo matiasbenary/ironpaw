@@ -67,6 +67,15 @@ build_wasm_packages() {
 build_wasm_packages "$SCRIPT_DIR/channels-src" "$CHANNELS_DIR" "$CHANNEL_STORE_DIR"
 build_wasm_packages "$SCRIPT_DIR/tools-src" "$RELEASE_DIR/tools" "$TOOL_STORE_DIR"
 
+for source_dir in "$SCRIPT_DIR/tools-src"/*; do
+  [ -f "$source_dir/shell.json" ] || continue
+  package_name="$(basename "$source_dir")"
+  destination="$TOOL_STORE_DIR/$package_name"
+  mkdir -p "$destination"
+  cp "$source_dir/shell.json" "$destination/shell.json"
+  [ ! -f "$source_dir/SKILL.md" ] || cp "$source_dir/SKILL.md" "$destination/SKILL.md"
+done
+
 mkdir -p "$RELEASE_DIR/tools"
 cp "$TOOL_STORE_DIR/web-search/web-search.wasm" "$RELEASE_DIR/tools/web_search.wasm"
 if [ ! -f "$RELEASE_DIR/tools/web_search.config.json" ]; then

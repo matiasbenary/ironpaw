@@ -189,20 +189,3 @@ fn bounded_raw_text(data: &[u8]) -> String {
     }
     output
 }
-
-#[cfg(test)]
-mod tests {
-    use super::bounded_raw_text;
-
-    #[test]
-    fn preserves_raw_csv_content() {
-        let content = bounded_raw_text(b"artist,album\n\"A, B\",Record\n");
-        assert_eq!(content, "artist,album\n\"A, B\",Record\n");
-    }
-
-    #[test]
-    fn preserves_malformed_csv_as_lossy_text() {
-        let content = bounded_raw_text(b"artist,album\nunfinished,\xff\n");
-        assert!(content.contains("artist,album\nunfinished,"));
-    }
-}

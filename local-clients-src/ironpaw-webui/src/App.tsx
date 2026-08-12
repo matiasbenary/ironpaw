@@ -2,10 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 
 import { Chat } from './Chat';
 import { ConnectionScreen } from './ConnectionScreen';
+import { ReconnectDialog } from './ReconnectDialog';
 import { Sidebar } from './Sidebar';
 import {
+  AuthenticationError,
   clearClientToken,
   defaultAddress,
+  emailOauthComplete,
   loadClientConfig,
   saveClientConfig,
   sendMessage,
@@ -23,8 +26,15 @@ import {
 import type { Attachment, CallbackEvent, Conversation, StoredMessage, TransientState } from './types';
 
 const EMPTY_TRANSIENT: TransientState = { activity: null, error: null };
+type ConnectionState = 'connected' | 'offline' | 'authentication-required';
 
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
+
+export function upsertMessage(current: StoredMessage[], changed: StoredMessage): StoredMessage[] {
+  const existing = current.findIndex((message) => message.key === changed.key);
+  if (existing === -1) return [...current, changed];
+  return current.map((message, index) => index === existing ? changed : message);
+}
 
 const fileAsBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -44,7 +54,10 @@ export function App() {
   const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [transients, setTransients] = useState<Record<string, TransientState>>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [connectionState, setConnectionState] = useState<ConnectionState>('connected');
+  const [reconnectOpen, setReconnectOpen] = useState(false);
   const activeIdRef = useRef<string | null>(null);
+  const oauthStates = useRef(new Set<string>());
 
   function updateTransient(id: string, patch: Partial<TransientState>) {
     setTransients((current) => ({
@@ -77,6 +90,13 @@ export function App() {
     void openConversation(crypto.randomUUID());
   }
 
+  function requireAuthentication() {
+    clearClientToken();
+    setConnectionState('authentication-required');
+    const id = activeIdRef.current;
+    if (id) updateTransient(id, { activity: null, error: null });
+  }
+
   useEffect(() => {
     if (!config) return;
     let cancelled = false;
@@ -102,10 +122,10 @@ export function App() {
 
     async function handleEvent(event: CallbackEvent) {
       const id = event.conversation_id;
-      let messagesChanged = false;
+      let changedMessage: StoredMessage | null = null;
       if (event.kind === 'message') {
         const externalId = event.id || crypto.randomUUID();
-        await saveMessage({
+        changedMessage = {
           key: `${id}:assistant:${crypto.randomUUID()}`,
           conversation_id: id,
           external_id: externalId,
@@ -114,23 +134,24 @@ export function App() {
           attachments: event.attachments || [],
           tool_calls: event.tool_calls || [],
           created_at: Date.now(),
-        });
+        };
+        await saveMessage(changedMessage);
         updateTransient(id, { activity: null });
-        messagesChanged = true;
       } else if (event.kind === 'choice') {
-        await saveMessage({
-          key: `${id}:choice:${crypto.randomUUID()}`,
+        const externalId = event.id || crypto.randomUUID();
+        changedMessage = {
+          key: `${id}:choice:${externalId}`,
           conversation_id: id,
-          external_id: event.id || crypto.randomUUID(),
+          external_id: externalId,
           role: 'choice',
           question: event.question,
           options: event.options,
           created_at: Date.now(),
-        });
+        };
+        await saveMessage(changedMessage);
         updateTransient(id, { activity: null });
-        messagesChanged = true;
       } else if (event.kind === 'delete' && event.message_id) {
-        messagesChanged = Boolean(await redactMessage(id, event.message_id));
+        changedMessage = await redactMessage(id, event.message_id);
       } else if (event.kind === 'activity') {
         updateTransient(id, {
           activity: typeof event.action === 'string'
@@ -140,9 +161,11 @@ export function App() {
       } else if (event.kind === 'error') {
         updateTransient(id, { error: event.message || 'Ironpaw reported an error.' });
       }
-      if (messagesChanged) {
+      if (changedMessage) {
         await refreshConversations();
-        if (activeIdRef.current === id) setMessages(await loadMessages(id));
+        if (activeIdRef.current === id) {
+          setMessages((current) => upsertMessage(current, changedMessage));
+        }
       }
     }
 
@@ -150,9 +173,9 @@ export function App() {
       config,
       handleEvent,
       (connected) => {
-        const id = activeIdRef.current;
-        if (id) updateTransient(id, { error: connected ? null : 'Live updates disconnected. Reconnecting…' });
+        setConnectionState(connected ? 'connected' : 'offline');
       },
+      requireAuthentication,
       controller.signal,
     );
     return () => controller.abort();
@@ -194,16 +217,52 @@ export function App() {
       await refreshConversations();
       return true;
     } catch (error) {
+      if (error instanceof AuthenticationError) {
+        requireAuthentication();
+        return false;
+      }
       updateTransient(id, { error: errorMessage(error) });
       return false;
     }
   }
 
   async function answerChoice(value: string, choice: StoredMessage) {
-    if (!(await postMessage(value, []))) return;
     const answered = { ...choice, answered: value };
     await saveMessage(answered);
     setMessages((current) => current.map((message) => message.key === choice.key ? answered : message));
+    if (await postMessage(value, [])) return;
+    await saveMessage(choice);
+    setMessages((current) => current.map((message) => message.key === choice.key ? choice : message));
+  }
+
+  function watchOauth(href: string) {
+    if (!config) return;
+    const url = new URL(href);
+    if (url.hostname !== 'accounts.google.com' && url.hostname !== 'login.microsoftonline.com') return;
+    const state = url.searchParams.get('state');
+    const conversationId = activeIdRef.current;
+    if (!state || !conversationId || oauthStates.current.has(state)) return;
+    oauthStates.current.add(state);
+    void (async () => {
+      try {
+        for (let attempt = 0; attempt < 300; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+          if (await emailOauthComplete(config, state)) {
+            await sendMessage(config, conversationId, {
+              content: 'done',
+              message_id: crypto.randomUUID(),
+              attachments: [],
+            });
+            return;
+          }
+        }
+        updateTransient(conversationId, { error: 'Gmail authorization timed out.' });
+      } catch (error) {
+        updateTransient(conversationId, { error: errorMessage(error) });
+      } finally {
+        oauthStates.current.delete(state);
+      }
+    })();
   }
 
   async function renameActive(title: string) {
@@ -218,6 +277,8 @@ export function App() {
     try {
       await verifyClient(candidate);
       setConfig(candidate);
+      setConnectionState('connected');
+      setReconnectOpen(false);
     } catch (error) {
       clearClientToken();
       throw error;
@@ -233,6 +294,7 @@ export function App() {
     <div className={`shell${sidebarOpen ? ' sidebar-open' : ''}`}>
       <Sidebar conversations={conversations} activeId={activeId} onSelect={(id) => void openConversation(id)} onNew={newConversation} />
       <Chat
+        connectionState={connectionState}
         conversationId={activeId}
         title={activeConversation?.title || 'New conversation'}
         canRename={Boolean(activeConversation)}
@@ -240,10 +302,19 @@ export function App() {
         transient={activeId ? transients[activeId] || EMPTY_TRANSIENT : EMPTY_TRANSIENT}
         onMenu={() => setSidebarOpen((open) => !open)}
         onRename={renameActive}
+        onReconnect={() => setReconnectOpen(true)}
         onChoice={(value, message) => void answerChoice(value, message)}
+        onLink={watchOauth}
         onSend={postMessage}
       />
       <button className="sidebar-backdrop" type="button" aria-label="Close conversations" onClick={() => setSidebarOpen(false)} />
+      {reconnectOpen && (
+        <ReconnectDialog
+          initialAddress={defaultAddress()}
+          onCancel={() => setReconnectOpen(false)}
+          onConnect={(address, token) => connect(address, token)}
+        />
+      )}
     </div>
   );
 }

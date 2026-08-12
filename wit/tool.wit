@@ -4,6 +4,7 @@ interface tool-host {
     http-request: func(method: string, url: string, body-json: string) -> result<string, string>;
     email-list: func(folder: string, limit: u32) -> result<string, string>;
     email-read: func(folder: string, uid: string) -> result<string, string>;
+    email-modify: func(uid: string, operation: string) -> result<string, string>;
     email-send: func(message-json: string) -> result<string, string>;
 }
 
