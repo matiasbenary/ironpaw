@@ -3,7 +3,7 @@ use std::{path::PathBuf, time::Duration};
 use async_trait::async_trait;
 
 use crate::{
-    message::{ToolDefinition, available_filename, execution_files_dir},
+    message::{available_filename, execution_files_dir},
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
@@ -115,16 +115,11 @@ impl DownloadFileTool {
 
 #[async_trait]
 impl InternalTool for DownloadFileTool {
-    fn name(&self) -> &str {
-        "download_file"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<DownloadFileParams>(
-            self.name(),
-            "Download a public URL into Ironpaw's managed download directory and return its filename. Public Google Sheets, Docs, and Slides editor links are exported as CSV, text, and PDF. Use inspect_file with the filename to query contents without putting the whole download into conversation history.",
-        )
-    }
+    tools::tool_metadata!(
+        "download_file",
+        DownloadFileParams,
+        "Download a public URL into Ironpaw's managed download directory and return its filename. Public Google Sheets, Docs, and Slides editor links are exported as CSV, text, and PDF. Use inspect_file with the filename to query contents without putting the whole download into conversation history."
+    );
 
     async fn execute(
         &self,

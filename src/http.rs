@@ -35,6 +35,33 @@ impl CredentialInjection {
     }
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct CredentialInjectionConfig {
+    pub host: String,
+    pub secret: String,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    #[serde(default)]
+    pub header: Option<String>,
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
+impl From<CredentialInjectionConfig> for CredentialInjection {
+    fn from(config: CredentialInjectionConfig) -> Self {
+        if let Some(placeholder) = config.placeholder {
+            return Self::url_placeholder(config.host, placeholder, config.secret);
+        }
+        Self {
+            host: config.host,
+            secret: config.secret,
+            header: config.header.unwrap_or_else(|| "Authorization".to_string()),
+            prefix: config.prefix.unwrap_or_else(|| "Bearer ".to_string()),
+            placeholder: None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum HttpError {
     InvalidRequest(String),
@@ -173,7 +200,7 @@ where
     }
 
     fn prepare_url(&self, url: &str) -> Result<reqwest::Url, HttpError> {
-        let url = self.inject_url_credentials(url)?;
+        let url = self.inject_string_credentials(url)?;
         let parsed = reqwest::Url::parse(&url)
             .map_err(|err| HttpError::InvalidRequest(format!("invalid URL: {err}")))?;
         if parsed.scheme() != "https" && !is_loopback_http(&parsed) {
@@ -221,10 +248,6 @@ where
         }
 
         Ok(body)
-    }
-
-    fn inject_url_credentials(&self, url: &str) -> Result<String, HttpError> {
-        self.inject_string_credentials(url)
     }
 
     fn inject_string_credentials(&self, value: &str) -> Result<String, HttpError> {

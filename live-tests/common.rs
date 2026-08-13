@@ -169,7 +169,8 @@ fn install_web_search_for_live_tests(
 
     let tools_dir = layout.tools_dir();
     std::fs::create_dir_all(&tools_dir).expect("live test tools dir");
-    let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tools-src/web-search");
+    let package_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wasm-tools/web-search");
     std::fs::copy(
         package_dir.join("web-search.wasm"),
         tools_dir.join("web_search.wasm"),

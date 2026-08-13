@@ -34,16 +34,13 @@ pub struct CreateAutomationParams {
 pub type EditAutomationParams = CreateAutomationParams;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
-pub struct DeleteAutomationParams {
-    /// Exact automation name to delete.
+pub struct NamedAutomationParams {
+    /// Exact automation name.
     pub name: String,
 }
 
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-pub struct InspectAutomationParams {
-    /// Exact automation name to inspect.
-    pub name: String,
-}
+pub type DeleteAutomationParams = NamedAutomationParams;
+pub type InspectAutomationParams = NamedAutomationParams;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct ListAutomationsParams {}

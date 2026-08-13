@@ -20,18 +20,13 @@ impl RawInferenceTool {
 
 #[async_trait]
 impl InternalTool for RawInferenceTool {
-    fn name(&self) -> &str {
-        "raw_inference"
-    }
-
-    fn tool_definition(&self) -> crate::message::ToolDefinition {
-        tools::tool_definition::<InferenceRequest>(
-            self.name(),
-            "Call a model directly with Ironpaw-native messages: one completion, \
+    tools::tool_metadata!(
+        "raw_inference",
+        InferenceRequest,
+        "Call a model directly with Ironpaw-native messages: one completion, \
              no history, no tool execution. Use it to delegate a task to a \
-             specific model (e.g. a vision or audio model).",
-        )
-    }
+             specific model (e.g. a vision or audio model)."
+    );
 
     async fn execute(
         &self,

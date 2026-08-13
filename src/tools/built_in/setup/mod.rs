@@ -4,7 +4,7 @@ pub mod install_tool;
 pub mod onboarding;
 mod services;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::{
     automations::Automations,
@@ -20,6 +20,28 @@ pub use onboarding::OnboardingTool;
 pub use services::SetupServices;
 
 const HANDLE_CONVERSATION_AUTOMATION: &str = "handle-conversation";
+
+pub(super) struct SessionState<T>(Mutex<Option<T>>);
+
+impl<T> SessionState<T> {
+    pub fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    pub fn save(&self, session: T) {
+        *self.0.lock().expect("setup session lock") = Some(session);
+    }
+
+    pub fn take(&self) -> Option<T> {
+        self.0.lock().expect("setup session lock").take()
+    }
+}
+
+impl<T: Clone> SessionState<T> {
+    pub fn get(&self) -> Option<T> {
+        self.0.lock().expect("setup session lock").clone()
+    }
+}
 
 fn pause_conversation(automations: &Arc<Automations>) -> Result<(), String> {
     automations.delete(HANDLE_CONVERSATION_AUTOMATION)

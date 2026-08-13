@@ -57,21 +57,16 @@ impl Default for TodoTool {
 
 #[async_trait]
 impl InternalTool for TodoTool {
-    fn name(&self) -> &str {
-        "todo"
-    }
-
-    fn tool_definition(&self) -> crate::message::ToolDefinition {
-        tools::tool_definition::<TodoInput>(
-            "todo",
-            "Track the task list for this session. \
+    tools::tool_metadata!(
+        "todo",
+        TodoInput,
+        "Track the task list for this session. \
             Call this proactively for any multi-step task (3+ steps). \
             Write ALL planned tasks upfront, then update status in real-time: \
             mark in_progress before starting each task, completed immediately after. \
             Keep exactly one task in_progress at a time. \
-            Do not stop until every task is completed.",
-        )
-    }
+            Do not stop until every task is completed."
+    );
 
     async fn execute(
         &self,

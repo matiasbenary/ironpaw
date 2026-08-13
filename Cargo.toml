@@ -38,4 +38,4 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [[test]]
 name = "live_tests"
-path = "tests_live/mod.rs"
+path = "live-tests/mod.rs"

@@ -226,10 +226,10 @@ async fn run(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut env = env;
-        if let Some(helper) = &command.git_credential_helper {
-            if !invocation.secrets.is_empty() {
-                env.extend(git_credential_environment(helper));
-            }
+        if let Some(helper) = &command.git_credential_helper
+            && !invocation.secrets.is_empty()
+        {
+            env.extend(git_credential_environment(helper));
         }
         (tool_dir.join("bin").join(command_name), env)
     } else if DEFAULT_COMMANDS.contains(&command_name) {

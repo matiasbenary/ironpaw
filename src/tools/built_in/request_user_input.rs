@@ -17,16 +17,11 @@ impl RequestUserInputTool {
 
 #[async_trait]
 impl InternalTool for RequestUserInputTool {
-    fn name(&self) -> &str {
-        "request_user_input"
-    }
-
-    fn tool_definition(&self) -> crate::message::ToolDefinition {
-        tools::tool_definition::<RequestUserInputParams>(
-            self.name(),
-            "Ask the user a question with specific possible answers. Use this only when the answer is required to continue. After calling this tool, do not continue the task, make assumptions, or repeat the question; end your response and wait for the user's next message.",
-        )
-    }
+    tools::tool_metadata!(
+        "request_user_input",
+        RequestUserInputParams,
+        "Ask the user a question with specific possible answers. Use this only when the answer is required to continue. After calling this tool, do not continue the task, make assumptions, or repeat the question; end your response and wait for the user's next message."
+    );
 
     async fn execute(
         &self,

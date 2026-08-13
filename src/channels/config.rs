@@ -5,7 +5,9 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::{bus::ConversationKey, config::RuntimeLayout, http::CredentialInjection};
+use crate::{bus::ConversationKey, config::RuntimeLayout};
+
+pub type ChannelHttpCredential = crate::http::CredentialInjectionConfig;
 
 #[derive(Clone, Debug)]
 pub struct ChannelManifest {
@@ -40,34 +42,6 @@ pub struct ChannelConfig {
     pub default_conversation: Option<ConversationKey>,
     #[serde(default)]
     pub http_credentials: Vec<ChannelHttpCredential>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct ChannelHttpCredential {
-    pub host: String,
-    pub secret: String,
-    #[serde(default)]
-    pub placeholder: Option<String>,
-    #[serde(default)]
-    pub header: Option<String>,
-    #[serde(default)]
-    pub prefix: Option<String>,
-}
-
-impl ChannelHttpCredential {
-    pub fn into_injection(self) -> CredentialInjection {
-        if let Some(placeholder) = self.placeholder {
-            return CredentialInjection::url_placeholder(self.host, placeholder, self.secret);
-        }
-
-        CredentialInjection {
-            host: self.host,
-            secret: self.secret,
-            header: self.header.unwrap_or_else(|| "Authorization".to_string()),
-            prefix: self.prefix.unwrap_or_else(|| "Bearer ".to_string()),
-            placeholder: None,
-        }
-    }
 }
 
 pub fn discover(layout: &RuntimeLayout) -> io::Result<Vec<ChannelManifest>> {

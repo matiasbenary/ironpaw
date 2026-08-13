@@ -38,15 +38,9 @@ impl SetupChannelTool {
         let tools = Arc::as_ref(&self.setup.tools);
         let automations = &self.setup.automations;
         let layout = &self.setup.layout;
-        let session = self
-            .state
-            .session
-            .lock()
-            .expect("install channel session lock")
-            .clone()
-            .ok_or_else(|| {
-                "channel setup is not active; ask to install the channel again".to_string()
-            })?;
+        let session = self.state.get().ok_or_else(|| {
+            "channel setup is not active; ask to install the channel again".to_string()
+        })?;
         if session.package.name != name {
             return Err(format!(
                 "channel setup is active for '{}', not '{name}'",
@@ -68,7 +62,7 @@ impl SetupChannelTool {
                     return Ok(serde_json::json!({ "ok": true }));
                 }
                 session.stage = InstallStage::Secret { index: 0 };
-                self.save_session(session.clone());
+                self.state.save(session.clone());
                 send(
                     tools,
                     &secret_prompt(&session.package, &session.secrets[0]),
@@ -88,7 +82,7 @@ impl SetupChannelTool {
                 let next = index + 1;
                 if let Some(secret) = session.secrets.get(next) {
                     session.stage = InstallStage::Secret { index: next };
-                    self.save_session(session.clone());
+                    self.state.save(session.clone());
                     send(tools, &secret_prompt(&session.package, secret), ctx).await?;
                 } else {
                     self.prompt_config_or_finish(session, layout, tools, ctx)
@@ -106,7 +100,7 @@ impl SetupChannelTool {
                 let next = index + 1;
                 if let Some(config) = configs.get(next) {
                     session.stage = InstallStage::Config { index: next };
-                    self.save_session(session.clone());
+                    self.state.save(session.clone());
                     send(tools, config_prompt(config), ctx).await?;
                 } else {
                     self.complete(session, layout, tools, ctx).await?;
@@ -189,14 +183,6 @@ impl SetupChannelTool {
         Ok(serde_json::json!({ "ok": true }))
     }
 
-    fn save_session(&self, session: InstallSession) {
-        *self
-            .state
-            .session
-            .lock()
-            .expect("install channel session lock") = Some(session);
-    }
-
     async fn prompt_config_or_finish(
         &self,
         mut session: InstallSession,
@@ -209,7 +195,7 @@ impl SetupChannelTool {
             return self.complete(session, layout, tools, ctx).await;
         };
         session.stage = InstallStage::Config { index: 0 };
-        self.save_session(session);
+        self.state.save(session);
         send(tools, config_prompt(config), ctx).await
     }
 
@@ -229,7 +215,7 @@ impl SetupChannelTool {
                     activated: true,
                     code: code.clone(),
                 };
-                self.save_session(session.clone());
+                self.state.save(session.clone());
                 self.setup
                     .automations
                     .add(super::InstallChannelTool::automation(
@@ -256,7 +242,7 @@ impl SetupChannelTool {
                     activated: false,
                     code: verification_code(),
                 };
-                self.save_session(session);
+                self.state.save(session);
                 request_verification_choice(
                     tools,
                     &format!("I installed the channel files, but the channel did not start: {err}"),
@@ -280,13 +266,13 @@ impl SetupChannelTool {
             let configs = required_config(&session.package);
             if let Some(config) = configs.first() {
                 session.stage = InstallStage::Config { index: 0 };
-                self.save_session(session);
+                self.state.save(session);
                 return send(tools, config_prompt(config), ctx).await;
             }
             return self.complete(session, &self.setup.layout, tools, ctx).await;
         }
         session.stage = InstallStage::Secret { index: 0 };
-        self.save_session(session.clone());
+        self.state.save(session.clone());
         send(
             tools,
             &secret_prompt(&session.package, &session.secrets[0]),
@@ -308,11 +294,7 @@ impl SetupChannelTool {
             .remove_channel(&session.package.name)
             .await;
         remove_installed_package(&self.setup.layout, &session.package);
-        *self
-            .state
-            .session
-            .lock()
-            .expect("install channel session lock") = None;
+        self.state.take();
         stop_setup_automations(automations, &session.package.name)?;
         send(
             tools,
@@ -339,11 +321,7 @@ impl SetupChannelTool {
     ) -> Result<(), String> {
         let name = session.package.name.clone();
         let continuation = session.continuation.clone();
-        *self
-            .state
-            .session
-            .lock()
-            .expect("install channel session lock") = None;
+        self.state.take();
         stop_setup_automations(automations, &name)?;
         send(
             tools,
@@ -368,11 +346,7 @@ impl SetupChannelTool {
     ) -> Result<(), String> {
         let name = session.package.name.clone();
         let continuation = session.continuation.clone();
-        *self
-            .state
-            .session
-            .lock()
-            .expect("install channel session lock") = None;
+        self.state.take();
         stop_setup_automations(automations, &name)?;
         send(
             tools,

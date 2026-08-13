@@ -1,7 +1,20 @@
+macro_rules! tool_metadata {
+    ($name:literal, $params:ty, $description:expr) => {
+        fn name(&self) -> &str {
+            $name
+        }
+        fn tool_definition(&self) -> $crate::message::ToolDefinition {
+            $crate::tools::tool_definition::<$params>($name, $description)
+        }
+    };
+}
+pub(crate) use tool_metadata;
+
 mod built_in;
 mod context;
 pub mod dynamic;
-#[path = "../../tools-src/email/host/mod.rs"]
+mod email;
+#[path = "../../wasm-tools/email/host/mod.rs"]
 pub(crate) mod email_host;
 mod gmail;
 mod handler;
@@ -155,25 +168,6 @@ impl ToolRegistry {
                     .find(|tool| tool.name() == name)
                     .cloned()
                     .ok_or_else(|| format!("unknown tool: {name}"))
-            })
-            .collect()
-    }
-
-    pub fn existing_named_tools<S>(
-        &self,
-        names: impl IntoIterator<Item = S>,
-    ) -> Vec<Arc<dyn InternalTool>>
-    where
-        S: AsRef<str>,
-    {
-        let tools = self.all();
-        names
-            .into_iter()
-            .filter_map(|name| {
-                tools
-                    .iter()
-                    .find(|tool| tool.name() == name.as_ref())
-                    .cloned()
             })
             .collect()
     }

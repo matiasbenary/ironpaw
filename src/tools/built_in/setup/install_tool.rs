@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -14,12 +11,11 @@ use crate::{
     automations::{Automation, AutomationEffect, Trigger},
     bus::{ConversationKey, InvocationScope, SenderKind},
     config::RuntimeLayout,
-    message::ToolDefinition,
     secrets::Secrets,
     tools::{
         self, ExecutionContext, InternalTool, ToolResponder,
         setup::{
-            SetupServices, delete_current_message,
+            SessionState, SetupServices, delete_current_message,
             install_common::{SetupSecret, config_prompt, config_value, is_yes, secret_value},
             pause_conversation, publish_tool_result, request_choice, send, stop_setup_automation,
         },
@@ -87,21 +83,17 @@ enum SetupMode {
 
 pub struct InstallToolTool {
     setup: Arc<SetupServices>,
-    state: Arc<InstallToolState>,
+    state: Arc<SessionState<InstallSession>>,
 }
 
 pub struct SetupToolTool {
     setup: Arc<SetupServices>,
-    state: Arc<InstallToolState>,
+    state: Arc<SessionState<InstallSession>>,
 }
 
 pub struct ConfigureToolTool {
     setup: Arc<SetupServices>,
-    state: Arc<InstallToolState>,
-}
-
-struct InstallToolState {
-    session: Mutex<Option<InstallSession>>,
+    state: Arc<SessionState<InstallSession>>,
 }
 
 pub struct ListToolsTool {
@@ -119,9 +111,7 @@ impl InstallToolTool {
     pub fn new(setup: Arc<SetupServices>) -> Self {
         Self {
             setup,
-            state: Arc::new(InstallToolState {
-                session: Mutex::new(None),
-            }),
+            state: Arc::new(SessionState::new()),
         }
     }
 
@@ -183,11 +173,7 @@ impl InstallToolTool {
         };
         let package = InstallableTool::locate(&self.setup.layout, name)?;
         let approval_prompt = package.approval_prompt();
-        *self
-            .state
-            .session
-            .lock()
-            .expect("install tool session lock") = Some(InstallSession {
+        self.state.save(InstallSession {
             package,
             mode: SetupMode::Install,
             stage: InstallStage::ConfirmInstall,
@@ -240,11 +226,7 @@ impl InstallToolTool {
         let current_config =
             serde_json::from_str(&manifest.config_json).map_err(|err| err.to_string())?;
         let config_before_secrets = package.config_before_secrets();
-        *self
-            .state
-            .session
-            .lock()
-            .expect("install tool session lock") = Some(InstallSession {
+        self.state.save(InstallSession {
             package,
             mode: SetupMode::Configure { current_config },
             stage: if config_before_secrets {
@@ -260,13 +242,7 @@ impl InstallToolTool {
         self.setup
             .automations
             .add(Self::automation(&name, conversation))?;
-        let session = self
-            .state
-            .session
-            .lock()
-            .expect("install tool session lock")
-            .clone()
-            .expect("configure session");
+        let session = self.state.get().expect("configure session");
         if session.package.config_before_secrets() {
             self.setup_tool()
                 .prompt_config_or_finish(session, 0, ctx)
@@ -293,10 +269,7 @@ impl SetupToolTool {
     ) -> Result<serde_json::Value, String> {
         let session = self
             .state
-            .session
-            .lock()
-            .expect("install tool session lock")
-            .clone()
+            .get()
             .ok_or_else(|| "tool setup is not active; ask to install the tool again".to_string())?;
         if session.package.name() != name {
             return Err(format!(
@@ -323,7 +296,7 @@ impl SetupToolTool {
                         secret_prompt(&session.package, &session.package.required_secrets()[index]);
                     let mut session = session;
                     session.stage = InstallStage::Secret { index };
-                    self.save_session(session);
+                    self.state.save(session);
                     send(&self.setup.tools, &prompt, ctx).await?;
                 } else {
                     self.prompt_secret_or_finish(session, index + 1, ctx)
@@ -346,7 +319,7 @@ impl SetupToolTool {
                         config_prompt(&session.package.required_config()[index]).to_string();
                     let mut session = session;
                     session.stage = InstallStage::Config { index };
-                    self.save_session(session);
+                    self.state.save(session);
                     send(&self.setup.tools, &prompt, ctx).await?;
                 } else if rerun_autoconfigure_on_keep(&session.package.required_config()[index]) {
                     let value = match &session.mode {
@@ -376,7 +349,7 @@ impl SetupToolTool {
                     let mut session = session;
                     let prompt = pending.waiting_prompt();
                     session.stage = InstallStage::Autoconfigure(pending);
-                    self.save_session(session);
+                    self.state.save(session);
                     send(&self.setup.tools, prompt, ctx).await?;
                     return Ok(serde_json::json!({ "ok": true }));
                 };
@@ -389,14 +362,6 @@ impl SetupToolTool {
         }
 
         Ok(serde_json::json!({ "ok": true }))
-    }
-
-    fn save_session(&self, session: InstallSession) {
-        *self
-            .state
-            .session
-            .lock()
-            .expect("install tool session lock") = Some(session);
     }
 
     async fn apply_config_value(
@@ -432,7 +397,7 @@ impl SetupToolTool {
                 crate::tools::package_support::SetupOutcome::Pending(pending) => {
                     let prompt = pending.prompt();
                     session.stage = InstallStage::Autoconfigure(pending);
-                    self.save_session(session);
+                    self.state.save(session);
                     return send(&self.setup.tools, &prompt, ctx).await;
                 }
             }
@@ -443,20 +408,25 @@ impl SetupToolTool {
     async fn prompt_secret_or_finish(
         &self,
         mut session: InstallSession,
-        index: usize,
+        start: usize,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
-        let secrets = session.package.required_secrets();
-        let Some(secret) = secrets.get(index) else {
+        let Some((index, secret)) = session
+            .package
+            .required_secrets()
+            .into_iter()
+            .enumerate()
+            .skip(start)
+            .find(|(_, secret)| {
+                condition_matches(secret.when.as_ref(), &session.config_values, &session.mode)
+            })
+        else {
             return if session.package.config_before_secrets() {
                 self.complete(session, ctx).await
             } else {
                 Box::pin(self.prompt_config_or_finish(session, 0, ctx)).await
             };
         };
-        if !condition_matches(secret.when.as_ref(), &session.config_values, &session.mode) {
-            return Box::pin(self.prompt_secret_or_finish(session, index + 1, ctx)).await;
-        }
         if matches!(session.mode, SetupMode::Configure { .. })
             && self
                 .setup
@@ -464,7 +434,7 @@ impl SetupToolTool {
                 .exists(&session.package.secret_store_name(&secret.name))
         {
             session.stage = InstallStage::ConfirmSecret { index };
-            self.save_session(session);
+            self.state.save(session);
             return request_choice(
                 &self.setup.tools,
                 &format!(
@@ -476,42 +446,45 @@ impl SetupToolTool {
             )
             .await;
         }
-        let prompt = secret_prompt(&session.package, secret);
+        let prompt = secret_prompt(&session.package, &secret);
         session.stage = InstallStage::Secret { index };
-        self.save_session(session);
+        self.state.save(session);
         send(&self.setup.tools, &prompt, ctx).await
     }
 
     async fn prompt_config_or_finish(
         &self,
         mut session: InstallSession,
-        index: usize,
+        start: usize,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
-        let configs = session.package.required_config();
-        let Some(config) = configs.get(index) else {
+        let Some((index, config)) = session
+            .package
+            .required_config()
+            .into_iter()
+            .enumerate()
+            .skip(start)
+            .find(|(_, config)| {
+                condition_matches(config.when.as_ref(), &session.config_values, &session.mode)
+                    && !session.config_values.contains_key(&config.path)
+            })
+        else {
             return if session.package.config_before_secrets() {
                 self.prompt_secret_or_finish(session, 0, ctx).await
             } else {
                 self.complete(session, ctx).await
             };
         };
-        if !condition_matches(config.when.as_ref(), &session.config_values, &session.mode) {
-            return Box::pin(self.prompt_config_or_finish(session, index + 1, ctx)).await;
-        }
-        if session.config_values.contains_key(&config.path) {
-            return Box::pin(self.prompt_config_or_finish(session, index + 1, ctx)).await;
-        }
         if let SetupMode::Configure { current_config } = &session.mode
             && let Some(value) = current_config.pointer(&config.path)
         {
             let prompt = format!(
                 "{} currently has value {}. Do you want to change it?",
-                config_prompt(config),
+                config_prompt(&config),
                 value
             );
             session.stage = InstallStage::ConfirmConfig { index };
-            self.save_session(session);
+            self.state.save(session);
             return request_choice(
                 &self.setup.tools,
                 &prompt,
@@ -521,16 +494,16 @@ impl SetupToolTool {
             .await;
         }
         session.stage = InstallStage::Config { index };
-        self.save_session(session);
+        self.state.save(session);
         if config.choices.is_empty() {
-            send(&self.setup.tools, config_prompt(config), ctx).await
+            send(&self.setup.tools, config_prompt(&config), ctx).await
         } else {
             let choices = config
                 .choices
                 .iter()
                 .map(|choice| (choice.label.as_str(), choice.value.as_str()))
                 .collect::<Vec<_>>();
-            request_choice(&self.setup.tools, config_prompt(config), &choices, ctx).await
+            request_choice(&self.setup.tools, config_prompt(&config), &choices, ctx).await
         }
     }
 
@@ -580,11 +553,7 @@ impl SetupToolTool {
     async fn cancel(&self, session: InstallSession, ctx: &ExecutionContext) -> Result<(), String> {
         let name = session.package.name().to_string();
         let continuation = session.continuation.clone();
-        *self
-            .state
-            .session
-            .lock()
-            .expect("install tool session lock") = None;
+        self.state.take();
         stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
         send(
             &self.setup.tools,
@@ -604,12 +573,7 @@ impl SetupToolTool {
     }
 
     async fn fail(&self, name: &str, error: &str, ctx: &ExecutionContext) -> Result<(), String> {
-        let session = self
-            .state
-            .session
-            .lock()
-            .expect("install tool session lock")
-            .take();
+        let session = self.state.take();
         stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
         publish_tool_result(
             session
@@ -629,11 +593,7 @@ impl SetupToolTool {
         let name = session.package.name().to_string();
         let configured = matches!(session.mode, SetupMode::Configure { .. });
         let continuation = session.continuation.clone();
-        *self
-            .state
-            .session
-            .lock()
-            .expect("install tool session lock") = None;
+        self.state.take();
         stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
         send(
             &self.setup.tools,
@@ -681,18 +641,13 @@ fn rerun_autoconfigure_on_keep(config: &crate::tools::setup::install_common::Set
 
 #[async_trait]
 impl InternalTool for ListToolsTool {
-    fn name(&self) -> &str {
-        "list_tools"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<ListToolsParams>(
-            self.name(),
-            "List installed and installable Ironpaw WASM and shell tools, including \
+    tools::tool_metadata!(
+        "list_tools",
+        ListToolsParams,
+        "List installed and installable Ironpaw WASM and shell tools, including \
              each tool's setup requirements. Use this before attempting a capability \
-             that is not already provided by a callable tool.",
-        )
-    }
+             that is not already provided by a callable tool."
+    );
 
     async fn execute(
         &self,
@@ -710,19 +665,14 @@ impl InternalTool for ListToolsTool {
 
 #[async_trait]
 impl InternalTool for InstallToolTool {
-    fn name(&self) -> &str {
-        "install_tool"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<InstallToolParams>(
-            self.name(),
-            "Install a local WASM or shell tool package. When called with only \
+    tools::tool_metadata!(
+        "install_tool",
+        InstallToolParams,
+        "Install a local WASM or shell tool package. When called with only \
              `name`, this starts a deterministic setup flow that asks the user \
              for confirmation, configuration, and required secrets without exposing those \
-             secret replies to the LLM.",
-        )
-    }
+             secret replies to the LLM."
+    );
 
     async fn execute(
         &self,
@@ -745,17 +695,12 @@ impl InternalTool for InstallToolTool {
 
 #[async_trait]
 impl InternalTool for ConfigureToolTool {
-    fn name(&self) -> &str {
-        "configure_tool"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<ConfigureToolParams>(
-            self.name(),
-            "Reconfigure an installed external WASM tool. This starts a deterministic setup flow \
-             that asks before replacing each saved secret or non-secret configuration value.",
-        )
-    }
+    tools::tool_metadata!(
+        "configure_tool",
+        ConfigureToolParams,
+        "Reconfigure an installed external WASM tool. This starts a deterministic setup flow \
+         that asks before replacing each saved secret or non-secret configuration value."
+    );
 
     async fn execute(
         &self,
@@ -782,17 +727,12 @@ impl InternalTool for ConfigureToolTool {
 
 #[async_trait]
 impl InternalTool for SetupToolTool {
-    fn name(&self) -> &str {
-        "setup_tool"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<SetupToolParams>(
-            self.name(),
-            "Continue the deterministic setup flow for a tool installation or configuration. \
-             This is called by temporary setup automations with inbound user replies.",
-        )
-    }
+    tools::tool_metadata!(
+        "setup_tool",
+        SetupToolParams,
+        "Continue the deterministic setup flow for a tool installation or configuration. \
+         This is called by temporary setup automations with inbound user replies."
+    );
 
     async fn execute(
         &self,

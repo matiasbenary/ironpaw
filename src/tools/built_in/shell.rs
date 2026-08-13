@@ -28,16 +28,6 @@ pub struct ShellParams {
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct ListShellCommandsParams {}
 
-#[derive(Debug, serde::Serialize)]
-struct ShellOutput {
-    stdout: String,
-    stderr: String,
-    exit_code: Option<i32>,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
-    duration_ms: u64,
-}
-
 pub struct ShellTool {
     tools_dir: std::path::PathBuf,
     enabled: EnabledTools,
@@ -84,7 +74,10 @@ impl ShellTool {
         }
     }
 
-    async fn run(&self, params: ShellParams) -> Result<ShellOutput, String> {
+    async fn run(
+        &self,
+        params: ShellParams,
+    ) -> Result<crate::shell_tools::process::ProcessOutput, String> {
         if !self.enabled.is_enabled(&params.tool)? {
             return Err(format!(
                 "shell tool '{}' is not installed and enabled",
@@ -95,8 +88,7 @@ impl ShellTool {
             &self.tools_dir,
             &params.tool,
         )?);
-        let output = self
-            .executor
+        self.executor
             .execute(
                 manifest,
                 params.command,
@@ -104,15 +96,7 @@ impl ShellTool {
                 params.cwd,
                 COMMAND_TIMEOUT,
             )
-            .await?;
-        Ok(ShellOutput {
-            stdout: output.stdout,
-            stderr: output.stderr,
-            exit_code: output.exit_code,
-            stdout_truncated: output.stdout_truncated,
-            stderr_truncated: output.stderr_truncated,
-            duration_ms: output.duration.as_millis().min(u64::MAX as u128) as u64,
-        })
+            .await
     }
 
     fn description(&self) -> String {
@@ -169,17 +153,12 @@ impl InternalTool for ShellTool {
 
 #[async_trait]
 impl InternalTool for ListShellCommandsTool {
-    fn name(&self) -> &str {
-        "list_shell_commands"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<ListShellCommandsParams>(
-            self.name(),
-            "List every command available through shell, grouped by enabled shell-tool package. \
-             Default commands work in every listed package.",
-        )
-    }
+    tools::tool_metadata!(
+        "list_shell_commands",
+        ListShellCommandsParams,
+        "List every command available through shell, grouped by enabled shell-tool package. \
+         Default commands work in every listed package."
+    );
 
     async fn execute(
         &self,

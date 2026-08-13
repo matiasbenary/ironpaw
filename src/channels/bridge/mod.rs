@@ -134,7 +134,7 @@ pub fn load_channel(
         .http_credentials
         .clone()
         .into_iter()
-        .map(crate::channels::config::ChannelHttpCredential::into_injection)
+        .map(Into::into)
         .collect();
     let wasm = WasmChannel::load(&manifest.wasm_path, secrets, credentials)
         .map_err(|err| err.to_string())?;

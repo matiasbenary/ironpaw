@@ -35,16 +35,11 @@ struct InspectFileParams {
 
 #[async_trait]
 impl InternalTool for InspectFileTool {
-    fn name(&self) -> &str {
-        "inspect_file"
-    }
-
-    fn tool_definition(&self) -> crate::message::ToolDefinition {
-        tools::tool_definition::<InspectFileParams>(
-            self.name(),
-            "Inspect a stored file by filename. If query is omitted, it defaults to 'describe this file'. PDFs use text extraction, text files are passed through as bounded raw content, and images use vision.",
-        )
-    }
+    tools::tool_metadata!(
+        "inspect_file",
+        InspectFileParams,
+        "Inspect a stored file by filename. If query is omitted, it defaults to 'describe this file'. PDFs use text extraction, text files are passed through as bounded raw content, and images use vision."
+    );
 
     async fn execute(
         &self,

@@ -4,10 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use lettre::{
-    Message, SmtpTransport, Transport, message::header::ContentType,
-    transport::smtp::authentication::Credentials,
-};
+use lettre::{SmtpTransport, Transport, transport::smtp::authentication::Credentials};
 use wasmtime::{
     Store,
     component::{Component, Linker},
@@ -16,11 +13,16 @@ use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiVie
 
 use crate::{
     config::RuntimeLayout,
-    http::{CredentialInjection, HttpTool},
+    http::HttpTool,
     message::ToolDefinition,
     secrets::ToolSecrets,
-    tools::{ExecutionContext, InternalTool, ToolError, ToolResponder},
+    tools::{
+        ExecutionContext, InternalTool, ToolError, ToolResponder,
+        email::{OutboundEmail, parse_headers, split_message, truncate},
+    },
 };
+
+pub use crate::http::CredentialInjectionConfig;
 
 wasmtime::component::bindgen!({
     world: "tool",
@@ -170,40 +172,6 @@ fn default_email_tls() -> EmailTlsMode {
     EmailTlsMode::Tls
 }
 
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct CredentialInjectionConfig {
-    pub host: String,
-    pub secret: String,
-    #[serde(default)]
-    pub placeholder: Option<String>,
-    #[serde(default)]
-    pub header: Option<String>,
-    #[serde(default)]
-    pub prefix: Option<String>,
-}
-
-impl CredentialInjectionConfig {
-    pub fn into_injection(self) -> CredentialInjection {
-        if let Some(placeholder) = self.placeholder {
-            return CredentialInjection::url_placeholder(self.host, placeholder, self.secret);
-        }
-
-        CredentialInjection {
-            host: self.host,
-            secret: self.secret,
-            header: self.header.unwrap_or_else(|| "Authorization".to_string()),
-            prefix: self.prefix.unwrap_or_else(|| "Bearer ".to_string()),
-            placeholder: None,
-        }
-    }
-}
-
-impl From<CredentialInjectionConfig> for CredentialInjection {
-    fn from(value: CredentialInjectionConfig) -> Self {
-        value.into_injection()
-    }
-}
-
 pub fn discover(layout: &RuntimeLayout) -> io::Result<Vec<WasmToolManifest>> {
     let mut manifests = Vec::new();
     let tools_dir = layout.tools_dir();
@@ -285,7 +253,7 @@ impl LoadedTool {
                         .http_credentials
                         .clone()
                         .into_iter()
-                        .map(CredentialInjectionConfig::into_injection)
+                        .map(Into::into)
                         .collect(),
                 ),
                 email: EmailHost::new(secrets, tool_config.email),
@@ -370,19 +338,6 @@ impl ironpaw::tool::tool_host::Host for StoreData {
 struct EmailHost {
     secrets: ToolSecrets,
     config: Option<EmailCapabilityConfig>,
-}
-
-#[derive(serde::Deserialize)]
-struct OutboundEmail {
-    to: Vec<String>,
-    subject: String,
-    body: String,
-    #[serde(default)]
-    cc: Vec<String>,
-    #[serde(default)]
-    bcc: Vec<String>,
-    #[serde(default)]
-    from: Option<String>,
 }
 
 impl EmailHost {
@@ -475,7 +430,7 @@ impl EmailHost {
             "to": headers.get("to").cloned().unwrap_or_default(),
             "subject": headers.get("subject").cloned().unwrap_or_default(),
             "date": headers.get("date").cloned().unwrap_or_default(),
-            "body": truncate_on_char_boundary(text, 100_000),
+            "body": truncate(&text, 100_000),
         }))
         .map_err(|err| err.to_string())
     }
@@ -498,40 +453,12 @@ impl EmailHost {
         if email.to.is_empty() {
             return Err("email must have at least one recipient".to_string());
         }
-        let from = email
+        let fallback_from = config
             .from
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .or(config.from.as_deref())
-            .filter(|value| !value.trim().is_empty())
             .unwrap_or(&config.username);
-        let mut builder = Message::builder()
-            .from(
-                from.parse()
-                    .map_err(|err| format!("invalid from address: {err}"))?,
-            )
-            .subject(email.subject)
-            .header(ContentType::TEXT_PLAIN);
-        for recipient in email.to {
-            builder = builder.to(recipient
-                .parse()
-                .map_err(|err| format!("invalid to address: {err}"))?);
-        }
-        for recipient in email.cc {
-            builder = builder.cc(recipient
-                .parse()
-                .map_err(|err| format!("invalid cc address: {err}"))?);
-        }
-        for recipient in email.bcc {
-            builder = builder.bcc(
-                recipient
-                    .parse()
-                    .map_err(|err| format!("invalid bcc address: {err}"))?,
-            );
-        }
-        let message = builder
-            .body(email.body)
-            .map_err(|err| format!("failed to build email: {err}"))?;
+        let message = email.into_message(fallback_from)?;
         let credentials = Credentials::new(config.username.clone(), password);
         let mailer = match smtp.tls {
             EmailTlsMode::Tls => SmtpTransport::relay(&smtp.host),
@@ -628,68 +555,6 @@ fn parse_uid(uid: &str) -> Result<u32, String> {
     uid.trim()
         .parse::<u32>()
         .map_err(|_| format!("invalid email UID: {uid}"))
-}
-
-fn split_message(message: &[u8]) -> (&[u8], String) {
-    let split = message
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|index| (index, 4))
-        .or_else(|| {
-            message
-                .windows(2)
-                .position(|window| window == b"\n\n")
-                .map(|index| (index, 2))
-        });
-    let Some((index, separator_len)) = split else {
-        return (message, String::new());
-    };
-    (
-        &message[..index],
-        String::from_utf8_lossy(&message[index + separator_len..]).to_string(),
-    )
-}
-
-fn parse_headers(bytes: &[u8]) -> std::collections::BTreeMap<String, String> {
-    let text = String::from_utf8_lossy(bytes);
-    let mut headers = std::collections::BTreeMap::new();
-    let mut current_name: Option<String> = None;
-    let mut current_value = String::new();
-
-    for line in text.lines() {
-        if line.starts_with(' ') || line.starts_with('\t') {
-            if !current_value.is_empty() {
-                current_value.push(' ');
-            }
-            current_value.push_str(line.trim());
-            continue;
-        }
-        if let Some(name) = current_name.take() {
-            headers.insert(name, current_value.trim().to_string());
-            current_value.clear();
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        current_name = Some(name.trim().to_ascii_lowercase());
-        current_value.push_str(value.trim());
-    }
-    if let Some(name) = current_name {
-        headers.insert(name, current_value.trim().to_string());
-    }
-
-    headers
-}
-
-fn truncate_on_char_boundary(body: String, max: usize) -> String {
-    if body.len() <= max {
-        return body;
-    }
-    let mut end = max;
-    while !body.is_char_boundary(end) {
-        end -= 1;
-    }
-    body[..end].to_string()
 }
 
 impl WasiView for StoreData {

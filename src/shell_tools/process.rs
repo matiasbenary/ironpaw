@@ -29,14 +29,14 @@ pub struct ProcessRequest {
     pub timeout: Duration,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct ProcessOutput {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: Option<i32>,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
-    pub duration: Duration,
+    pub duration_ms: u64,
 }
 
 pub struct ProcessRunner {
@@ -165,7 +165,7 @@ impl ProcessRunner {
             exit_code: status.code(),
             stdout_truncated,
             stderr_truncated,
-            duration: started.elapsed(),
+            duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
         })
     }
 
@@ -327,10 +327,7 @@ async fn capture(mut reader: impl AsyncRead + Unpin) -> (String, bool) {
     let mut kept = Vec::new();
     let mut buffer = [0_u8; 8192];
     let mut truncated = false;
-    loop {
-        let Ok(read) = reader.read(&mut buffer).await else {
-            break;
-        };
+    while let Ok(read) = reader.read(&mut buffer).await {
         if read == 0 {
             break;
         }
@@ -388,7 +385,7 @@ mod tests {
         assert!(output.stderr.is_empty());
         assert!(!output.stdout_truncated);
         assert!(!output.stderr_truncated);
-        assert!(output.duration <= Duration::from_secs(5));
+        assert!(output.duration_ms <= 5_000);
         std::fs::remove_dir_all(tool_dir).unwrap();
     }
 

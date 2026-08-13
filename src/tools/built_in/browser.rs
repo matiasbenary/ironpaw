@@ -14,7 +14,6 @@ use crate::{
     automations::{Automation, AutomationEffect, Trigger},
     bus::InvocationScope,
     config::RuntimeLayout,
-    message::ToolDefinition,
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
@@ -394,17 +393,13 @@ async fn evaluate_action(page: &Page, script: String) -> Result<(), String> {
 }
 #[async_trait]
 impl InternalTool for BrowserTool {
-    fn name(&self) -> &str {
-        "browser"
-    }
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<BrowserParams>(
-            self.name(),
-            "Navigate a website and interact with its HTML components. Use goto \
+    tools::tool_metadata!(
+        "browser",
+        BrowserParams,
+        "Navigate a website and interact with its HTML components. Use goto \
              to open a page, snapshot to inspect it, then act with refs returned \
-             by the latest snapshot.",
-        )
-    }
+             by the latest snapshot."
+    );
     async fn execute(
         &self,
         args: serde_json::Value,
@@ -423,16 +418,11 @@ impl InternalTool for BrowserTool {
 
 #[async_trait]
 impl InternalTool for BrowserUpdateTool {
-    fn name(&self) -> &str {
-        "browser_update"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<serde_json::Value>(
-            self.name(),
-            "Internal maintenance tool that updates Ironpaw's managed Chrome runtime.",
-        )
-    }
+    tools::tool_metadata!(
+        "browser_update",
+        serde_json::Value,
+        "Internal maintenance tool that updates Ironpaw's managed Chrome runtime."
+    );
 
     async fn execute(
         &self,

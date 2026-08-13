@@ -22,8 +22,8 @@ if command -v codesign >/dev/null 2>&1; then
 fi
 
 echo "building ironpaw-tui"
-cargo build --manifest-path "$SCRIPT_DIR/local-clients-src/ironpaw-tui/Cargo.toml" --release --locked
-cp "$SCRIPT_DIR/local-clients-src/ironpaw-tui/target/release/ironpaw-tui" "$RELEASE_DIR/ironpaw-tui"
+cargo build --manifest-path "$SCRIPT_DIR/local-clients/ironpaw-tui/Cargo.toml" --release --locked
+cp "$SCRIPT_DIR/local-clients/ironpaw-tui/target/release/ironpaw-tui" "$RELEASE_DIR/ironpaw-tui"
 if command -v xattr >/dev/null 2>&1; then
   xattr -c "$RELEASE_DIR/ironpaw-tui" || true
 fi
@@ -64,10 +64,10 @@ build_wasm_packages() {
   done
 }
 
-build_wasm_packages "$SCRIPT_DIR/channels-src" "$CHANNELS_DIR" "$CHANNEL_STORE_DIR"
-build_wasm_packages "$SCRIPT_DIR/tools-src" "$RELEASE_DIR/tools" "$TOOL_STORE_DIR"
+build_wasm_packages "$SCRIPT_DIR/wasm-channels" "$CHANNELS_DIR" "$CHANNEL_STORE_DIR"
+build_wasm_packages "$SCRIPT_DIR/wasm-tools" "$RELEASE_DIR/tools" "$TOOL_STORE_DIR"
 
-for source_dir in "$SCRIPT_DIR/tools-src"/*; do
+for source_dir in "$SCRIPT_DIR/wasm-tools"/*; do
   [ -f "$source_dir/shell.json" ] || continue
   package_name="$(basename "$source_dir")"
   destination="$TOOL_STORE_DIR/$package_name"

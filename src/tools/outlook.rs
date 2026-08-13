@@ -1,6 +1,9 @@
 use reqwest::blocking::Client;
 
-use crate::secrets::ToolSecrets;
+use crate::{
+    secrets::ToolSecrets,
+    tools::email::{OutboundEmail, truncate},
+};
 
 const API: &str = "https://graph.microsoft.com/v1.0/me";
 
@@ -159,17 +162,6 @@ impl<'a> OutlookClient<'a> {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct OutboundEmail {
-    to: Vec<String>,
-    subject: String,
-    body: String,
-    #[serde(default)]
-    cc: Vec<String>,
-    #[serde(default)]
-    bcc: Vec<String>,
-}
-
 fn graph_folder(folder: &str) -> &str {
     match folder.to_ascii_uppercase().as_str() {
         "INBOX" => "inbox",
@@ -200,16 +192,6 @@ fn recipients(values: Vec<String>) -> Vec<serde_json::Value> {
         .into_iter()
         .map(|address| serde_json::json!({ "emailAddress": { "address": address } }))
         .collect()
-}
-fn truncate(value: &str, max: usize) -> &str {
-    if value.len() <= max {
-        return value;
-    }
-    let mut end = max;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    &value[..end]
 }
 fn http_error(error: reqwest::Error) -> String {
     format!("Outlook request failed: {}", error.without_url())

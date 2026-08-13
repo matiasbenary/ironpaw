@@ -336,28 +336,19 @@ impl Automations {
                 Ok(serde_json::json!({ "name": name }))
             }
             AutomationAction::Delete { name } => {
-                let name = name.trim();
-                if name.is_empty() {
-                    return Err("name must not be empty".to_string());
-                }
+                let name = automation_name(&name)?;
                 self.delete(name)?;
                 Ok(serde_json::json!({ "ok": true, "name": name }))
             }
             AutomationAction::Inspect { name } => {
-                let name = name.trim();
-                if name.is_empty() {
-                    return Err("name must not be empty".to_string());
-                }
+                let name = automation_name(&name)?;
                 serde_json::to_value(self.inspect(name)?).map_err(|err| err.to_string())
             }
             AutomationAction::List => {
                 serde_json::to_value(self.list()).map_err(|err| err.to_string())
             }
             AutomationAction::Trigger { name } => {
-                let name = name.trim();
-                if name.is_empty() {
-                    return Err("name must not be empty".to_string());
-                }
+                let name = automation_name(&name)?;
                 let automation = self
                     .automations
                     .read()
@@ -516,6 +507,13 @@ impl Automations {
             &invocation.context,
             &invocation.trigger,
         );
+    }
+}
+
+fn automation_name(name: &str) -> Result<&str, String> {
+    match name.trim() {
+        "" => Err("name must not be empty".to_string()),
+        name => Ok(name),
     }
 }
 

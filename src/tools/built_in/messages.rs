@@ -69,19 +69,14 @@ impl SendMessageTool {
 
 #[async_trait]
 impl InternalTool for SendMessageTool {
-    fn name(&self) -> &str {
-        "send_message"
-    }
-
-    fn tool_definition(&self) -> crate::message::ToolDefinition {
-        tools::tool_definition::<SendMessageToolInput>(
-            self.name(),
-            "Send a message to the user through one of Ironpaw's channels. \
+    tools::tool_metadata!(
+        "send_message",
+        SendMessageToolInput,
+        "Send a message to the user through one of Ironpaw's channels. \
              Use this only to reach a different channel or conversation than \
              the current one, or to deliver a file: your final reply is \
-             delivered to the current conversation automatically.",
-        )
-    }
+             delivered to the current conversation automatically."
+    );
 
     async fn execute(
         &self,
@@ -162,18 +157,13 @@ impl DeleteMessageTool {
 
 #[async_trait]
 impl InternalTool for DeleteMessageTool {
-    fn name(&self) -> &str {
-        "delete_message"
-    }
-
-    fn tool_definition(&self) -> crate::message::ToolDefinition {
-        tools::tool_definition::<DeleteMessageToolInput>(
-            self.name(),
-            "Delete a message from a channel when the channel supports it. \
+    tools::tool_metadata!(
+        "delete_message",
+        DeleteMessageToolInput,
+        "Delete a message from a channel when the channel supports it. \
              Defaults to the current conversation only when called from a \
-             conversation-scoped execution.",
-        )
-    }
+             conversation-scoped execution."
+    );
 
     async fn execute(
         &self,

@@ -174,7 +174,7 @@ fn channel_source_dirs(layout: &RuntimeLayout) -> Vec<PathBuf> {
     }
     dirs.push(layout.root().join("channel-store"));
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    dirs.push(manifest_dir.join("channels-src"));
+    dirs.push(manifest_dir.join("wasm-channels"));
     dirs
 }
 

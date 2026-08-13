@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -14,11 +11,12 @@ use crate::{
     automations::{Automation, AutomationEffect, Trigger},
     bus::{ConversationKey, InvocationScope, SenderKind},
     config::RuntimeLayout,
-    message::ToolDefinition,
     secrets::Secrets,
     tools::{
         self, ExecutionContext, InternalTool, ToolResponder,
-        setup::{SetupServices, install_common::SetupSecret, pause_conversation, send},
+        setup::{
+            SessionState, SetupServices, install_common::SetupSecret, pause_conversation, send,
+        },
     },
 };
 
@@ -80,16 +78,12 @@ enum InstallStage {
 
 pub struct InstallChannelTool {
     setup: Arc<SetupServices>,
-    state: Arc<InstallChannelState>,
+    state: Arc<SessionState<InstallSession>>,
 }
 
 pub struct SetupChannelTool {
     setup: Arc<SetupServices>,
-    state: Arc<InstallChannelState>,
-}
-
-struct InstallChannelState {
-    session: Mutex<Option<InstallSession>>,
+    state: Arc<SessionState<InstallSession>>,
 }
 
 pub struct RemoveChannelTool {
@@ -111,9 +105,7 @@ impl InstallChannelTool {
     pub fn new(setup: Arc<SetupServices>) -> Self {
         Self {
             setup,
-            state: Arc::new(InstallChannelState {
-                session: Mutex::new(None),
-            }),
+            state: Arc::new(SessionState::new()),
         }
     }
 
@@ -195,11 +187,7 @@ impl InstallChannelTool {
             InvocationScope::Conversation(conversation) => Some(conversation.clone()),
             InvocationScope::ScheduledAutomation { .. } => None,
         };
-        *self
-            .state
-            .session
-            .lock()
-            .expect("install channel session lock") = Some(InstallSession {
+        self.state.save(InstallSession {
             package,
             secrets,
             stage: InstallStage::Confirm,
@@ -293,18 +281,13 @@ impl RemoveChannelTool {
 
 #[async_trait]
 impl InternalTool for ListChannelsTool {
-    fn name(&self) -> &str {
-        "list_channels"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<ListChannelsParams>(
-            self.name(),
-            "List Ironpaw channels, including installed runtime channels and \
+    tools::tool_metadata!(
+        "list_channels",
+        ListChannelsParams,
+        "List Ironpaw channels, including installed runtime channels and \
              installable local channel packages. Use this before install_channel \
-             when the user asks what channels are available.",
-        )
-    }
+             when the user asks what channels are available."
+    );
 
     async fn execute(
         &self,
@@ -322,17 +305,12 @@ impl InternalTool for ListChannelsTool {
 
 #[async_trait]
 impl InternalTool for RemoveChannelTool {
-    fn name(&self) -> &str {
-        "remove_channel"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<RemoveChannelParams>(
-            self.name(),
-            "Remove an installed Ironpaw channel so it can be installed again. \
-             Use this when the user asks to uninstall, remove, reset, or reinstall a channel.",
-        )
-    }
+    tools::tool_metadata!(
+        "remove_channel",
+        RemoveChannelParams,
+        "Remove an installed Ironpaw channel so it can be installed again. \
+         Use this when the user asks to uninstall, remove, reset, or reinstall a channel."
+    );
 
     async fn execute(
         &self,
@@ -351,19 +329,14 @@ impl InternalTool for RemoveChannelTool {
 
 #[async_trait]
 impl InternalTool for InstallChannelTool {
-    fn name(&self) -> &str {
-        "install_channel"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<InstallChannelParams>(
-            self.name(),
-            "Install a local channel package. When called with only `name`, \
+    tools::tool_metadata!(
+        "install_channel",
+        InstallChannelParams,
+        "Install a local channel package. When called with only `name`, \
              this starts a deterministic setup flow that asks the user for \
              confirmation and required secrets without exposing those secret \
-             replies to the LLM.",
-        )
-    }
+             replies to the LLM."
+    );
 
     async fn execute(
         &self,
@@ -386,17 +359,12 @@ impl InternalTool for InstallChannelTool {
 
 #[async_trait]
 impl InternalTool for SetupChannelTool {
-    fn name(&self) -> &str {
-        "setup_channel"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<SetupChannelParams>(
-            self.name(),
-            "Continue the deterministic setup flow for a channel installation. \
-             This is called by temporary setup automations with inbound user replies.",
-        )
-    }
+    tools::tool_metadata!(
+        "setup_channel",
+        SetupChannelParams,
+        "Continue the deterministic setup flow for a channel installation. \
+         This is called by temporary setup automations with inbound user replies."
+    );
 
     async fn execute(
         &self,

@@ -3,7 +3,6 @@ use std::{net::SocketAddr, time::Duration};
 use async_trait::async_trait;
 
 use crate::{
-    message::ToolDefinition,
     network_policy::{is_public_ip, resolve_public},
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
@@ -120,19 +119,14 @@ pub(crate) fn pinned_client(host: &str, addrs: &[SocketAddr]) -> Result<reqwest:
 
 #[async_trait]
 impl InternalTool for WebFetchTool {
-    fn name(&self) -> &str {
-        "web_fetch"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<WebFetchParams>(
-            self.name(),
-            "Use only to fetch a known public URL (HTTP GET); never use it to \
+    tools::tool_metadata!(
+        "web_fetch",
+        WebFetchParams,
+        "Use only to fetch a known public URL (HTTP GET); never use it to \
              query a search engine. Returns the response body as a string (call \
              JSON.parse on it if the body is JSON). Read-only; it does not \
-             execute JavaScript or interact with the page.",
-        )
-    }
+             execute JavaScript or interact with the page."
+    );
 
     async fn execute(
         &self,

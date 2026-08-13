@@ -82,16 +82,11 @@ pub struct ImageGenerationParams {
 
 #[async_trait]
 impl InternalTool for ImageGenerationTool {
-    fn name(&self) -> &str {
-        "image_generation"
-    }
-
-    fn tool_definition(&self) -> crate::message::ToolDefinition {
-        tools::tool_definition::<ImageGenerationParams>(
-            self.name(),
-            "Generate an image from a text description, store it as a PNG, and return its filename. To deliver the image, call send_message with that filename.",
-        )
-    }
+    tools::tool_metadata!(
+        "image_generation",
+        ImageGenerationParams,
+        "Generate an image from a text description, store it as a PNG, and return its filename. To deliver the image, call send_message with that filename."
+    );
 
     async fn execute(
         &self,

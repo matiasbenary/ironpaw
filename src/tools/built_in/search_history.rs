@@ -4,7 +4,6 @@ use async_trait::async_trait;
 
 use crate::{
     history::History,
-    message::ToolDefinition,
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
@@ -38,16 +37,11 @@ impl SearchHistoryTool {
 
 #[async_trait]
 impl InternalTool for SearchHistoryTool {
-    fn name(&self) -> &str {
-        "search_history"
-    }
-
-    fn tool_definition(&self) -> ToolDefinition {
-        tools::tool_definition::<SearchHistoryParams>(
-            self.name(),
-            "Search Ironpaw's stored history across all conversations.",
-        )
-    }
+    tools::tool_metadata!(
+        "search_history",
+        SearchHistoryParams,
+        "Search Ironpaw's stored history across all conversations."
+    );
 
     async fn execute(
         &self,

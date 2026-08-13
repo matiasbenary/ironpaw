@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use lettre::{Message, message::header::ContentType};
 use reqwest::blocking::Client;
 
-use crate::secrets::ToolSecrets;
+use crate::{
+    secrets::ToolSecrets,
+    tools::email::{OutboundEmail, parse_headers, split_message, truncate},
+};
 
 const API: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -106,7 +108,7 @@ impl<'a> GmailClient<'a> {
             "to": headers.get("to").cloned().unwrap_or_default(),
             "subject": headers.get("subject").cloned().unwrap_or_default(),
             "date": headers.get("date").cloned().unwrap_or_default(),
-            "body": truncate(body, 100_000),
+            "body": truncate(&body, 100_000),
         })
         .to_string())
     }
@@ -119,40 +121,11 @@ impl<'a> GmailClient<'a> {
         }
         let email: OutboundEmail = serde_json::from_str(message_json)
             .map_err(|e| format!("invalid email message JSON: {e}"))?;
-        let from = email
+        let fallback_from = self
             .from
-            .as_deref()
-            .filter(|v| !v.trim().is_empty())
-            .or(self.from.filter(|v| !v.trim().is_empty()))
+            .filter(|value| !value.trim().is_empty())
             .unwrap_or(self.username);
-        let mut builder = Message::builder()
-            .from(
-                from.parse()
-                    .map_err(|e| format!("invalid from address: {e}"))?,
-            )
-            .subject(email.subject)
-            .header(ContentType::TEXT_PLAIN);
-        for address in email.to {
-            builder = builder.to(address
-                .parse()
-                .map_err(|e| format!("invalid to address: {e}"))?);
-        }
-        for address in email.cc {
-            builder = builder.cc(address
-                .parse()
-                .map_err(|e| format!("invalid cc address: {e}"))?);
-        }
-        for address in email.bcc {
-            builder = builder.bcc(
-                address
-                    .parse()
-                    .map_err(|e| format!("invalid bcc address: {e}"))?,
-            );
-        }
-        let raw = builder
-            .body(email.body)
-            .map_err(|e| e.to_string())?
-            .formatted();
+        let raw = email.into_message(fallback_from)?.formatted();
         let response: serde_json::Value = self
             .client()?
             .post(format!("{API}/messages/send"))
@@ -212,19 +185,6 @@ impl<'a> GmailClient<'a> {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct OutboundEmail {
-    to: Vec<String>,
-    subject: String,
-    body: String,
-    #[serde(default)]
-    cc: Vec<String>,
-    #[serde(default)]
-    bcc: Vec<String>,
-    #[serde(default)]
-    from: Option<String>,
-}
-
 fn gmail_label(folder: &str) -> &str {
     match folder.to_ascii_uppercase().as_str() {
         "INBOX" => "INBOX",
@@ -247,34 +207,6 @@ fn gmail_headers(message: &serde_json::Value) -> BTreeMap<String, String> {
             ))
         })
         .collect()
-}
-fn split_message(message: &[u8]) -> (&[u8], String) {
-    for (separator, len) in [(b"\r\n\r\n".as_slice(), 4), (b"\n\n".as_slice(), 2)] {
-        if let Some(i) = message.windows(len).position(|w| w == separator) {
-            return (
-                &message[..i],
-                String::from_utf8_lossy(&message[i + len..]).to_string(),
-            );
-        }
-    }
-    (message, String::new())
-}
-fn parse_headers(bytes: &[u8]) -> BTreeMap<String, String> {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .filter_map(|line| line.split_once(':'))
-        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
-        .collect()
-}
-fn truncate(mut value: String, max: usize) -> String {
-    if value.len() > max {
-        let mut end = max;
-        while !value.is_char_boundary(end) {
-            end -= 1;
-        }
-        value.truncate(end);
-    }
-    value
 }
 fn http_error(error: reqwest::Error) -> String {
     format!("Gmail request failed: {}", error.without_url())
