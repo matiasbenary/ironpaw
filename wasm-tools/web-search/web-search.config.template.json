@@ -6,6 +6,5 @@
       "header": "X-Subscription-Token",
       "prefix": ""
     }
-  ],
-  "config": {}
+  ]
 }

@@ -6,7 +6,7 @@ use wasmtime::{
 };
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-use crate::{http::HttpTool, secrets::ChannelSecrets};
+use crate::{http::NetworkGate, secrets::ChannelSecrets};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 wasmtime::component::bindgen!({
@@ -23,7 +23,7 @@ impl WasmChannel {
     pub fn load(
         path: impl AsRef<Path>,
         secrets: ChannelSecrets,
-        credentials: Vec<crate::http::CredentialInjection>,
+        credentials: Vec<crate::http::NetworkGrant>,
     ) -> Result<Self, WasmChannelError> {
         let mut config = wasmtime::Config::new();
         config.wasm_component_model(true);
@@ -45,7 +45,7 @@ impl WasmChannel {
             StoreData {
                 ctx: WasiCtxBuilder::new().build(),
                 table: ResourceTable::new(),
-                http: HttpTool::new(secrets, credentials),
+                http: NetworkGate::new(secrets, credentials),
                 emitted_messages: Vec::new(),
             },
         );
@@ -112,7 +112,7 @@ impl std::error::Error for WasmChannelError {}
 struct StoreData {
     ctx: WasiCtx,
     table: ResourceTable,
-    http: HttpTool<ChannelSecrets>,
+    http: NetworkGate<ChannelSecrets>,
     emitted_messages: Vec<String>,
 }
 

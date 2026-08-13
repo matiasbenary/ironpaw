@@ -47,6 +47,47 @@ pub struct SetupCondition {
 pub struct SetupChoice {
     pub label: String,
     pub value: String,
+    #[serde(default)]
+    pub oauth: Option<SetupOAuth>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct SetupOAuth {
+    pub login_hint_path: String,
+    pub authorize_url: String,
+    pub token_url: String,
+    pub client_id: SetupOAuthClientId,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    #[serde(default)]
+    pub client_secret_handle: Option<String>,
+    pub redirect_host: String,
+    pub refresh_token_handle: String,
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub extra_authorize_params: BTreeMap<String, String>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(untagged)]
+pub enum SetupOAuthClientId {
+    Literal(String),
+    Config { config: String },
+}
+
+impl SetupOAuthClientId {
+    pub fn resolve(&self, values: &BTreeMap<String, serde_json::Value>) -> Result<String, String> {
+        match self {
+            Self::Literal(value) if !value.trim().is_empty() => Ok(value.clone()),
+            Self::Literal(_) => Err("OAuth client id must not be empty".to_string()),
+            Self::Config { config } => values
+                .get(config)
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| format!("OAuth client id config is missing: {config}")),
+        }
+    }
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -133,7 +174,7 @@ pub fn config_value(config: &SetupConfig, message: &str) -> Result<serde_json::V
     match config.value_type {
         ConfigValueType::String => Ok(serde_json::Value::String(value.to_string())),
         ConfigValueType::Email => {
-            if !crate::tools::email_host::is_email_address(value) {
+            if !crate::network::email::is_email_address(value) {
                 return Err(format!("{} must be a valid email address", config.path));
             }
             Ok(serde_json::Value::String(value.to_string()))
@@ -186,7 +227,7 @@ pub fn locate_config_template(
 ) -> Result<PathBuf, String> {
     for file_name in [
         format!("{name}.config.json"),
-        format!("{name}.config.example.json"),
+        format!("{name}.config.template.json"),
     ] {
         let path = source_dir.join(file_name);
         if path.exists() {
@@ -278,4 +319,32 @@ pub fn is_yes(message: &str) -> bool {
         message.trim().to_ascii_lowercase().as_str(),
         "y" | "yes" | "ok" | "okay" | "sure" | "confirm" | "install"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauth_client_id_can_be_publisher_or_operator_provided() {
+        let values = BTreeMap::from([(
+            "/oauth/client_id".to_string(),
+            serde_json::json!("operator-client"),
+        )]);
+
+        assert_eq!(
+            SetupOAuthClientId::Literal("publisher-client".to_string())
+                .resolve(&values)
+                .unwrap(),
+            "publisher-client"
+        );
+        assert_eq!(
+            SetupOAuthClientId::Config {
+                config: "/oauth/client_id".to_string()
+            }
+            .resolve(&values)
+            .unwrap(),
+            "operator-client"
+        );
+    }
 }

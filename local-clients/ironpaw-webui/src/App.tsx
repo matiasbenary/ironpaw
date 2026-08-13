@@ -52,18 +52,31 @@ export function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<StoredMessage[]>([]);
+  const [newMessageKeys, setNewMessageKeys] = useState<Record<string, string>>({});
   const [transients, setTransients] = useState<Record<string, TransientState>>({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>('connected');
   const [reconnectOpen, setReconnectOpen] = useState(false);
   const activeIdRef = useRef<string | null>(null);
   const oauthStates = useRef(new Set<string>());
+  const connectedRef = useRef(false);
+  const greetingConfigRef = useRef(config ? `${config.baseUrl}:${config.token}` : null);
+  const greetingPending = useRef(Boolean(config));
 
   function updateTransient(id: string, patch: Partial<TransientState>) {
     setTransients((current) => ({
       ...current,
       [id]: { ...(current[id] || EMPTY_TRANSIENT), ...patch },
     }));
+  }
+
+  function clearNewMessageMarker(id: string) {
+    setNewMessageKeys((current) => {
+      if (!current[id]) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
   }
 
   async function refreshConversations() {
@@ -97,6 +110,21 @@ export function App() {
     if (id) updateTransient(id, { activity: null, error: null });
   }
 
+  function greetIfReady(candidate: ClientConfig) {
+    const id = activeIdRef.current;
+    const configKey = `${candidate.baseUrl}:${candidate.token}`;
+    if (!connectedRef.current || !greetingPending.current || !id) return;
+    greetingPending.current = false;
+    void sendMessage(candidate, id, {
+      content: 'hi',
+      message_id: crypto.randomUUID(),
+      attachments: [],
+    }).catch((error) => {
+      if (greetingConfigRef.current !== configKey) return;
+      if (error instanceof AuthenticationError) requireAuthentication();
+    });
+  }
+
   useEffect(() => {
     if (!config) return;
     let cancelled = false;
@@ -105,6 +133,7 @@ export function App() {
         if (cancelled) return;
         setConversations(stored);
         void openConversation(stored[0]?.id || crypto.randomUUID());
+        greetIfReady(config);
       })
       .catch((error) => {
         if (cancelled) return;
@@ -112,6 +141,7 @@ export function App() {
         activeIdRef.current = id;
         setActiveId(id);
         updateTransient(id, { error: errorMessage(error) });
+        greetIfReady(config);
       });
     return () => { cancelled = true; };
   }, [config]);
@@ -119,10 +149,17 @@ export function App() {
   useEffect(() => {
     if (!config) return;
     const controller = new AbortController();
+    const configKey = `${config.baseUrl}:${config.token}`;
+    if (greetingConfigRef.current !== configKey) {
+      greetingConfigRef.current = configKey;
+      greetingPending.current = true;
+    }
+    connectedRef.current = false;
 
     async function handleEvent(event: CallbackEvent) {
       const id = event.conversation_id;
       let changedMessage: StoredMessage | null = null;
+      let marksNewMessage = false;
       if (event.kind === 'message') {
         const externalId = event.id || crypto.randomUUID();
         changedMessage = {
@@ -136,6 +173,7 @@ export function App() {
           created_at: Date.now(),
         };
         await saveMessage(changedMessage);
+        marksNewMessage = true;
         updateTransient(id, { activity: null });
       } else if (event.kind === 'choice') {
         const externalId = event.id || crypto.randomUUID();
@@ -149,6 +187,7 @@ export function App() {
           created_at: Date.now(),
         };
         await saveMessage(changedMessage);
+        marksNewMessage = true;
         updateTransient(id, { activity: null });
       } else if (event.kind === 'delete' && event.message_id) {
         changedMessage = await redactMessage(id, event.message_id);
@@ -159,9 +198,17 @@ export function App() {
             : event.action?.progress?.text || 'Working…',
         });
       } else if (event.kind === 'error') {
-        updateTransient(id, { error: event.message || 'Ironpaw reported an error.' });
+        updateTransient(id, {
+          activity: null,
+          error: event.message || 'Ironpaw reported an error.',
+        });
       }
       if (changedMessage) {
+        if (marksNewMessage) {
+          setNewMessageKeys((current) => current[id]
+            ? current
+            : { ...current, [id]: changedMessage.key });
+        }
         await refreshConversations();
         if (activeIdRef.current === id) {
           setMessages((current) => upsertMessage(current, changedMessage));
@@ -173,7 +220,14 @@ export function App() {
       config,
       handleEvent,
       (connected) => {
+        connectedRef.current = connected;
         setConnectionState(connected ? 'connected' : 'offline');
+        if (!connected) {
+          setTransients((current) => Object.fromEntries(
+            Object.entries(current).map(([id, transient]) => [id, { ...transient, activity: null }]),
+          ));
+        }
+        if (connected) greetIfReady(config);
       },
       requireAuthentication,
       controller.signal,
@@ -201,6 +255,7 @@ export function App() {
         data_base64: await fileAsBase64(file),
       })));
       await sendMessage(config, id, { content: text, message_id: externalId, attachments });
+      clearNewMessageMarker(id);
       const message: StoredMessage = {
         key: `${id}:${externalId}`,
         conversation_id: id,
@@ -276,6 +331,9 @@ export function App() {
     const candidate = saveClientConfig(address, token);
     try {
       await verifyClient(candidate);
+      greetingConfigRef.current = `${candidate.baseUrl}:${candidate.token}`;
+      greetingPending.current = true;
+      connectedRef.current = false;
       setConfig(candidate);
       setConnectionState('connected');
       setReconnectOpen(false);
@@ -299,12 +357,14 @@ export function App() {
         title={activeConversation?.title || 'New conversation'}
         canRename={Boolean(activeConversation)}
         messages={messages}
+        newMessageKey={activeId ? newMessageKeys[activeId] : undefined}
         transient={activeId ? transients[activeId] || EMPTY_TRANSIENT : EMPTY_TRANSIENT}
         onMenu={() => setSidebarOpen((open) => !open)}
         onRename={renameActive}
         onReconnect={() => setReconnectOpen(true)}
         onChoice={(value, message) => void answerChoice(value, message)}
         onLink={watchOauth}
+        onReadNewMessages={() => activeId && clearNewMessageMarker(activeId)}
         onSend={postMessage}
       />
       <button className="sidebar-backdrop" type="button" aria-label="Close conversations" onClick={() => setSidebarOpen(false)} />

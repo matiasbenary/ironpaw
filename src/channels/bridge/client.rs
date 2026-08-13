@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response, Sse, sse::Event as SseEvent},
     routing::{get, post},
 };
-use futures::stream;
+use futures::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -48,7 +48,7 @@ async fn oauth_status(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     authorize_bearer(&headers, &state.token)?;
     Ok(Json(serde_json::json!({
-        "complete": crate::oauth::callback_received(&query.state)
+        "complete": crate::network::oauth::callback_received(&query.state)
     })))
 }
 
@@ -153,7 +153,7 @@ async fn events(
     validate_id("client", &query.client_id)?;
     let receiver = state.client_events.subscribe();
     let client_id = query.client_id;
-    let stream = stream::unfold(receiver, move |mut receiver| {
+    let events = stream::unfold(receiver, move |mut receiver| {
         let client_id = client_id.clone();
         async move {
             loop {
@@ -168,6 +168,9 @@ async fn events(
             }
         }
     });
+    let stream =
+        stream::once(async { Ok::<_, Infallible>(SseEvent::default().comment("connected")) })
+            .chain(events);
     Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
 }
 

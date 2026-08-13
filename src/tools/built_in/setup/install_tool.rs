@@ -315,12 +315,7 @@ impl SetupToolTool {
             }
             InstallStage::ConfirmConfig { index } => {
                 if is_yes(message) {
-                    let prompt =
-                        config_prompt(&session.package.required_config()[index]).to_string();
-                    let mut session = session;
-                    session.stage = InstallStage::Config { index };
-                    self.state.save(session);
-                    send(&self.setup.tools, &prompt, ctx).await?;
+                    self.prompt_config_value(session, index, ctx).await?;
                 } else if rerun_autoconfigure_on_keep(&session.package.required_config()[index]) {
                     let value = match &session.mode {
                         SetupMode::Configure { current_config } => current_config
@@ -383,26 +378,90 @@ impl SetupToolTool {
                     setup_action.action
                 )
             })?;
-            match crate::tools::package_support::run_setup_action(
+            let values = crate::tools::package_support::run_setup_action(
                 handler,
                 &setup_action.action,
-                &session.config_values,
                 &value,
             )
-            .await?
-            {
-                crate::tools::package_support::SetupOutcome::Complete(values) => {
-                    session.config_values.extend(values);
-                }
-                crate::tools::package_support::SetupOutcome::Pending(pending) => {
-                    let prompt = pending.prompt();
-                    session.stage = InstallStage::Autoconfigure(pending);
-                    self.state.save(session);
-                    return send(&self.setup.tools, &prompt, ctx).await;
+            .await?;
+            session.config_values.extend(values);
+        }
+        self.prompt_config_or_finish(session, index + 1, ctx).await
+    }
+
+    async fn authorize_or_complete(
+        &self,
+        mut session: InstallSession,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
+        if let SetupMode::Configure { current_config } = &session.mode {
+            for config in session.package.required_config() {
+                if let Some(value) = current_config.pointer(&config.path) {
+                    session
+                        .config_values
+                        .entry(config.path)
+                        .or_insert_with(|| value.clone());
                 }
             }
         }
-        self.prompt_config_or_finish(session, index + 1, ctx).await
+        let oauth = session
+            .package
+            .required_config()
+            .into_iter()
+            .filter_map(|config| {
+                if !condition_matches(config.when.as_ref(), &session.config_values, &session.mode) {
+                    return None;
+                }
+                let selected = session.config_values.get(&config.path)?.as_str()?;
+                config
+                    .choices
+                    .into_iter()
+                    .find(|choice| choice.value == selected)?
+                    .oauth
+            })
+            .next();
+        let Some(oauth) = oauth else {
+            return self.complete(session, ctx).await;
+        };
+        if session
+            .secret_values
+            .contains_key(&oauth.refresh_token_handle)
+        {
+            return self.complete(session, ctx).await;
+        }
+        let client_secret = oauth
+            .client_secret
+            .clone()
+            .map(Ok)
+            .or_else(|| {
+                oauth.client_secret_handle.as_ref().map(|name| {
+                    session
+                        .secret_values
+                        .get(name)
+                        .cloned()
+                        .or_else(|| match &session.mode {
+                            SetupMode::Configure { .. } => self
+                                .setup
+                                .secrets
+                                .get(&session.package.secret_store_name(name)),
+                            SetupMode::Install => None,
+                        })
+                        .ok_or_else(|| {
+                            format!("OAuth client secret was not collected during setup: {name}")
+                        })
+                })
+            })
+            .transpose()?;
+        let pending = crate::tools::package_support::start_oauth(
+            &oauth,
+            &session.config_values,
+            client_secret,
+        )
+        .await?;
+        let prompt = pending.prompt();
+        session.stage = InstallStage::Autoconfigure(pending);
+        self.state.save(session);
+        send(&self.setup.tools, &prompt, ctx).await
     }
 
     async fn prompt_secret_or_finish(
@@ -422,7 +481,7 @@ impl SetupToolTool {
             })
         else {
             return if session.package.config_before_secrets() {
-                self.complete(session, ctx).await
+                self.authorize_or_complete(session, ctx).await
             } else {
                 Box::pin(self.prompt_config_or_finish(session, 0, ctx)).await
             };
@@ -472,16 +531,16 @@ impl SetupToolTool {
             return if session.package.config_before_secrets() {
                 self.prompt_secret_or_finish(session, 0, ctx).await
             } else {
-                self.complete(session, ctx).await
+                self.authorize_or_complete(session, ctx).await
             };
         };
         if let SetupMode::Configure { current_config } = &session.mode
-            && let Some(value) = current_config.pointer(&config.path)
+            && let Some(value) = saved_config_value(current_config, &config.path)
         {
             let prompt = format!(
                 "{} currently has value {}. Do you want to change it?",
                 config_prompt(&config),
-                value
+                display_config_value(value)
             );
             session.stage = InstallStage::ConfirmConfig { index };
             self.state.save(session);
@@ -493,6 +552,16 @@ impl SetupToolTool {
             )
             .await;
         }
+        self.prompt_config_value(session, index, ctx).await
+    }
+
+    async fn prompt_config_value(
+        &self,
+        mut session: InstallSession,
+        index: usize,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
+        let config = session.package.required_config()[index].clone();
         session.stage = InstallStage::Config { index };
         self.state.save(session);
         if config.choices.is_empty() {
@@ -632,11 +701,30 @@ fn condition_matches(
     }) == Some(&condition.equals)
 }
 
+fn saved_config_value<'a>(
+    config: &'a serde_json::Value,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
+    config.pointer(path).filter(|value| match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::String(value) => !value.trim().is_empty(),
+        _ => true,
+    })
+}
+
+fn display_config_value(value: &serde_json::Value) -> String {
+    value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string())
+}
+
 fn rerun_autoconfigure_on_keep(config: &crate::tools::setup::install_common::SetupConfig) -> bool {
-    config
-        .autoconfigure
-        .as_ref()
-        .is_some_and(|setup| setup.rerun_on_keep)
+    config.choices.iter().any(|choice| choice.oauth.is_some())
+        || config
+            .autoconfigure
+            .as_ref()
+            .is_some_and(|setup| setup.rerun_on_keep)
 }
 
 #[async_trait]
@@ -767,6 +855,32 @@ fn save_secrets(secrets: &Secrets, session: &InstallSession) -> Result<(), Strin
         secrets.set(&session.package.secret_store_name(name), value)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_config_value, saved_config_value};
+
+    #[test]
+    fn empty_template_values_are_not_treated_as_saved_configuration() {
+        let config = serde_json::json!({
+            "email": { "provider": "", "username": "person@example.com" }
+        });
+
+        assert!(saved_config_value(&config, "/email/provider").is_none());
+        assert_eq!(
+            saved_config_value(&config, "/email/username"),
+            Some(&serde_json::json!("person@example.com"))
+        );
+    }
+
+    #[test]
+    fn displays_string_values_without_json_quotes() {
+        assert_eq!(
+            display_config_value(&serde_json::json!("readonly")),
+            "readonly"
+        );
+    }
 }
 
 fn secret_prompt(package: &InstallableTool, secret: &SetupSecret) -> String {

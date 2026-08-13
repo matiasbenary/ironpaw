@@ -9,7 +9,7 @@ use tokio::{
     process::Command,
 };
 
-use crate::network_proxy::ConnectProxy;
+use crate::network::proxy::ConnectProxy;
 
 const OUTPUT_LIMIT: usize = 1024 * 1024;
 const SAFE_PATH: &str = "/usr/local/bin:/usr/bin:/bin";

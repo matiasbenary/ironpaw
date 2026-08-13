@@ -16,7 +16,7 @@ The current implementation is intentionally small, and is composed of:
 - [External WASM Tools](#external-wasm-tools), which package provider integrations behind a host-enforced HTTP boundary.
 - The capability to create [Dynamic Tools](#dynamic-tools) at runtime, which are QuickJS scripts that can combine other existing tools.
 - A [History](#history) store for durable conversation history and search.
-- An [HTTP and Secrets](#http-and-secrets) system for loading credentials at the host boundary.
+- A host-owned [Network and Secrets](#network-and-secrets) boundary for outbound access and authentication.
 
 ---
 
@@ -128,7 +128,7 @@ The channel runtime does five jobs:
 4. Start each WASM channel with `on_start(config_json)`.
 5. Run the [bridge](#the-bridge).
 
-Channels do not receive raw secrets directly. They use the host-provided `http_request`, `http_request_base64`, and `http_multipart_base64` imports. The host wraps them with `HttpTool<ChannelSecrets>`, allowing configured credentials to be injected at the HTTP boundary.
+Channels do not receive raw secrets directly. They use the host-provided `http_request`, `http_request_base64`, and `http_multipart_base64` imports. The host wraps them with `NetworkGate<ChannelSecrets>`, allowing configured credentials to be injected at the HTTP boundary.
 
 <details>
 
@@ -197,7 +197,26 @@ The bridge has two directional halves:
 
 ---
 
-## HTTP and Secrets
+## Network and Secrets
+
+Outbound access is owned by `src/network/`. Its layout reflects the boundary:
+
+```text
+network/
+├── client.rs       # HTTPS, DNS pinning, redirects, timeouts
+├── http.rs         # scoped host grants and secret injection
+├── policy.rs       # public/private destination policy
+├── proxy.rs        # CONNECT proxy for browser and shell traffic
+├── public.rs       # unauthenticated public downloads
+├── oauth.rs        # OAuth exchange and refresh
+└── email/          # provider-neutral IMAP/SMTP adapters and discovery
+```
+
+Code outside this directory requests network work; it does not construct
+authenticated clients or open provider connections. A request is accepted only
+for its declared host. The network boundary resolves and pins public addresses,
+disables redirects, injects the declared header, URL, or OAuth credential, and executes
+the request without exposing the secret to the caller.
 
 Secrets are unlocked once at startup from:
 
@@ -217,14 +236,23 @@ Both namespaces read from the same unlocked encrypted store, but the API boundar
 
 NEAR provider configuration is loaded once into `ProviderConfig`. The chat, memory, file-inspection, and image-generation paths share its base URL, model names, and timeouts instead of reading provider environment variables independently.
 
-`HttpTool<S>` is a reusable HTTP helper for controlled credential injection. It:
+`NetworkGate<S>` is the WIT-facing adapter for controlled credential injection. It:
 
-- only allows HTTPS except loopback HTTP.
-- restricts non-loopback requests to configured credential hosts.
-- injects credentials as headers or URL placeholder replacements.
+- only allows HTTPS.
+- restricts requests to configured hosts.
+- resolves and pins public IP addresses and disables redirects.
+- injects header, URL-placeholder, or refreshed OAuth credentials.
 - keeps secret lookup at the host boundary.
 
-The generic `web_fetch` tool is read-only and unauthenticated. It rejects plain HTTP except localhost development URLs, rejects private/internal resolved IPs, and does not follow redirects.
+The generic `web_fetch` and download paths use a separate, unauthenticated
+public capability. It rejects plain HTTP except localhost development URLs,
+rejects private/internal resolved IPs, and does not follow redirects.
+
+The source packages currently checked out under `wasm-tools/` and
+`wasm-channels/` are independent of the host crate. Each carries a local,
+versioned WIT contract and may live and build in a different repository;
+Ironpaw consumes only the resulting component and its manifest/config. Provider
+secrets are names in that config, never values passed into WASM memory.
 
 ---
 
@@ -393,11 +421,11 @@ They live in:
 
 At startup, Ironpaw discovers installed WASM tools from the runtime tools directory and registers them in the same tool registry as internal and dynamic tools. The WASM component exports its name, description, parameter schema, and execute function through `wit/tool.wit`.
 
-External tools do not receive raw secrets directly. They use host-provided imports for external effects. HTTP tools call `http_request`, which the host wraps with `HttpTool<ToolSecrets>` so the installed tool config decides which hosts are allowed and where credentials are injected. Email tools call IMAP/SMTP-specific host imports, so the host owns the configured mail server connections and injects credentials without exposing passwords to WASM.
+External tools do not receive raw secrets directly. They use host-provided imports for external effects. HTTP tools call `http_request`, which the host wraps with `NetworkGate<ToolSecrets>` so the installed tool config decides which hosts are allowed and whether a header secret, URL placeholder, or OAuth grant is injected. Email tools call IMAP/SMTP-specific host imports, so the host owns mail-server connections without understanding Gmail or Outlook APIs.
 
-The install flow is implemented through `list_tools`, `install_tool`, `configure_tool`, and `setup_tool`. `install_tool` discovers packages only from `<runtime-root>/tool-store`, then registers a temporary automation scoped to the starting conversation. `configure_tool` uses the same flow for an installed tool and asks before replacing every saved value; secret values are never displayed. That automation calls `setup_tool` for follow-up replies. `setup_tool` asks deterministic setup questions, stores required secrets in the encrypted secret store, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers or reloads the tool immediately.
+The install flow is implemented through `list_tools`, `install_tool`, `configure_tool`, and `setup_tool`. `install_tool` discovers packages only from `<runtime-root>/tool-store`, shows the package's network hosts, OAuth endpoints, and maximum scopes for approval, then registers a temporary automation scoped to the starting conversation. `configure_tool` uses the same flow for an installed tool and asks before replacing every saved value; secret values are never displayed. That automation calls `setup_tool` for follow-up replies. `setup_tool` asks deterministic setup questions, stores required secrets in the encrypted secret store, writes the final tool config, copies the WASM component into `<runtime-root>/tools`, and registers or reloads the tool immediately.
 
-The first external WASM tool is `web_search`. It searches Brave Search through `https://api.search.brave.com/res/v1/web/search`, while the `BRAVE_SEARCH_API` key is injected by the host as `X-Subscription-Token`. The `email` tool demonstrates a non-HTTP external tool: it can list and read messages through the configured IMAP server, and send plain-text mail through the configured SMTP server.
+The first external WASM tool is `web_search`. It searches Brave Search through `https://api.search.brave.com/res/v1/web/search`, while the `BRAVE_SEARCH_API` key is injected by the host as `X-Subscription-Token`. The `email` package owns its Gmail and Microsoft Graph request formats and declares OAuth endpoints, public client IDs (literal or operator-configured), confidential-client secret handles, scopes, refresh-token handles, and resource hosts in package files. Ironpaw generically owns PKCE, callbacks, token exchange, encrypted token storage, refresh, and bearer injection. Its IMAP/SMTP path uses provider-neutral host imports because WASM has no raw socket capability.
 
 ### Dynamic Tools
 

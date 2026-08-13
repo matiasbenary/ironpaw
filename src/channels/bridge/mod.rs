@@ -14,6 +14,7 @@ use crate::{
 };
 
 mod auth;
+mod auth_log;
 mod client;
 mod history;
 mod inbound;
@@ -45,6 +46,7 @@ pub(super) struct BridgeState {
     pub(super) registry: Arc<ChannelRegistry>,
     pub(super) files_dir: PathBuf,
     pub(super) client_events: broadcast::Sender<client::ClientEvent>,
+    pub(super) auth_log_path: PathBuf,
 }
 
 #[derive(Default)]
@@ -118,11 +120,20 @@ pub async fn run_server(listener: TcpListener, addr: &str, state: BridgeState) -
             post(inbound::message_channel_to_ironpaw)
                 .layer(DefaultBodyLimit::max(56 * 1024 * 1024)),
         )
+        .layer(axum::middleware::from_fn(auth_log::log_request))
+        .layer(axum::Extension(auth_log::AuthLogPath(
+            state.auth_log_path.clone(),
+        )))
         .with_state(state);
 
     println!("channel bridge listening on http://{addr}");
 
-    axum::serve(listener, app).await.map_err(io::Error::other)
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .map_err(io::Error::other)
 }
 
 pub fn load_channel(

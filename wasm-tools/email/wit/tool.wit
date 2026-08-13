@@ -1,0 +1,18 @@
+package ironpaw:tool@0.1.0;
+
+interface tool-host {
+    http-request: func(method: string, url: string, body-json: string) -> result<string, string>;
+    http-request-headers: func(method: string, url: string, headers-json: string, body-json: string) -> result<string, string>;
+    imap-list: func(folder: string, limit: u32) -> result<string, string>;
+    imap-read: func(folder: string, uid: string) -> result<string, string>;
+    smtp-send: func(message-json: string) -> result<string, string>;
+}
+
+world tool {
+    import tool-host;
+
+    export name: func() -> string;
+    export description: func() -> string;
+    export parameters: func() -> string;
+    export execute: func(args-json: string, config-json: string) -> result<string, string>;
+}

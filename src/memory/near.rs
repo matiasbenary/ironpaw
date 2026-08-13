@@ -1,5 +1,3 @@
-use reqwest::Client;
-
 use crate::{
     inference::{Inference, InferenceRequest},
     message::Message,
@@ -23,22 +21,12 @@ struct ExtractionResponse {
 }
 
 pub(super) struct MemoryInference {
-    client: Client,
-    secrets: ToolSecrets,
     inference: Inference,
 }
 
 impl MemoryInference {
-    pub fn new(secrets: ToolSecrets, inference: Inference) -> Result<Self, String> {
-        let client = Client::builder()
-            .timeout(inference.provider().chat_timeout)
-            .build()
-            .map_err(|error| error.to_string())?;
-        Ok(Self {
-            client,
-            secrets,
-            inference,
-        })
+    pub fn new(_secrets: ToolSecrets, inference: Inference) -> Result<Self, String> {
+        Ok(Self { inference })
     }
 
     pub async fn extract(
@@ -100,32 +88,26 @@ impl MemoryInference {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        let api_key = self
-            .secrets
-            .get("NEAR_API_KEY")
-            .ok_or_else(|| "missing tool secret: NEAR_API_KEY".to_string())?;
         let response = self
-            .client
-            .post(format!(
-                "{}/v1/embeddings",
-                self.inference.provider().base_url.trim_end_matches('/')
-            ))
-            .bearer_auth(api_key)
-            .json(&serde_json::json!({
-                "model": &self.inference.provider().embedding_model,
-                "input": texts,
-                "encoding_format": "float",
-            }))
-            .send()
+            .inference
+            .post_json(
+                "/v1/embeddings",
+                &serde_json::json!({
+                    "model": &self.inference.provider().embedding_model,
+                    "input": texts,
+                    "encoding_format": "float",
+                }),
+            )
             .await
             .map_err(|error| error.to_string())?;
-        let status = response.status();
-        let body = response.text().await.map_err(|error| error.to_string())?;
-        if !status.is_success() {
-            return Err(format!("NEAR embeddings failed with {status}: {body}"));
+        if !(200..300).contains(&response.status) {
+            return Err(format!(
+                "NEAR embeddings failed with {}: {}",
+                response.status, response.body
+            ));
         }
         let mut response: EmbeddingResponse =
-            serde_json::from_str(&body).map_err(|error| error.to_string())?;
+            serde_json::from_str(&response.body).map_err(|error| error.to_string())?;
         response.data.sort_by_key(|item| item.index);
         if response.data.len() != texts.len() {
             return Err(format!(

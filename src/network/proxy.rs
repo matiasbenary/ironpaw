@@ -12,7 +12,7 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
-use crate::network_policy::resolve_public;
+use super::policy::resolve_public;
 
 const MAX_REQUEST_HEADER_BYTES: usize = 8 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);

@@ -1,4 +1,4 @@
-package ironpaw:channel;
+package ironpaw:channel@0.1.0;
 
 interface channel-host {
     http-request: func(method: string, url: string, body-json: string) -> result<string, string>;

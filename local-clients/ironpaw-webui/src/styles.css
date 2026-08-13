@@ -74,6 +74,9 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
 .messages { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 36px max(24px, calc((100% - 760px) / 2)) 24px; scrollbar-color: #c9c9c5 transparent; }
 
 .message-row { display: flex; margin: 0 0 28px; animation: arrive .18s ease-out; }
+.new-messages-divider { display: flex; align-items: center; gap: 10px; margin: 2px 0 22px; color: var(--accent); font-size: 11px; font-weight: 650; }
+.new-messages-divider::before, .new-messages-divider::after { height: 1px; flex: 1; background: currentColor; content: ""; opacity: .55; }
+.new-messages-divider span { white-space: nowrap; }
 .message-row.user { justify-content: flex-end; }
 .message-bubble { max-width: min(78%, 660px); overflow-wrap: anywhere; }
 .user .message-bubble { padding: 10px 14px; border-radius: 14px; background: #f1f1ef; }

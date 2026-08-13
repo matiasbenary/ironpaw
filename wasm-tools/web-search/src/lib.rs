@@ -1,6 +1,6 @@
 wit_bindgen::generate!({
     world: "tool",
-    path: "../../wit/tool.wit",
+    path: "wit/tool.wit",
 });
 
 use schemars::JsonSchema;

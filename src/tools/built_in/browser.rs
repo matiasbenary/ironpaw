@@ -18,7 +18,7 @@ use crate::{
 };
 
 mod install;
-use crate::network_proxy::ConnectProxy;
+use crate::network::proxy::ConnectProxy;
 use install::ensure_chrome;
 
 pub const UPDATE_AUTOMATION_NAME: &str = "browser-update";

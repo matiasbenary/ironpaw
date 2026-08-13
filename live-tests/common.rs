@@ -177,7 +177,7 @@ fn install_web_search_for_live_tests(
     )
     .expect("copy web_search wasm");
     std::fs::copy(
-        package_dir.join("web-search.config.example.json"),
+        package_dir.join("web-search.config.template.json"),
         tools_dir.join("web_search.config.json"),
     )
     .expect("copy web_search config");

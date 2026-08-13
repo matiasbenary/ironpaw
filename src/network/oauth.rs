@@ -16,16 +16,27 @@ type Callback = Result<String, String>;
 type CallbackState = Arc<Mutex<Option<Callback>>>;
 static CALLBACKS: OnceLock<Mutex<BTreeMap<String, CallbackState>>> = OnceLock::new();
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct OAuthGrantConfig {
+    pub token_url: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    #[serde(default)]
+    pub client_secret_handle: Option<String>,
+    pub refresh_token_handle: String,
+}
+
 #[derive(Clone)]
 pub(crate) struct ProviderSettings {
-    pub(crate) authorize_url: &'static str,
-    pub(crate) token_url: &'static str,
-    pub(crate) client_id: &'static str,
-    pub(crate) client_secret: Option<&'static str>,
-    pub(crate) redirect_host: &'static str,
-    pub(crate) refresh_token_secret: &'static str,
-    pub(crate) scopes: Vec<&'static str>,
-    pub(crate) extra_authorize_params: Vec<(&'static str, &'static str)>,
+    pub(crate) authorize_url: String,
+    pub(crate) token_url: String,
+    pub(crate) client_id: String,
+    pub(crate) client_secret: Option<String>,
+    pub(crate) redirect_host: String,
+    pub(crate) refresh_token_handle: String,
+    pub(crate) scopes: Vec<String>,
+    pub(crate) extra_authorize_params: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -38,8 +49,8 @@ pub(crate) struct OauthFlow {
 }
 
 impl OauthFlow {
-    pub(crate) fn refresh_token_secret(&self) -> &'static str {
-        self.settings.refresh_token_secret
+    pub(crate) fn refresh_token_handle(&self) -> &str {
+        &self.settings.refresh_token_handle
     }
 }
 
@@ -58,9 +69,13 @@ pub(crate) async fn start(
     let state = random_urlsafe(32);
     let code_verifier = random_urlsafe(48);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
-    let mut url = reqwest::Url::parse(settings.authorize_url).expect("valid OAuth authorize URL");
+    let mut url = reqwest::Url::parse(&settings.authorize_url)
+        .map_err(|error| format!("invalid OAuth authorization URL: {error}"))?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err("OAuth authorization URL must be an absolute HTTPS URL".to_string());
+    }
     url.query_pairs_mut()
-        .append_pair("client_id", settings.client_id)
+        .append_pair("client_id", &settings.client_id)
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("response_type", "code")
         .append_pair("scope", &settings.scopes.join(" "))
@@ -109,11 +124,12 @@ pub(crate) async fn finish(flow: &OauthFlow) -> Result<Option<String>, String> {
         ("grant_type", "authorization_code".to_string()),
         ("redirect_uri", flow.redirect_uri.clone()),
     ];
-    if let Some(client_secret) = settings.client_secret {
-        form.push(("client_secret", client_secret.to_string()));
+    if let Some(client_secret) = &settings.client_secret {
+        form.push(("client_secret", client_secret.clone()));
     }
-    let response = reqwest::Client::new()
-        .post(settings.token_url)
+    let response = super::client::async_for(&settings.token_url, Duration::from_secs(60))
+        .await?
+        .post(&settings.token_url)
         .form(&form)
         .send()
         .await
@@ -152,24 +168,21 @@ pub(crate) fn callback_received(state: &str) -> bool {
         })
 }
 
-pub(crate) fn authenticated_client(
-    settings: ProviderSettings,
+pub(crate) fn refresh_access_token(
+    settings: &OAuthGrantConfig,
     refresh_token: &str,
-) -> Result<reqwest::blocking::Client, String> {
+    client_secret: Option<&str>,
+) -> Result<String, String> {
     let mut form = vec![
-        ("client_id", settings.client_id),
-        ("grant_type", "refresh_token"),
-        ("refresh_token", refresh_token),
+        ("client_id", settings.client_id.clone()),
+        ("grant_type", "refresh_token".to_string()),
+        ("refresh_token", refresh_token.to_string()),
     ];
-    if let Some(client_secret) = settings.client_secret {
-        form.push(("client_secret", client_secret));
+    if let Some(secret) = client_secret {
+        form.push(("client_secret", secret.to_string()));
     }
-    let bare = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(oauth_error)?;
-    let response = bare
-        .post(settings.token_url)
+    let response = super::client::blocking_for(&settings.token_url, Duration::from_secs(60))?
+        .post(&settings.token_url)
         .form(&form)
         .send()
         .map_err(oauth_error)?;
@@ -180,23 +193,10 @@ pub(crate) fn authenticated_client(
     }
     let token: serde_json::Value = serde_json::from_str(&body)
         .map_err(|error| format!("invalid OAuth token response: {error}"))?;
-    let access_token = token["access_token"]
+    token["access_token"]
         .as_str()
-        .ok_or_else(|| "provider returned no access token".to_string())?;
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .default_headers({
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert(
-                reqwest::header::AUTHORIZATION,
-                format!("Bearer {access_token}")
-                    .parse()
-                    .map_err(|error| format!("invalid OAuth token: {error}"))?,
-            );
-            headers
-        })
-        .build()
-        .map_err(oauth_error)
+        .map(str::to_string)
+        .ok_or_else(|| "provider returned no access token".to_string())
 }
 
 async fn receive_callback(listener: TcpListener, expected_state: &str) -> Callback {

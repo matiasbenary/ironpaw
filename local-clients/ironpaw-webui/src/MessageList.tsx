@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from 'react';
+import { Fragment, useLayoutEffect, useRef } from 'react';
 
 import { attachmentUrl } from './attachments';
 import { Icon, Logo } from './Icon';
@@ -64,15 +64,18 @@ interface Props {
   connectionState: 'connected' | 'offline' | 'authentication-required';
   disabled?: boolean;
   messages: StoredMessage[];
+  newMessageKey?: string;
   transient: TransientState;
   onChoice: (value: string, message: StoredMessage) => void;
   onLink: (href: string) => void;
+  onReadNewMessages: () => void;
   onReconnect: () => void;
 }
 
-export function MessageList({ connectionState, disabled = false, messages, transient, onChoice, onLink, onReconnect }: Props) {
+export function MessageList({ connectionState, disabled = false, messages, newMessageKey, transient, onChoice, onLink, onReadNewMessages, onReconnect }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
+  const userIsScrolling = useRef(false);
 
   useLayoutEffect(() => {
     if (followLatest.current && container.current) {
@@ -84,9 +87,16 @@ export function MessageList({ connectionState, disabled = false, messages, trans
     <div
       className="messages"
       ref={container}
+      onWheel={() => { userIsScrolling.current = true; }}
+      onTouchMove={() => { userIsScrolling.current = true; }}
       onScroll={(event) => {
         const node = event.currentTarget;
         followLatest.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
+        const divider = node.querySelector<HTMLElement>('.new-messages-divider');
+        if (userIsScrolling.current && divider && divider.getBoundingClientRect().top < node.getBoundingClientRect().bottom) {
+          userIsScrolling.current = false;
+          onReadNewMessages();
+        }
       }}
     >
       {!messages.length ? (
@@ -96,7 +106,14 @@ export function MessageList({ connectionState, disabled = false, messages, trans
           <p>Start a conversation with your personal agent.</p>
         </section>
       ) : messages.map((message) => (
-        <MessageView disabled={disabled} message={message} onChoice={onChoice} onLink={onLink} key={message.key} />
+        <Fragment key={message.key}>
+          {message.key === newMessageKey && (
+            <div className="new-messages-divider" role="separator" aria-label="New messages">
+              <span>New messages</span>
+            </div>
+          )}
+          <MessageView disabled={disabled} message={message} onChoice={onChoice} onLink={onLink} />
+        </Fragment>
       ))}
       {connectionState === 'offline' && <div className="error-card">Ironpaw is down.</div>}
       {connectionState === 'authentication-required' && (

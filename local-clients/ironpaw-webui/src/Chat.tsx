@@ -63,12 +63,14 @@ interface Props {
   title: string;
   canRename: boolean;
   messages: StoredMessage[];
+  newMessageKey?: string;
   transient: TransientState;
   onMenu: () => void;
   onRename: (title: string) => Promise<void>;
   onReconnect: () => void;
   onChoice: (value: string, message: StoredMessage) => void;
   onLink: (href: string) => void;
+  onReadNewMessages: () => void;
   onSend: (text: string, files: File[]) => Promise<boolean>;
 }
 
@@ -77,7 +79,7 @@ export function Chat(props: Props) {
   return (
     <section className="chat">
       <ChatHeader title={props.title} canRename={props.canRename} onMenu={props.onMenu} onRename={props.onRename} />
-      <MessageList connectionState={props.connectionState} disabled={disconnected} key={props.conversationId} messages={props.messages} transient={props.transient} onChoice={props.onChoice} onLink={props.onLink} onReconnect={props.onReconnect} />
+      <MessageList connectionState={props.connectionState} disabled={disconnected} key={props.conversationId} messages={props.messages} newMessageKey={props.newMessageKey} transient={props.transient} onChoice={props.onChoice} onLink={props.onLink} onReadNewMessages={props.onReadNewMessages} onReconnect={props.onReconnect} />
       <Composer disabled={disconnected} onSend={props.onSend} />
     </section>
   );

@@ -100,7 +100,10 @@ impl InstallableTool {
 
     pub(super) fn approval_prompt(&self) -> String {
         match self {
-            Self::Wasm(_) => format!("Install the {} tool?", self.name()),
+            Self::Wasm(package) => {
+                let capabilities = wasm_capabilities(package);
+                format!("Install the {} tool? {capabilities}", self.name())
+            }
             Self::Shell(package) => {
                 let commands = package
                     .manifest
@@ -132,6 +135,57 @@ impl InstallableTool {
             }
         }
     }
+}
+
+fn wasm_capabilities(package: &ToolPackage) -> String {
+    let config: serde_json::Value = std::fs::read_to_string(&package.config_template_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let hosts = config["http_credentials"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|grant| grant["host"].as_str())
+        .collect::<Vec<_>>();
+    let oauth_endpoints = package
+        .manifest
+        .config
+        .iter()
+        .flat_map(|config| &config.choices)
+        .filter_map(|choice| choice.oauth.as_ref())
+        .flat_map(|oauth| [&oauth.authorize_url, &oauth.token_url])
+        .collect::<std::collections::BTreeSet<_>>();
+    let scopes = package
+        .manifest
+        .config
+        .iter()
+        .flat_map(|config| &config.choices)
+        .filter_map(|choice| choice.oauth.as_ref())
+        .flat_map(|oauth| &oauth.scopes)
+        .collect::<std::collections::BTreeSet<_>>();
+    format!(
+        "Network hosts: {}. OAuth endpoints: {}. OAuth scopes: {}.",
+        if hosts.is_empty() {
+            "none".to_string()
+        } else {
+            hosts.join(", ")
+        },
+        if oauth_endpoints.is_empty() {
+            "none".to_string()
+        } else {
+            oauth_endpoints
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+        if scopes.is_empty() {
+            "none".to_string()
+        } else {
+            scopes.into_iter().cloned().collect::<Vec<_>>().join(", ")
+        }
+    )
 }
 
 pub(super) fn discover_shell_packages(layout: &RuntimeLayout) -> Vec<Result<ShellPackage, String>> {

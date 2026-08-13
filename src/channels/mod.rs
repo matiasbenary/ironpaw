@@ -188,6 +188,7 @@ pub async fn start_bridge(
     let runtime_addr = bridge_addr.clone();
     let bridge_secrets = secrets.clone();
     let files_dir = layout.files_dir();
+    let auth_log_path = layout.root().join("authentication.log");
     let bridge_registry = Arc::clone(&registry);
     let bridge_task = tokio::spawn(async move {
         let (client_events, _) = tokio::sync::broadcast::channel(256);
@@ -199,6 +200,7 @@ pub async fn start_bridge(
             registry: bridge_registry,
             files_dir,
             client_events,
+            auth_log_path,
         };
         if let Err(err) = bridge::run_server(listener, &bridge_addr, state).await {
             eprintln!("channel bridge failed: {err}");

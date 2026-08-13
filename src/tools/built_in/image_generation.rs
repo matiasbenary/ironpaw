@@ -4,38 +4,40 @@ use async_trait::async_trait;
 
 use crate::{
     config::ProviderConfig,
+    http::{NetworkGate, NetworkGrant},
     message::{available_filename, execution_files_dir},
     secrets::ToolSecrets,
     tools::{self, InternalTool, ToolError},
 };
 
 pub struct ImageGenerationTool {
-    client: reqwest::Client,
+    http: NetworkGate<ToolSecrets>,
     base_url: String,
     model: String,
     files_dir: PathBuf,
-    secrets: ToolSecrets,
 }
 
 impl ImageGenerationTool {
     pub fn new(files_dir: PathBuf, secrets: ToolSecrets, provider: Arc<ProviderConfig>) -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .timeout(provider.image_timeout)
-                .build()
-                .expect("image generation HTTP client"),
+            http: NetworkGate::new(
+                secrets,
+                vec![NetworkGrant::bearer(
+                    reqwest::Url::parse(&provider.base_url)
+                        .expect("valid provider URL")
+                        .host_str()
+                        .expect("provider URL host"),
+                    "NEAR_API_KEY",
+                )],
+            )
+            .with_timeout(provider.image_timeout),
             base_url: provider.base_url.clone(),
             model: provider.image_model.clone(),
             files_dir,
-            secrets,
         }
     }
 
     async fn generate(&self, prompt: &str) -> Result<String, String> {
-        let near_api_key = self
-            .secrets
-            .get("NEAR_API_KEY")
-            .ok_or_else(|| "missing tool secret: NEAR_API_KEY".to_string())?;
         let url = format!(
             "{}/v1/images/generations",
             self.base_url.trim_end_matches('/')
@@ -47,26 +49,27 @@ impl ImageGenerationTool {
             "n": 1,
         });
         let response = self
-            .client
-            .post(&url)
-            .bearer_auth(near_api_key)
-            .json(&body)
-            .send()
+            .http
+            .post_json(&url, &body)
             .await
-            .map_err(|e| format!("request: {}", e.without_url()))?;
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("request: {}", e.without_url()))?;
-        if !status.is_success() {
-            return Err(format!("request failed with {status}: {text}"));
+            .map_err(|e| format!("request: {e}"))?;
+        if !(200..300).contains(&response.status) {
+            return Err(format!(
+                "request failed with {}: {}",
+                response.status, response.body
+            ));
         }
-        let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        let value: serde_json::Value =
+            serde_json::from_str(&response.body).map_err(|e| e.to_string())?;
         value["data"][0]["b64_json"]
             .as_str()
             .map(str::to_string)
-            .ok_or_else(|| format!("image generation response missing b64_json: {text}"))
+            .ok_or_else(|| {
+                format!(
+                    "image generation response missing b64_json: {}",
+                    response.body
+                )
+            })
     }
 }
 

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use lettre::{Message, message::header::ContentType};
 
 #[derive(serde::Deserialize)]
-pub(super) struct OutboundEmail {
+pub(crate) struct OutboundEmail {
     pub to: Vec<String>,
     pub subject: String,
     pub body: String,
@@ -50,7 +50,7 @@ impl OutboundEmail {
     }
 }
 
-pub(super) fn split_message(message: &[u8]) -> (&[u8], String) {
+pub(crate) fn split_message(message: &[u8]) -> (&[u8], String) {
     for (separator, len) in [(b"\r\n\r\n".as_slice(), 4), (b"\n\n".as_slice(), 2)] {
         if let Some(index) = message.windows(len).position(|window| window == separator) {
             return (
@@ -62,7 +62,7 @@ pub(super) fn split_message(message: &[u8]) -> (&[u8], String) {
     (message, String::new())
 }
 
-pub(super) fn parse_headers(bytes: &[u8]) -> BTreeMap<String, String> {
+pub(crate) fn parse_headers(bytes: &[u8]) -> BTreeMap<String, String> {
     let mut headers = BTreeMap::new();
     let mut current: Option<(String, String)> = None;
     for line in String::from_utf8_lossy(bytes).lines() {
@@ -86,7 +86,7 @@ pub(super) fn parse_headers(bytes: &[u8]) -> BTreeMap<String, String> {
     headers
 }
 
-pub(super) fn truncate(value: &str, max: usize) -> &str {
+pub(crate) fn truncate(value: &str, max: usize) -> &str {
     let mut end = value.len().min(max);
     while !value.is_char_boundary(end) {
         end -= 1;

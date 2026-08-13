@@ -1,15 +1,13 @@
 use std::sync::Arc;
 
-use base64::Engine as _;
-use reqwest::Client;
-
 use crate::{
     bus::{ApiKeyError, Bus, ConversationKey, Event},
     config::ProviderConfig,
-    http::HttpError,
+    http::{HttpError, NetworkGate, NetworkGrant},
     message::{Attachment, Message, ToolCall, ToolDefinition},
     secrets::ToolSecrets,
 };
+use base64::Engine as _;
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct InferenceRequest {
@@ -85,9 +83,8 @@ impl std::fmt::Display for InferenceError {
 #[derive(Clone)]
 pub struct Inference {
     bus: Bus,
-    client: Client,
+    http: NetworkGate<ToolSecrets>,
     provider: Arc<ProviderConfig>,
-    secrets: ToolSecrets,
 }
 
 impl Inference {
@@ -100,20 +97,37 @@ impl Inference {
         secrets: ToolSecrets,
         provider: Arc<ProviderConfig>,
     ) -> Result<Self, HttpError> {
-        let client = Client::builder()
-            .timeout(provider.chat_timeout)
-            .build()
-            .map_err(sanitize_reqwest_error)?;
+        let host = reqwest::Url::parse(&provider.base_url)
+            .map_err(|error| HttpError::InvalidRequest(error.to_string()))?
+            .host_str()
+            .ok_or_else(|| HttpError::InvalidRequest("provider URL has no host".to_string()))?
+            .to_string();
         Ok(Self {
             bus,
-            client,
+            http: NetworkGate::new(secrets, vec![NetworkGrant::bearer(host, "NEAR_API_KEY")])
+                .with_timeout(provider.chat_timeout),
             provider,
-            secrets,
         })
     }
 
     pub fn provider(&self) -> &Arc<ProviderConfig> {
         &self.provider
+    }
+
+    pub(crate) async fn post_json<T>(
+        &self,
+        path: &str,
+        body: &T,
+    ) -> Result<crate::http::HttpResponse, HttpError>
+    where
+        T: serde::Serialize + ?Sized,
+    {
+        self.http
+            .post_json(
+                &format!("{}{}", self.provider.base_url.trim_end_matches('/'), path),
+                body,
+            )
+            .await
     }
 
     pub async fn execute(
@@ -140,29 +154,17 @@ impl Inference {
         &self,
         request: InferenceRequest,
     ) -> Result<InferenceOutput, InferenceError> {
-        let near_api_key = self.secrets.get("NEAR_API_KEY").ok_or_else(|| {
-            InferenceError::ApiKey("missing tool secret: NEAR_API_KEY".to_string())
-        })?;
         let request = chat_request(&request).map_err(InferenceError::Other)?;
         let response = self
-            .client
-            .post(format!(
-                "{}/v1/chat/completions",
-                self.provider.base_url.trim_end_matches('/')
-            ))
-            .bearer_auth(near_api_key)
-            .json(&request)
-            .send()
+            .post_json("/v1/chat/completions", &request)
             .await
-            .map_err(sanitize_reqwest_error)
-            .map_err(|error| InferenceError::Other(error.to_string()))?;
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(sanitize_reqwest_error)
-            .map_err(|error| InferenceError::Other(error.to_string()))?;
-        if !status.is_success() {
+            .map_err(|error| match error {
+                HttpError::MissingCredential(_) => InferenceError::ApiKey(error.to_string()),
+                _ => InferenceError::Other(error.to_string()),
+            })?;
+        if !(200..300).contains(&response.status) {
+            let status = response.status;
+            let body = response.body;
             let message = format!("request failed with {status}: {body}");
             return Err(if is_api_key_status(status) {
                 InferenceError::ApiKey(message)
@@ -170,7 +172,7 @@ impl Inference {
                 InferenceError::Other(message)
             });
         }
-        let response = serde_json::from_str(&body).map_err(|error| {
+        let response = serde_json::from_str(&response.body).map_err(|error| {
             InferenceError::Other(format!("failed to parse chat response JSON: {error}"))
         })?;
         response_to_output(response).map_err(InferenceError::Other)
@@ -303,30 +305,8 @@ fn attachment_data_url(attachment: &Attachment) -> Result<String, String> {
     ))
 }
 
-fn is_api_key_status(status: reqwest::StatusCode) -> bool {
-    matches!(
-        status,
-        reqwest::StatusCode::UNAUTHORIZED
-            | reqwest::StatusCode::PAYMENT_REQUIRED
-            | reqwest::StatusCode::FORBIDDEN
-    )
-}
-
-fn sanitize_reqwest_error(error: reqwest::Error) -> HttpError {
-    let kind = if error.is_timeout() {
-        "timeout"
-    } else if error.is_connect() {
-        "connect"
-    } else if error.is_request() {
-        "request"
-    } else if error.is_body() {
-        "body"
-    } else if error.is_decode() {
-        "decode"
-    } else {
-        "request"
-    };
-    HttpError::Http(format!("{kind}: {}", error.without_url()))
+fn is_api_key_status(status: u16) -> bool {
+    matches!(status, 401 | 402 | 403)
 }
 
 #[cfg(test)]

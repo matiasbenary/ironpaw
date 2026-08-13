@@ -1,9 +1,7 @@
-use std::{net::SocketAddr, time::Duration};
-
 use async_trait::async_trait;
 
 use crate::{
-    network_policy::{is_public_ip, resolve_public},
+    network::public::PublicHttp,
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
@@ -21,7 +19,7 @@ pub struct WebFetchParams {
 /// (POST/PUT/...) and authenticated calls are intentionally not here — those
 /// will go through the shell and dedicated tools.
 pub struct WebFetchTool {
-    client: reqwest::Client,
+    http: PublicHttp,
 }
 
 impl Default for WebFetchTool {
@@ -32,89 +30,24 @@ impl Default for WebFetchTool {
 
 impl WebFetchTool {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("http client should build");
-        Self { client }
+        Self {
+            http: PublicHttp::new(),
+        }
     }
 
     /// Returns the response body as text. HTTP error statuses become a tool
     /// error so the model gets the standard `{ok:false,error}` envelope.
     pub async fn execute(&self, params: WebFetchParams) -> Result<String, String> {
-        let url = reqwest::Url::parse(&params.url).map_err(|err| format!("invalid url: {err}"))?;
-        let resolved = guard_url(&url).await?;
-        let client = match resolved {
-            Some(addrs) => pinned_client(url.host_str().unwrap_or_default(), &addrs)?,
-            None => self.client.clone(),
-        };
-
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|err| format!("request failed: {}", err.without_url()))?;
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|err| format!("failed to read body: {}", err.without_url()))?;
-        let body = truncate_on_char_boundary(body, MAX_BODY_BYTES);
-
-        if !status.is_success() {
+        let response = self.http.get(&params.url, MAX_BODY_BYTES, false).await?;
+        let body = String::from_utf8_lossy(&response.body);
+        if !(200..300).contains(&response.status) {
             return Err(format!(
                 "request failed with status {}: {body}",
-                status.as_u16()
+                response.status
             ));
         }
-        Ok(body)
+        Ok(body.into_owned())
     }
-}
-
-fn truncate_on_char_boundary(body: String, max: usize) -> String {
-    if body.len() <= max {
-        return body;
-    }
-    let mut end = max;
-    while !body.is_char_boundary(end) {
-        end -= 1;
-    }
-    body[..end].to_string()
-}
-
-/// HTTPS-only (http for loopback) and block loopback/private/link-local
-/// resolved addresses. Redirects are disabled at the client, so a public URL
-/// cannot bounce the request to an internal target after this check.
-pub(crate) async fn guard_url(url: &reqwest::Url) -> Result<Option<Vec<SocketAddr>>, String> {
-    let host = url.host_str().unwrap_or_default();
-    let is_loopback_host = matches!(host, "localhost" | "127.0.0.1" | "::1");
-    if url.scheme() != "https" && !(url.scheme() == "http" && is_loopback_host) {
-        return Err("only https urls are allowed (http only for localhost)".to_string());
-    }
-    if let Ok(ip) = host.parse() {
-        if !(is_public_ip(ip) || url.scheme() == "http" && is_loopback_host) {
-            return Err("requests to private/internal addresses are not allowed".to_string());
-        }
-        return Ok(None);
-    }
-    if is_loopback_host {
-        if url.scheme() == "http" {
-            return Ok(None);
-        }
-        return Err("requests to private/internal addresses are not allowed".to_string());
-    }
-    let port = url.port_or_known_default().unwrap_or(443);
-    resolve_public(host, port).await.map(Some)
-}
-
-pub(crate) fn pinned_client(host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .redirect(reqwest::redirect::Policy::none())
-        .resolve_to_addrs(host, addrs)
-        .build()
-        .map_err(|err| format!("http client should build: {err}"))
 }
 
 #[async_trait]

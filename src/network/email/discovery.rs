@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, time::Duration};
 
-use crate::network_policy::resolve_public;
+use crate::network::policy::resolve_public;
 
 const ISPDB: &str = "https://autoconfig.thunderbird.net/v1.1/";
 
@@ -17,34 +17,10 @@ struct EmailSettings {
 
 pub(super) async fn discover(address: &str) -> Result<BTreeMap<String, serde_json::Value>, String> {
     let (_, domain) = email_parts(address)?;
-    if matches!(
-        domain.to_ascii_lowercase().as_str(),
-        "gmail.com" | "googlemail.com"
-    ) {
+    if let Some(provider) = oauth_provider(domain) {
         return Ok(BTreeMap::from([
-            ("/email/provider".to_string(), "gmail".into()),
-            ("/email/auth".to_string(), "oauth".into()),
+            ("/email/provider".to_string(), provider.into()),
             ("/email/username".to_string(), address.trim().into()),
-            ("/email/from".to_string(), address.trim().into()),
-            (
-                "/email/oauth/refresh_token_secret".to_string(),
-                "EMAIL_GOOGLE_REFRESH_TOKEN".into(),
-            ),
-        ]));
-    }
-    if matches!(
-        domain.to_ascii_lowercase().as_str(),
-        "outlook.com" | "hotmail.com" | "live.com" | "msn.com"
-    ) {
-        return Ok(BTreeMap::from([
-            ("/email/provider".to_string(), "outlook".into()),
-            ("/email/auth".to_string(), "oauth".into()),
-            ("/email/username".to_string(), address.trim().into()),
-            ("/email/from".to_string(), address.trim().into()),
-            (
-                "/email/oauth/refresh_token_secret".to_string(),
-                "EMAIL_MICROSOFT_REFRESH_TOKEN".into(),
-            ),
         ]));
     }
     let settings = if let Some(settings) = known_provider(address, domain) {
@@ -57,7 +33,6 @@ pub(super) async fn discover(address: &str) -> Result<BTreeMap<String, serde_jso
 
     Ok(BTreeMap::from([
         ("/email/provider".to_string(), "imap".into()),
-        ("/email/auth".to_string(), "password".into()),
         ("/email/username".to_string(), settings.username.into()),
         ("/email/from".to_string(), address.trim().into()),
         ("/email/imap/host".to_string(), settings.imap_host.into()),
@@ -67,6 +42,14 @@ pub(super) async fn discover(address: &str) -> Result<BTreeMap<String, serde_jso
         ("/email/smtp/port".to_string(), settings.smtp_port.into()),
         ("/email/smtp/tls".to_string(), settings.smtp_tls.into()),
     ]))
+}
+
+fn oauth_provider(domain: &str) -> Option<&'static str> {
+    match domain.to_ascii_lowercase().as_str() {
+        "gmail.com" | "googlemail.com" => Some("gmail"),
+        "outlook.com" | "hotmail.com" | "live.com" | "msn.com" => Some("outlook"),
+        _ => None,
+    }
 }
 
 fn email_parts(address: &str) -> Result<(&str, &str), String> {
@@ -237,30 +220,28 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn gmail_discovery_selects_oauth() {
-        let values = discover("person@gmail.com").await.unwrap();
+    async fn detects_oauth_provider_from_address() {
+        let gmail = discover("person@gmail.com").await.unwrap();
+        let hotmail = discover("person@hotmail.com").await.unwrap();
 
-        assert_eq!(values["/email/provider"], "gmail");
-        assert_eq!(values["/email/username"], "person@gmail.com");
-        assert_eq!(values["/email/from"], "person@gmail.com");
-        assert_eq!(
-            values["/email/oauth/refresh_token_secret"],
-            "EMAIL_GOOGLE_REFRESH_TOKEN"
-        );
-        assert!(values.get("/email/imap/host").is_none());
+        assert_eq!(gmail["/email/provider"], "gmail");
+        assert_eq!(hotmail["/email/provider"], "outlook");
     }
 
     #[tokio::test]
-    async fn outlook_discovery_selects_oauth() {
-        let values = discover("person@hotmail.com").await.unwrap();
+    async fn discovers_yahoo_imap_settings() {
+        let values = discover("person@yahoo.com").await.unwrap();
+        assert_eq!(values["/email/provider"], "imap");
+        assert_eq!(values["/email/imap/host"], "imap.mail.yahoo.com");
+        assert_eq!(values["/email/smtp/host"], "smtp.mail.yahoo.com");
+    }
 
-        assert_eq!(values["/email/provider"], "outlook");
-        assert_eq!(values["/email/auth"], "oauth");
-        assert_eq!(
-            values["/email/oauth/refresh_token_secret"],
-            "EMAIL_MICROSOFT_REFRESH_TOKEN"
-        );
-        assert!(values.get("/email/imap/host").is_none());
+    #[tokio::test]
+    async fn discovers_icloud_imap_settings() {
+        let values = discover("person@icloud.com").await.unwrap();
+        assert_eq!(values["/email/provider"], "imap");
+        assert_eq!(values["/email/imap/host"], "imap.mail.me.com");
+        assert_eq!(values["/email/smtp/port"], 587);
     }
 
     #[test]

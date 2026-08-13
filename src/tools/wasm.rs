@@ -4,7 +4,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use lettre::{SmtpTransport, Transport, transport::smtp::authentication::Credentials};
 use wasmtime::{
     Store,
     component::{Component, Linker},
@@ -13,16 +12,14 @@ use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiVie
 
 use crate::{
     config::RuntimeLayout,
-    http::HttpTool,
+    http::NetworkGate,
     message::ToolDefinition,
+    network::email::protocol,
     secrets::ToolSecrets,
-    tools::{
-        ExecutionContext, InternalTool, ToolError, ToolResponder,
-        email::{OutboundEmail, parse_headers, split_message, truncate},
-    },
+    tools::{ExecutionContext, InternalTool, ToolError, ToolResponder},
 };
 
-pub use crate::http::CredentialInjectionConfig;
+pub use crate::http::NetworkGrantConfig;
 
 wasmtime::component::bindgen!({
     world: "tool",
@@ -62,8 +59,7 @@ impl WasmTool {
             description,
             parameters,
             wasm_path: manifest.wasm_path,
-            guest_config_json: serde_json::to_string(&manifest.config.config)
-                .map_err(|err| err.to_string())?,
+            guest_config_json: manifest.config_json,
             config: manifest.config,
             secrets,
         })
@@ -120,17 +116,13 @@ pub struct WasmToolManifest {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct WasmToolConfig {
     #[serde(default)]
-    pub http_credentials: Vec<CredentialInjectionConfig>,
+    pub http_credentials: Vec<NetworkGrantConfig>,
     #[serde(default)]
     pub email: Option<EmailCapabilityConfig>,
-    #[serde(default)]
-    pub config: serde_json::Value,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct EmailCapabilityConfig {
-    #[serde(default = "default_email_provider")]
-    pub provider: String,
     #[serde(default)]
     pub imap: Option<EmailServerConfig>,
     #[serde(default)]
@@ -139,18 +131,6 @@ pub struct EmailCapabilityConfig {
     pub password_secret: String,
     #[serde(default)]
     pub from: Option<String>,
-    #[serde(default)]
-    pub oauth: Option<EmailOauthConfig>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-pub struct EmailOauthConfig {
-    pub access: String,
-    pub refresh_token_secret: String,
-}
-
-fn default_email_provider() -> String {
-    "imap".to_string()
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -247,7 +227,7 @@ impl LoadedTool {
             StoreData {
                 ctx: WasiCtxBuilder::new().build(),
                 table: ResourceTable::new(),
-                http: HttpTool::new(
+                http: NetworkGate::new(
                     secrets.clone(),
                     tool_config
                         .http_credentials
@@ -296,7 +276,7 @@ impl LoadedTool {
 struct StoreData {
     ctx: WasiCtx,
     table: ResourceTable,
-    http: HttpTool<ToolSecrets>,
+    http: NetworkGate<ToolSecrets>,
     email: EmailHost,
 }
 
@@ -317,19 +297,32 @@ impl ironpaw::tool::tool_host::Host for StoreData {
             .map_err(|err| err.to_string())
     }
 
-    fn email_list(&mut self, folder: String, limit: u32) -> Result<String, String> {
+    fn http_request_headers(
+        &mut self,
+        method: String,
+        url: String,
+        headers_json: String,
+        body_json: String,
+    ) -> Result<String, String> {
+        self.http
+            .request_bytes_headers_string_blocking(&method, &url, &headers_json, &body_json)
+            .and_then(|bytes| {
+                String::from_utf8(bytes).map_err(|err| {
+                    crate::http::HttpError::Http(format!("response was not UTF-8: {err}"))
+                })
+            })
+            .map_err(|err| err.to_string())
+    }
+
+    fn imap_list(&mut self, folder: String, limit: u32) -> Result<String, String> {
         self.email.list(&folder, limit)
     }
 
-    fn email_read(&mut self, folder: String, uid: String) -> Result<String, String> {
+    fn imap_read(&mut self, folder: String, uid: String) -> Result<String, String> {
         self.email.read(&folder, &uid)
     }
 
-    fn email_modify(&mut self, uid: String, operation: String) -> Result<String, String> {
-        self.email.modify(&uid, &operation)
-    }
-
-    fn email_send(&mut self, message_json: String) -> Result<String, String> {
+    fn smtp_send(&mut self, message_json: String) -> Result<String, String> {
         self.email.send(&message_json)
     }
 }
@@ -347,201 +340,57 @@ impl EmailHost {
 
     fn list(&self, folder: &str, limit: u32) -> Result<String, String> {
         let config = self.config()?;
-        if config.provider == "gmail" {
-            return self.gmail(config)?.list(folder, limit);
-        }
-        if config.provider == "outlook" {
-            return self.outlook(config)?.list(folder, limit);
-        }
         let imap = config
             .imap
             .as_ref()
             .ok_or_else(|| "email IMAP capability is not configured".to_string())?;
-        let mut session = self.imap_session(config, imap)?;
-        session.select(folder).map_err(|err| err.to_string())?;
-        let mut uids = session
-            .uid_search("ALL")
-            .map_err(|err| err.to_string())?
-            .into_iter()
-            .collect::<Vec<_>>();
-        uids.sort_unstable_by(|left, right| right.cmp(left));
-        uids.truncate(limit.clamp(1, 50) as usize);
-        let uid_set = uids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join(",");
-        let messages = if uid_set.is_empty() {
-            Vec::new()
-        } else {
-            session
-                .uid_fetch(uid_set, "(UID BODY.PEEK[HEADER])")
-                .map_err(|err| err.to_string())?
-                .iter()
-                .map(|fetch| {
-                    let headers = parse_headers(fetch.header().unwrap_or_default());
-                    serde_json::json!({
-                        "uid": fetch.uid.map(|uid| uid.to_string()).unwrap_or_default(),
-                        "from": headers.get("from").cloned().unwrap_or_default(),
-                        "to": headers.get("to").cloned().unwrap_or_default(),
-                        "subject": headers.get("subject").cloned().unwrap_or_default(),
-                        "date": headers.get("date").cloned().unwrap_or_default(),
-                    })
-                })
-                .collect::<Vec<_>>()
-        };
-        let _ = session.logout();
-        serde_json::to_string(&serde_json::json!({
-            "folder": folder,
-            "messages": messages,
-        }))
-        .map_err(|err| err.to_string())
+        protocol::list(
+            &self.secrets,
+            &config.password_secret,
+            &config.username,
+            &imap.host,
+            imap.port,
+            matches!(imap.tls, EmailTlsMode::StartTls),
+            folder,
+            limit,
+        )
     }
 
     fn read(&self, folder: &str, uid: &str) -> Result<String, String> {
         let config = self.config()?;
-        if config.provider == "gmail" {
-            return self.gmail(config)?.read(folder, uid);
-        }
-        if config.provider == "outlook" {
-            return self.outlook(config)?.read(folder, uid);
-        }
         let imap = config
             .imap
             .as_ref()
             .ok_or_else(|| "email IMAP capability is not configured".to_string())?;
         let uid = parse_uid(uid)?;
-        let mut session = self.imap_session(config, imap)?;
-        session.select(folder).map_err(|err| err.to_string())?;
-        let fetches = session
-            .uid_fetch(uid.to_string(), "(UID BODY.PEEK[])")
-            .map_err(|err| err.to_string())?;
-        let Some(fetch) = fetches.iter().next() else {
-            return Err(format!("email UID {uid} not found in {folder}"));
-        };
-        let body = fetch.body().unwrap_or_default();
-        let (headers, text) = split_message(body);
-        let headers = parse_headers(headers);
-        let _ = session.logout();
-        serde_json::to_string(&serde_json::json!({
-            "folder": folder,
-            "uid": uid.to_string(),
-            "from": headers.get("from").cloned().unwrap_or_default(),
-            "to": headers.get("to").cloned().unwrap_or_default(),
-            "subject": headers.get("subject").cloned().unwrap_or_default(),
-            "date": headers.get("date").cloned().unwrap_or_default(),
-            "body": truncate(&text, 100_000),
-        }))
-        .map_err(|err| err.to_string())
+        protocol::read(
+            &self.secrets,
+            &config.password_secret,
+            &config.username,
+            &imap.host,
+            imap.port,
+            matches!(imap.tls, EmailTlsMode::StartTls),
+            folder,
+            uid,
+        )
     }
 
     fn send(&self, message_json: &str) -> Result<String, String> {
         let config = self.config()?;
-        if config.provider == "gmail" {
-            return self.gmail(config)?.send(message_json);
-        }
-        if config.provider == "outlook" {
-            return self.outlook(config)?.send(message_json);
-        }
         let smtp = config
             .smtp
             .as_ref()
             .ok_or_else(|| "email SMTP capability is not configured".to_string())?;
-        let password = self.password(config)?;
-        let email: OutboundEmail = serde_json::from_str(message_json)
-            .map_err(|err| format!("invalid email message JSON: {err}"))?;
-        if email.to.is_empty() {
-            return Err("email must have at least one recipient".to_string());
-        }
-        let fallback_from = config
-            .from
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(&config.username);
-        let message = email.into_message(fallback_from)?;
-        let credentials = Credentials::new(config.username.clone(), password);
-        let mailer = match smtp.tls {
-            EmailTlsMode::Tls => SmtpTransport::relay(&smtp.host),
-            EmailTlsMode::StartTls => SmtpTransport::starttls_relay(&smtp.host),
-        }
-        .map_err(|err| err.to_string())?
-        .port(smtp.port)
-        .credentials(credentials)
-        .build();
-        let response = mailer.send(&message).map_err(|err| err.to_string())?;
-        serde_json::to_string(&serde_json::json!({
-            "ok": true,
-            "response": response.message().collect::<Vec<_>>().join(" "),
-        }))
-        .map_err(|err| err.to_string())
-    }
-
-    fn modify(&self, uid: &str, operation: &str) -> Result<String, String> {
-        let config = self.config()?;
-        if config.provider == "gmail" {
-            return self.gmail(config)?.modify(uid, operation);
-        }
-        if config.provider == "outlook" {
-            return self.outlook(config)?.modify(uid, operation);
-        }
-        Err("mailbox modifications are unavailable for IMAP email".to_string())
-    }
-
-    fn imap_session(
-        &self,
-        config: &EmailCapabilityConfig,
-        imap: &EmailServerConfig,
-    ) -> Result<imap::Session<imap::Connection>, String> {
-        let password = self.password(config)?;
-        let mode = match imap.tls {
-            EmailTlsMode::Tls => imap::ConnectionMode::Tls,
-            EmailTlsMode::StartTls => imap::ConnectionMode::StartTls,
-        };
-        let client = imap::ClientBuilder::new(&imap.host, imap.port)
-            .mode(mode)
-            .connect()
-            .map_err(|err| err.to_string())?;
-        client
-            .login(&config.username, password)
-            .map_err(|(err, _client)| err.to_string())
-    }
-
-    fn password(&self, config: &EmailCapabilityConfig) -> Result<String, String> {
-        self.secrets
-            .get(&config.password_secret)
-            .ok_or_else(|| format!("missing email secret: {}", config.password_secret))
-    }
-
-    fn gmail<'a>(
-        &'a self,
-        config: &'a EmailCapabilityConfig,
-    ) -> Result<crate::tools::gmail::GmailClient<'a>, String> {
-        let oauth = config
-            .oauth
-            .as_ref()
-            .ok_or_else(|| "email OAuth capability is not configured".to_string())?;
-        Ok(crate::tools::gmail::GmailClient::new(
+        protocol::send(
             &self.secrets,
-            &oauth.refresh_token_secret,
+            &config.password_secret,
             &config.username,
             config.from.as_deref(),
-            &oauth.access,
-        ))
-    }
-
-    fn outlook<'a>(
-        &'a self,
-        config: &'a EmailCapabilityConfig,
-    ) -> Result<crate::tools::outlook::OutlookClient<'a>, String> {
-        let oauth = config
-            .oauth
-            .as_ref()
-            .ok_or_else(|| "email OAuth capability is not configured".to_string())?;
-        Ok(crate::tools::outlook::OutlookClient::new(
-            &self.secrets,
-            &oauth.refresh_token_secret,
-            &oauth.access,
-        ))
+            &smtp.host,
+            smtp.port,
+            matches!(smtp.tls, EmailTlsMode::StartTls),
+            message_json,
+        )
     }
 
     fn config(&self) -> Result<&EmailCapabilityConfig, String> {

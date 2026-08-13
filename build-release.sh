@@ -52,7 +52,7 @@ build_wasm_packages() {
       local destination="$store_dir/$package_name"
       mkdir -p "$destination"
       cp "$source_dir/target/wasm32-wasip2/release/$artifact_name" "$destination/$package_name.wasm"
-      for package_file in "$source_dir"/*.config.example.json "$source_dir"/*.install.json; do
+      for package_file in "$source_dir"/*.config.template.json "$source_dir"/*.install.json; do
         [ -f "$package_file" ] && cp "$package_file" "$destination/"
       done
     else
@@ -79,7 +79,7 @@ done
 mkdir -p "$RELEASE_DIR/tools"
 cp "$TOOL_STORE_DIR/web-search/web-search.wasm" "$RELEASE_DIR/tools/web_search.wasm"
 if [ ! -f "$RELEASE_DIR/tools/web_search.config.json" ]; then
-  cp "$TOOL_STORE_DIR/web-search/web-search.config.example.json" \
+  cp "$TOOL_STORE_DIR/web-search/web-search.config.template.json" \
     "$RELEASE_DIR/tools/web_search.config.json"
 fi
 

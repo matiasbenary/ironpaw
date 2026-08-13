@@ -1,15 +1,14 @@
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 
 use crate::{
     message::{available_filename, execution_files_dir},
+    network::public::PublicHttp,
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
-use super::web::fetch::{guard_url, pinned_client};
-
-const MAX_DOWNLOAD_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct DownloadFileParams {
@@ -26,17 +25,15 @@ struct DownloadedFile {
 
 pub struct DownloadFileTool {
     files_dir: PathBuf,
-    client: reqwest::Client,
+    http: PublicHttp,
 }
 
 impl DownloadFileTool {
     pub fn new(files_dir: PathBuf) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("http client should build");
-        Self { files_dir, client }
+        Self {
+            files_dir,
+            http: PublicHttp::new(),
+        }
     }
 
     async fn download(
@@ -46,47 +43,21 @@ impl DownloadFileTool {
     ) -> Result<DownloadedFile, String> {
         let url = reqwest::Url::parse(&params.url).map_err(|err| format!("invalid url: {err}"))?;
         let url = normalize_download_url(url)?;
-        let resolved = guard_url(&url).await?;
-        let client = match resolved {
-            Some(addrs) => pinned_client(url.host_str().unwrap_or_default(), &addrs)?,
-            None => self.client.clone(),
-        };
-        let mut response = client
-            .get(url.clone())
-            .send()
+        let response = self
+            .http
+            .get(url.as_str(), MAX_DOWNLOAD_BYTES, true)
             .await
-            .map_err(|err| format!("request failed: {}", err.without_url()))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(format!("request failed with status {}", status.as_u16()));
+            .map_err(|error| {
+                error.replace(
+                    "response is too large (> 10485760 bytes)",
+                    "download is too large (> 10 MB)",
+                )
+            })?;
+        if !(200..300).contains(&response.status) {
+            return Err(format!("request failed with status {}", response.status));
         }
-        if response
-            .content_length()
-            .is_some_and(|size| size > MAX_DOWNLOAD_BYTES)
-        {
-            return Err("download is too large (> 10 MB)".to_string());
-        }
-        let mime_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .split(';')
-            .next()
-            .unwrap_or("application/octet-stream")
-            .trim()
-            .to_string();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|err| format!("failed to read body: {}", err.without_url()))?
-        {
-            if bytes.len() as u64 + chunk.len() as u64 > MAX_DOWNLOAD_BYTES {
-                return Err("download is too large (> 10 MB)".to_string());
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let mime_type = response.content_type;
+        let bytes = response.body;
 
         let requested_filename = url
             .path_segments()

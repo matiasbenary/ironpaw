@@ -240,6 +240,7 @@ pub(super) fn locate_tool_package(
         &std::fs::read_to_string(&manifest_path).map_err(|err| err.to_string())?,
     )
     .map_err(|err| err.to_string())?;
+    validate_oauth(&manifest)?;
     if normalize_tool_name(&manifest.name)? != name {
         return Err(format!(
             "install manifest declares tool '{}' but package is '{name}'",
@@ -259,6 +260,58 @@ pub(super) fn locate_tool_package(
         config_template_path,
         manifest,
     })
+}
+
+fn validate_oauth(manifest: &ToolInstallManifest) -> Result<(), String> {
+    let secret_names = manifest
+        .secrets
+        .iter()
+        .map(|secret| secret.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let config_paths = manifest
+        .config
+        .iter()
+        .map(|config| config.path.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for oauth in manifest
+        .config
+        .iter()
+        .flat_map(|config| &config.choices)
+        .filter_map(|choice| choice.oauth.as_ref())
+    {
+        for (kind, endpoint) in [
+            ("authorization", &oauth.authorize_url),
+            ("token", &oauth.token_url),
+        ] {
+            let url = reqwest::Url::parse(endpoint)
+                .map_err(|error| format!("invalid OAuth {kind} endpoint: {error}"))?;
+            if url.scheme() != "https" || url.host_str().is_none() {
+                return Err(format!("OAuth {kind} endpoint must be absolute HTTPS"));
+            }
+        }
+        if let crate::tools::setup::install_common::SetupOAuthClientId::Config { config } =
+            &oauth.client_id
+            && !config_paths.contains(config.as_str())
+        {
+            return Err(format!(
+                "OAuth client id references unknown config: {config}"
+            ));
+        }
+        if let Some(handle) = &oauth.client_secret_handle
+            && !secret_names.contains(handle.as_str())
+        {
+            return Err(format!(
+                "OAuth client secret handle is not declared by the package: {handle}"
+            ));
+        }
+        if oauth.client_secret.is_some() && oauth.client_secret_handle.is_some() {
+            return Err(
+                "OAuth must not declare both a literal client secret and a secret handle"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn discover_tool_packages(layout: &RuntimeLayout) -> Vec<Result<ToolPackage, String>> {
@@ -325,8 +378,8 @@ pub(super) fn install_package(
         config_values,
         true,
     )?;
-    let parsed: WasmToolConfig =
-        serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
+    let (config_json, parsed) = bind_oauth(package, config_values, &config_json)?;
+    std::fs::write(&config_dst, &config_json).map_err(|err| err.to_string())?;
     Ok(WasmToolManifest {
         name: package.name.clone(),
         wasm_path: wasm_dst,
@@ -344,11 +397,135 @@ pub(super) fn reconfigure_package(
     let Some(mut manifest) = installed_tool_manifest(layout, &package.name)? else {
         return Err(format!("tool '{}' is not installed", package.name));
     };
-    let mut config: serde_json::Value =
-        serde_json::from_str(&manifest.config_json).map_err(|err| err.to_string())?;
+    let mut config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&package.config_template_path).map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
     crate::tools::setup::install_common::apply_config_values(&mut config, config_values)?;
-    manifest.config_json = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
+    (manifest.config_json, manifest.config) = bind_oauth(
+        package,
+        config_values,
+        &serde_json::to_string(&config).map_err(|err| err.to_string())?,
+    )?;
     std::fs::write(&manifest.config_path, &manifest.config_json).map_err(|err| err.to_string())?;
-    manifest.config = serde_json::from_value(config).map_err(|err| err.to_string())?;
     Ok(manifest)
+}
+
+fn bind_oauth(
+    package: &ToolPackage,
+    values: &BTreeMap<String, serde_json::Value>,
+    config_json: &str,
+) -> Result<(String, WasmToolConfig), String> {
+    let selected = package
+        .manifest
+        .config
+        .iter()
+        .filter_map(|config| {
+            if config
+                .when
+                .as_ref()
+                .is_some_and(|condition| values.get(&condition.path) != Some(&condition.equals))
+            {
+                return None;
+            }
+            let value = values.get(&config.path)?.as_str()?;
+            config
+                .choices
+                .iter()
+                .find(|choice| choice.value == value)?
+                .oauth
+                .as_ref()
+        })
+        .collect::<Vec<_>>();
+    let mut config: serde_json::Value =
+        serde_json::from_str(config_json).map_err(|err| err.to_string())?;
+    if let Some(grants) = config["http_credentials"].as_array_mut() {
+        let mut error = None;
+        grants.retain_mut(|grant| {
+            let Some(handle) = grant["oauth"]["refresh_token_handle"].as_str() else {
+                return true;
+            };
+            let Some(oauth) = selected
+                .iter()
+                .find(|oauth| oauth.refresh_token_handle == handle)
+            else {
+                return false;
+            };
+            match oauth.client_id.resolve(values) {
+                Ok(client_id) => {
+                    grant["oauth"] =
+                        serde_json::to_value(crate::network::oauth::OAuthGrantConfig {
+                            token_url: oauth.token_url.clone(),
+                            client_id,
+                            client_secret: oauth.client_secret.clone(),
+                            client_secret_handle: oauth.client_secret_handle.clone(),
+                            refresh_token_handle: oauth.refresh_token_handle.clone(),
+                        })
+                        .expect("OAuth grant serialization");
+                    true
+                }
+                Err(message) => {
+                    error = Some(message);
+                    false
+                }
+            }
+        });
+        if let Some(error) = error {
+            return Err(error);
+        }
+    }
+    let config_json = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
+    let parsed = serde_json::from_value(config).map_err(|err| err.to_string())?;
+    Ok((config_json, parsed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_oauth_recipe_becomes_the_only_runtime_grant() {
+        let manifest: ToolInstallManifest = serde_json::from_str(include_str!(
+            "../../../../wasm-tools/email/email.install.json"
+        ))
+        .unwrap();
+        validate_oauth(&manifest).unwrap();
+        let package = ToolPackage {
+            name: "email".to_string(),
+            display_name: "Email".to_string(),
+            wasm_path: PathBuf::new(),
+            config_template_path: PathBuf::new(),
+            manifest,
+        };
+        let values = BTreeMap::from([
+            (
+                "/email/oauth/access".to_string(),
+                serde_json::json!("readonly"),
+            ),
+            ("/email/provider".to_string(), serde_json::json!("gmail")),
+        ]);
+
+        let (_, config) = bind_oauth(
+            &package,
+            &values,
+            include_str!("../../../../wasm-tools/email/email.config.template.json"),
+        )
+        .unwrap();
+
+        assert_eq!(config.http_credentials.len(), 1);
+        assert_eq!(config.http_credentials[0].host, "gmail.googleapis.com");
+        assert_eq!(
+            config.http_credentials[0].oauth.as_ref().unwrap().client_id,
+            "REMOVED_GOOGLE_OAUTH_CLIENT_ID"
+        );
+        assert_eq!(
+            config.http_credentials[0]
+                .oauth
+                .as_ref()
+                .unwrap()
+                .client_secret
+                .as_deref(),
+            Some("REMOVED_GOOGLE_OAUTH_CLIENT_SECRET")
+        );
+    }
 }

@@ -1,6 +1,6 @@
 use std::{fs, io::Cursor, path::PathBuf};
 
-use crate::config::RuntimeLayout;
+use crate::{config::RuntimeLayout, network::public::PublicHttp};
 
 const CFT_STABLE: &str = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json";
 
@@ -12,10 +12,9 @@ pub(super) async fn ensure_chrome(layout: RuntimeLayout) -> Result<PathBuf, Stri
 
 fn install_chrome(layout: &RuntimeLayout) -> Result<PathBuf, String> {
     fs::create_dir_all(layout.bin_dir()).map_err(|e| e.to_string())?;
-    let metadata: serde_json::Value = reqwest::blocking::get(CFT_STABLE)
-        .map_err(|e| e.to_string())?
-        .json()
-        .map_err(|e| e.to_string())?;
+    let metadata = PublicHttp::get_blocking(CFT_STABLE, 1_000_000)?;
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&metadata.body).map_err(|e| e.to_string())?;
     let platform = chrome_platform();
     let version = metadata["channels"]["Stable"]["version"]
         .as_str()
@@ -32,10 +31,7 @@ fn install_chrome(layout: &RuntimeLayout) -> Result<PathBuf, String> {
         .and_then(|items| items.iter().find(|item| item["platform"] == platform))
         .and_then(|item| item["url"].as_str())
         .ok_or_else(|| format!("Chrome Headless Shell has no Stable download for {platform}"))?;
-    let bytes = reqwest::blocking::get(url)
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .map_err(|e| e.to_string())?;
+    let bytes = PublicHttp::get_blocking(url, 500_000_000)?.body;
     let staging = layout
         .bin_dir()
         .join(format!(".chrome-headless-shell-{version}.installing"));

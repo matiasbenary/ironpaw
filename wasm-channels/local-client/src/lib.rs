@@ -1,6 +1,6 @@
 wit_bindgen::generate!({
     world: "channel",
-    path: "../../wit/channel.wit",
+    path: "wit/channel.wit",
 });
 
 use std::{cell::Cell, net::Ipv4Addr};

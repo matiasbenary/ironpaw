@@ -13,12 +13,7 @@ pub(crate) use tool_metadata;
 mod built_in;
 mod context;
 pub mod dynamic;
-mod email;
-#[path = "../../wasm-tools/email/host/mod.rs"]
-pub(crate) mod email_host;
-mod gmail;
 mod handler;
-mod outlook;
 mod package_support;
 mod runner;
 pub mod state;

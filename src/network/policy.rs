@@ -1,4 +1,13 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+
+pub(crate) fn resolve_public_blocking(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    validate_addresses(
+        (host, port)
+            .to_socket_addrs()
+            .map_err(|err| format!("failed to resolve host: {err}"))?
+            .collect(),
+    )
+}
 
 pub(crate) async fn resolve_public(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
     if host.is_empty() {
@@ -12,6 +21,10 @@ pub(crate) async fn resolve_public(host: &str, port: u16) -> Result<Vec<SocketAd
             .map_err(|err| format!("failed to resolve host: {err}"))?
             .collect()
     };
+    validate_addresses(addresses)
+}
+
+fn validate_addresses(addresses: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, String> {
     if addresses.is_empty() {
         return Err("host resolved to no addresses".to_string());
     }
