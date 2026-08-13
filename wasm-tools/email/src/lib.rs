@@ -5,6 +5,7 @@ wit_bindgen::generate!({
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 mod gmail;
 mod outlook;
@@ -37,6 +38,8 @@ export!(EmailTool);
 enum EmailParams {
     /// List recent messages in a folder. Does not mark messages as read.
     List {
+        /// Configured email address to use.
+        account: String,
         /// Mail folder to inspect. Defaults to INBOX.
         folder: Option<String>,
         /// Maximum number of recent messages to return. Defaults to 10, max 50.
@@ -44,6 +47,8 @@ enum EmailParams {
     },
     /// Read one message by IMAP UID. Does not intentionally mark the message as read.
     Read {
+        /// Configured email address to use.
+        account: String,
         /// Mail folder containing the message. Defaults to INBOX.
         folder: Option<String>,
         /// Stable IMAP UID returned by list.
@@ -51,6 +56,8 @@ enum EmailParams {
     },
     /// Change a Gmail message. Requires Take control access.
     Modify {
+        /// Configured email address to use.
+        account: String,
         /// Gmail message ID returned by list.
         uid: String,
         /// One of mark_read, mark_unread, archive, or trash.
@@ -58,6 +65,8 @@ enum EmailParams {
     },
     /// Send a plain-text email through the configured SMTP server.
     Send {
+        /// Configured email address to use.
+        account: String,
         /// Recipient email addresses.
         to: Vec<String>,
         /// Email subject.
@@ -113,6 +122,11 @@ struct ToolConfig {
 
 #[derive(Deserialize)]
 struct EmailConfig {
+    accounts: BTreeMap<String, AccountConfig>,
+}
+
+#[derive(Deserialize)]
+struct AccountConfig {
     provider: String,
     username: String,
     from: Option<String>,
@@ -129,62 +143,67 @@ fn execute_inner(args_json: &str, config_json: &str) -> Result<String, String> {
         serde_json::from_str(args_json).map_err(|err| format!("invalid parameters: {err}"))?;
     let config: ToolConfig =
         serde_json::from_str(config_json).map_err(|err| format!("invalid email config: {err}"))?;
-    let access = config
-        .email
-        .oauth
-        .as_ref()
-        .map(|oauth| oauth.access.as_str())
-        .unwrap_or_default();
     match params {
-        EmailParams::List { folder, limit } => {
+        EmailParams::List { account, folder, limit } => {
+            let config = account_config(&config, &account)?;
+            let access = access(config);
             let folder = folder_or_inbox(folder);
             let limit = limit.unwrap_or(10).clamp(1, 50);
-            match config.email.provider.as_str() {
+            match config.provider.as_str() {
                 "gmail" => gmail::GmailClient::new(
-                    &config.email.username,
-                    config.email.from.as_deref(),
+                    &account,
+                    &config.username,
+                    config.from.as_deref(),
                     access,
                 )
                 .list(&folder, limit),
-                "outlook" => outlook::OutlookClient::new(access).list(&folder, limit),
-                _ => ironpaw::tool::tool_host::imap_list(&folder, limit),
+                "outlook" => outlook::OutlookClient::new(&account, access).list(&folder, limit),
+                _ => ironpaw::tool::tool_host::imap_list(Some(&account), &folder, limit),
             }
             .map_err(|err| format!("email list failed: {err}"))
         }
-        EmailParams::Read { folder, uid } => {
+        EmailParams::Read { account, folder, uid } => {
+            let config = account_config(&config, &account)?;
+            let access = access(config);
             if uid.trim().is_empty() {
                 return Err("'uid' must not be empty".to_string());
             }
             let folder = folder_or_inbox(folder);
-            match config.email.provider.as_str() {
+            match config.provider.as_str() {
                 "gmail" => gmail::GmailClient::new(
-                    &config.email.username,
-                    config.email.from.as_deref(),
+                    &account,
+                    &config.username,
+                    config.from.as_deref(),
                     access,
                 )
                 .read(&folder, &uid),
-                "outlook" => outlook::OutlookClient::new(access).read(&folder, &uid),
-                _ => ironpaw::tool::tool_host::imap_read(&folder, &uid),
+                "outlook" => outlook::OutlookClient::new(&account, access).read(&folder, &uid),
+                _ => ironpaw::tool::tool_host::imap_read(Some(&account), &folder, &uid),
             }
             .map_err(|err| format!("email read failed: {err}"))
         }
-        EmailParams::Modify { uid, operation } => {
+        EmailParams::Modify { account, uid, operation } => {
+            let config = account_config(&config, &account)?;
+            let access = access(config);
             if uid.trim().is_empty() {
                 return Err("'uid' must not be empty".to_string());
             }
-            match config.email.provider.as_str() {
+            match config.provider.as_str() {
                 "gmail" => gmail::GmailClient::new(
-                    &config.email.username,
-                    config.email.from.as_deref(),
+                    &account,
+                    &config.username,
+                    config.from.as_deref(),
                     access,
                 )
                 .modify(&uid, operation.as_str()),
-                "outlook" => outlook::OutlookClient::new(access).modify(&uid, operation.as_str()),
+                "outlook" => outlook::OutlookClient::new(&account, access)
+                    .modify(&uid, operation.as_str()),
                 _ => Err("mailbox modifications are unavailable for IMAP email".to_string()),
             }
             .map_err(|err| format!("email modification failed: {err}"))
         }
         EmailParams::Send {
+            account,
             to,
             subject,
             body,
@@ -192,6 +211,8 @@ fn execute_inner(args_json: &str, config_json: &str) -> Result<String, String> {
             bcc,
             from,
         } => {
+            let config = account_config(&config, &account)?;
+            let access = access(config);
             if to.is_empty() {
                 return Err("'to' must contain at least one recipient".to_string());
             }
@@ -207,15 +228,16 @@ fn execute_inner(args_json: &str, config_json: &str) -> Result<String, String> {
                 from,
             };
             let message_json = serde_json::to_string(&outbound).map_err(|err| err.to_string())?;
-            match config.email.provider.as_str() {
+            match config.provider.as_str() {
                 "gmail" => gmail::GmailClient::new(
-                    &config.email.username,
-                    config.email.from.as_deref(),
+                    &account,
+                    &config.username,
+                    config.from.as_deref(),
                     access,
                 )
                 .send(&message_json),
-                "outlook" => outlook::OutlookClient::new(access).send(&message_json),
-                _ => ironpaw::tool::tool_host::smtp_send(&message_json),
+                "outlook" => outlook::OutlookClient::new(&account, access).send(&message_json),
+                _ => ironpaw::tool::tool_host::smtp_send(Some(&account), &message_json),
             }
             .map_err(|err| format!("email send failed: {err}"))
         }
@@ -223,12 +245,14 @@ fn execute_inner(args_json: &str, config_json: &str) -> Result<String, String> {
 }
 
 fn request(
+    account: &str,
     method: &str,
     url: &str,
     headers: serde_json::Value,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let output = ironpaw::tool::tool_host::http_request_headers(
+    let output = ironpaw::tool::tool_host::http_request(
+        Some(account),
         method,
         url,
         &headers.to_string(),
@@ -239,6 +263,22 @@ fn request(
     } else {
         serde_json::from_str(&output).map_err(|err| format!("invalid provider response: {err}"))
     }
+}
+
+fn account_config<'a>(config: &'a ToolConfig, account: &str) -> Result<&'a AccountConfig, String> {
+    config
+        .email
+        .accounts
+        .get(account)
+        .ok_or_else(|| format!("email account is not configured: {account}"))
+}
+
+fn access(config: &AccountConfig) -> &str {
+    config
+        .oauth
+        .as_ref()
+        .map(|oauth| oauth.access.as_str())
+        .unwrap_or_default()
 }
 
 fn truncate(value: &str, max: usize) -> &str {
@@ -256,8 +296,8 @@ mod tests {
     #[test]
     fn installed_config_is_accepted() {
         let error = execute_inner(
-            r#"{"action":"modify","uid":"","operation":"archive"}"#,
-            include_str!("../email.config.template.json"),
+            r#"{"action":"modify","account":"me@gmail.com","uid":"","operation":"archive"}"#,
+            r#"{"email":{"accounts":{"me@gmail.com":{"provider":"gmail","username":"me@gmail.com","oauth":{"access":"readonly"}}}}}"#,
         )
         .unwrap_err();
         assert_eq!(error, "'uid' must not be empty");
@@ -272,7 +312,7 @@ mod tests {
             configs
                 .iter()
                 .find(|config| {
-                    config["path"] == "/email/oauth/access" && config["when"]["equals"] == provider
+                    config["path"] == "/oauth/access" && config["when"]["equals"] == provider
                 })
                 .and_then(|config| config["choices"].as_array())
                 .and_then(|choices| choices.iter().find(|choice| choice["value"] == "readonly"))

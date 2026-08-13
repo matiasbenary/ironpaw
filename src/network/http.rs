@@ -20,6 +20,7 @@ pub trait SecretLookup: Clone + Send + Sync + 'static {
 #[derive(Clone, Debug)]
 pub struct NetworkGrant {
     pub host: String,
+    pub account: Option<String>,
     pub secret: Option<String>,
     pub header: String,
     pub prefix: String,
@@ -31,6 +32,7 @@ impl NetworkGrant {
     pub fn bearer(host: impl Into<String>, secret: impl Into<String>) -> Self {
         Self {
             host: host.into(),
+            account: None,
             secret: Some(secret.into()),
             header: "Authorization".to_string(),
             prefix: "Bearer ".to_string(),
@@ -46,6 +48,7 @@ impl NetworkGrant {
     ) -> Self {
         Self {
             host: host.into(),
+            account: None,
             secret: Some(secret.into()),
             header: String::new(),
             prefix: String::new(),
@@ -58,6 +61,8 @@ impl NetworkGrant {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct NetworkGrantConfig {
     pub host: String,
+    #[serde(default)]
+    pub account: Option<String>,
     #[serde(default)]
     pub secret: Option<String>,
     #[serde(default)]
@@ -75,6 +80,7 @@ impl From<NetworkGrantConfig> for NetworkGrant {
         if let Some(placeholder) = config.placeholder {
             return Self {
                 host: config.host,
+                account: config.account,
                 secret: config.secret,
                 header: String::new(),
                 prefix: String::new(),
@@ -84,6 +90,7 @@ impl From<NetworkGrantConfig> for NetworkGrant {
         }
         Self {
             host: config.host,
+            account: config.account,
             secret: config.secret,
             header: config.header.unwrap_or_else(|| "Authorization".to_string()),
             prefix: config.prefix.unwrap_or_else(|| "Bearer ".to_string()),
@@ -197,6 +204,17 @@ where
         headers_json: &str,
         body_json: &str,
     ) -> Result<Vec<u8>, HttpError> {
+        self.request_bytes_headers_for_string_blocking(None, method, url, headers_json, body_json)
+    }
+
+    pub fn request_bytes_headers_for_string_blocking(
+        &self,
+        account: Option<&str>,
+        method: &str,
+        url: &str,
+        headers_json: &str,
+        body_json: &str,
+    ) -> Result<Vec<u8>, HttpError> {
         let method = method
             .parse::<Method>()
             .map_err(|err| HttpError::InvalidRequest(format!("invalid HTTP method: {err}")))?;
@@ -236,7 +254,7 @@ where
         }
 
         let response = self
-            .authorize(request, &url)?
+            .authorize_for(request, &url, account)?
             .send()
             .map_err(sanitize_blocking_reqwest_error)?;
         let status = response.status();
@@ -312,10 +330,26 @@ where
 
     fn authorize(
         &self,
-        mut request: RequestBuilder,
+        request: RequestBuilder,
         url: &reqwest::Url,
     ) -> Result<RequestBuilder, HttpError> {
-        for credential in self.grants_for(url) {
+        self.authorize_for(request, url, None)
+    }
+
+    fn authorize_for(
+        &self,
+        mut request: RequestBuilder,
+        url: &reqwest::Url,
+        account: Option<&str>,
+    ) -> Result<RequestBuilder, HttpError> {
+        let credentials = self.grants_for(url, account).collect::<Vec<_>>();
+        if account.is_some() && credentials.is_empty() {
+            return Err(HttpError::InvalidRequest(format!(
+                "account is not allowed for host {}",
+                url.host_str().unwrap_or_default()
+            )));
+        }
+        for credential in credentials {
             if credential.placeholder.is_some() {
                 continue;
             }
@@ -343,7 +377,7 @@ where
         mut request: reqwest::RequestBuilder,
         url: &reqwest::Url,
     ) -> Result<reqwest::RequestBuilder, HttpError> {
-        for credential in self.grants_for(url) {
+        for credential in self.grants_for(url, None) {
             if credential.placeholder.is_some() {
                 continue;
             }
@@ -374,7 +408,7 @@ where
     }
 
     fn require_credentials(&self, url: &reqwest::Url) -> Result<(), HttpError> {
-        for grant in self.grants_for(url) {
+        for grant in self.grants_for(url, None) {
             if let Some(oauth) = &grant.oauth
                 && self
                     .secrets
@@ -456,7 +490,7 @@ where
         url: &reqwest::Url,
     ) -> Result<String, HttpError> {
         let mut value = value.to_string();
-        for credential in self.grants_for(url) {
+        for credential in self.grants_for(url, None) {
             let Some(placeholder) = &credential.placeholder else {
                 continue;
             };
@@ -477,11 +511,15 @@ where
         Ok(value)
     }
 
-    fn grants_for<'a>(&'a self, url: &reqwest::Url) -> impl Iterator<Item = &'a NetworkGrant> {
+    fn grants_for<'a>(
+        &'a self,
+        url: &reqwest::Url,
+        account: Option<&'a str>,
+    ) -> impl Iterator<Item = &'a NetworkGrant> {
         let host = url.host_str().unwrap_or_default();
-        self.grants
-            .iter()
-            .filter(move |credential| credential.host == host)
+        self.grants.iter().filter(move |credential| {
+            credential.host == host && credential.account.as_deref() == account
+        })
     }
 
     fn ensure_allowed_host(&self, url: &reqwest::Url) -> Result<(), HttpError> {

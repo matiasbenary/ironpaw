@@ -20,9 +20,9 @@ pub(crate) async fn run_setup_action(
             match discovery::discover(address).await {
                 Ok(discovered) => Ok(discovered),
                 Err(_) => Ok(BTreeMap::from([
-                    ("/email/provider".to_string(), "imap".into()),
-                    ("/email/username".to_string(), address.trim().into()),
-                    ("/email/from".to_string(), address.trim().into()),
+                    ("/provider".to_string(), "imap".into()),
+                    ("/username".to_string(), address.trim().into()),
+                    ("/from".to_string(), address.trim().into()),
                 ])),
             }
         }

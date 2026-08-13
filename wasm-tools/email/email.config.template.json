@@ -1,35 +1,6 @@
 {
-  "http_credentials": [
-    {
-      "host": "gmail.googleapis.com",
-      "oauth": {
-        "refresh_token_handle": "EMAIL_GOOGLE_REFRESH_TOKEN"
-      }
-    },
-    {
-      "host": "graph.microsoft.com",
-      "oauth": {
-        "refresh_token_handle": "EMAIL_MICROSOFT_REFRESH_TOKEN"
-      }
-    }
-  ],
+  "http_credentials": [],
   "email": {
-    "provider": "",
-    "imap": {
-      "host": "",
-      "port": 993,
-      "tls": "tls"
-    },
-    "smtp": {
-      "host": "",
-      "port": 465,
-      "tls": "tls"
-    },
-    "username": "",
-    "password_secret": "EMAIL_PASSWORD",
-    "from": "",
-    "oauth": {
-      "access": ""
-    }
+    "accounts": {}
   }
 }

@@ -10,7 +10,7 @@ use crate::{
         setup::{
             install_common::{
                 SetupConfig, SetupSecret, config_statuses, discover_package_dir_names,
-                locate_config_template, secret_statuses, write_package_artifacts,
+                locate_config_template, secret_statuses,
             },
             install_tool::ListToolsTool,
         },
@@ -18,7 +18,7 @@ use crate::{
     },
 };
 
-use super::installable_tool::discover_shell_packages;
+use super::{install_tool_artifacts::install_package, installable_tool::discover_shell_packages};
 
 #[derive(Clone)]
 pub(super) struct ToolPackage {
@@ -46,6 +46,15 @@ pub(super) struct ToolInstallManifest {
     pub(super) config_before_secrets: bool,
     #[serde(default)]
     pub(super) setup_handler: Option<String>,
+    #[serde(default)]
+    pub(super) accounts: Option<SetupAccounts>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub(super) struct SetupAccounts {
+    pub(super) path: String,
+    pub(super) identity_path: String,
+    pub(super) template: serde_json::Value,
 }
 
 pub fn install_packaged_tool(
@@ -56,7 +65,6 @@ pub fn install_packaged_tool(
     if let Some(manifest) = installed_tool_manifest(layout, &name)? {
         return Ok(manifest);
     }
-
     let package = locate_tool_package(layout, &name)?;
     if !required_config(&package).is_empty() {
         return Err(format!(
@@ -78,7 +86,8 @@ pub(super) fn installed_tool_manifest(
         return Ok(None);
     }
     let config_json = std::fs::read_to_string(&config_path).map_err(|err| err.to_string())?;
-    let config = serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
+    let config: WasmToolConfig =
+        serde_json::from_str(&config_json).map_err(|err| err.to_string())?;
     Ok(Some(WasmToolManifest {
         name: name.to_string(),
         wasm_path,
@@ -102,20 +111,19 @@ impl ListToolsTool {
 
         for package in discover_tool_packages(&self.layout) {
             let package = package?;
-            let installed = installed.contains(&package.name);
+            let is_installed = installed.contains(&package.name);
             package_names.insert(package.name.clone());
             tool_rows.push(serde_json::json!({
                 "name": package.name,
                 "kind": "wasm",
                 "display_name": package.display_name,
                 "description": package.manifest.description,
-                "installed": installed,
-                "installable": !installed,
+                "installed": is_installed,
+                "installable": !is_installed,
                 "required_secrets": secret_statuses(required_secrets(&package), &self.secrets, false),
                 "required_config": config_statuses(required_config(&package)),
             }));
         }
-
         for name in installed.difference(&package_names) {
             tool_rows.push(serde_json::json!({
                 "name": name,
@@ -135,37 +143,30 @@ impl ListToolsTool {
             .collect::<BTreeSet<_>>();
         for package in discover_shell_packages(&self.layout) {
             let package = package?;
-            if installed_shell_names.contains(package.manifest.name.as_str()) {
-                continue;
+            if !installed_shell_names.contains(package.manifest.name.as_str()) {
+                tool_rows.push(shell_inventory_row(
+                    &package.manifest,
+                    false,
+                    false,
+                    &self.secrets,
+                ));
             }
-            tool_rows.push(shell_inventory_row(
-                &package.manifest,
-                false,
-                false,
-                &self.secrets,
-            ));
         }
         for manifest in installed_shell {
-            let is_enabled = enabled.is_enabled(&manifest.name)?;
             tool_rows.push(shell_inventory_row(
                 &manifest,
                 true,
-                is_enabled,
+                enabled.is_enabled(&manifest.name)?,
                 &self.secrets,
             ));
         }
-
         tool_rows.sort_by(|left, right| {
             left["name"]
                 .as_str()
                 .unwrap_or_default()
                 .cmp(right["name"].as_str().unwrap_or_default())
         });
-
-        Ok(serde_json::json!({
-            "ok": true,
-            "tools": tool_rows,
-        }))
+        Ok(serde_json::json!({ "ok": true, "tools": tool_rows }))
     }
 }
 
@@ -267,12 +268,12 @@ fn validate_oauth(manifest: &ToolInstallManifest) -> Result<(), String> {
         .secrets
         .iter()
         .map(|secret| secret.name.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
+        .collect::<BTreeSet<_>>();
     let config_paths = manifest
         .config
         .iter()
         .map(|config| config.path.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
+        .collect::<BTreeSet<_>>();
     for oauth in manifest
         .config
         .iter()
@@ -314,6 +315,28 @@ fn validate_oauth(manifest: &ToolInstallManifest) -> Result<(), String> {
     Ok(())
 }
 
+pub(super) fn account_identity(
+    package: &ToolPackage,
+    values: &BTreeMap<String, serde_json::Value>,
+) -> Result<String, String> {
+    let accounts = package
+        .manifest
+        .accounts
+        .as_ref()
+        .ok_or_else(|| "tool does not declare accounts".to_string())?;
+    values
+        .get(&accounts.identity_path)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|identity| !identity.is_empty() && !identity.contains('/'))
+        .map(str::to_string)
+        .ok_or_else(|| "account identity is missing or invalid".to_string())
+}
+
+pub(super) fn scoped_secret(account: &str, handle: &str) -> String {
+    format!("{handle}:{account}").to_ascii_uppercase()
+}
+
 fn discover_tool_packages(layout: &RuntimeLayout) -> Vec<Result<ToolPackage, String>> {
     discover_package_dir_names(tool_source_dirs(layout))
         .into_iter()
@@ -341,12 +364,9 @@ fn locate_wasm(source_dir: &Path, dir_name: &str) -> Result<PathBuf, String> {
     if flat.exists() {
         return Ok(flat);
     }
-    let crate_name = dir_name.replace('-', "_");
     let built = source_dir
-        .join("target")
-        .join("wasm32-wasip2")
-        .join("release")
-        .join(format!("{crate_name}.wasm"));
+        .join("target/wasm32-wasip2/release")
+        .join(format!("{}.wasm", dir_name.replace('-', "_")));
     if built.exists() {
         return Ok(built);
     }
@@ -362,170 +382,4 @@ pub(super) fn required_secrets(package: &ToolPackage) -> Vec<SetupSecret> {
 
 pub(super) fn required_config(package: &ToolPackage) -> Vec<SetupConfig> {
     package.manifest.config.clone()
-}
-
-pub(super) fn install_package(
-    layout: &RuntimeLayout,
-    package: &ToolPackage,
-    config_values: &BTreeMap<String, serde_json::Value>,
-) -> Result<WasmToolManifest, String> {
-    let (wasm_dst, config_dst, config_json) = write_package_artifacts(
-        "tool",
-        &layout.tools_dir(),
-        &package.name,
-        &package.wasm_path,
-        &package.config_template_path,
-        config_values,
-        true,
-    )?;
-    let (config_json, parsed) = bind_oauth(package, config_values, &config_json)?;
-    std::fs::write(&config_dst, &config_json).map_err(|err| err.to_string())?;
-    Ok(WasmToolManifest {
-        name: package.name.clone(),
-        wasm_path: wasm_dst,
-        config_path: config_dst,
-        config_json,
-        config: parsed,
-    })
-}
-
-pub(super) fn reconfigure_package(
-    layout: &RuntimeLayout,
-    package: &ToolPackage,
-    config_values: &BTreeMap<String, serde_json::Value>,
-) -> Result<WasmToolManifest, String> {
-    let Some(mut manifest) = installed_tool_manifest(layout, &package.name)? else {
-        return Err(format!("tool '{}' is not installed", package.name));
-    };
-    let mut config: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&package.config_template_path).map_err(|err| err.to_string())?,
-    )
-    .map_err(|err| err.to_string())?;
-    crate::tools::setup::install_common::apply_config_values(&mut config, config_values)?;
-    (manifest.config_json, manifest.config) = bind_oauth(
-        package,
-        config_values,
-        &serde_json::to_string(&config).map_err(|err| err.to_string())?,
-    )?;
-    std::fs::write(&manifest.config_path, &manifest.config_json).map_err(|err| err.to_string())?;
-    Ok(manifest)
-}
-
-fn bind_oauth(
-    package: &ToolPackage,
-    values: &BTreeMap<String, serde_json::Value>,
-    config_json: &str,
-) -> Result<(String, WasmToolConfig), String> {
-    let selected = package
-        .manifest
-        .config
-        .iter()
-        .filter_map(|config| {
-            if config
-                .when
-                .as_ref()
-                .is_some_and(|condition| values.get(&condition.path) != Some(&condition.equals))
-            {
-                return None;
-            }
-            let value = values.get(&config.path)?.as_str()?;
-            config
-                .choices
-                .iter()
-                .find(|choice| choice.value == value)?
-                .oauth
-                .as_ref()
-        })
-        .collect::<Vec<_>>();
-    let mut config: serde_json::Value =
-        serde_json::from_str(config_json).map_err(|err| err.to_string())?;
-    if let Some(grants) = config["http_credentials"].as_array_mut() {
-        let mut error = None;
-        grants.retain_mut(|grant| {
-            let Some(handle) = grant["oauth"]["refresh_token_handle"].as_str() else {
-                return true;
-            };
-            let Some(oauth) = selected
-                .iter()
-                .find(|oauth| oauth.refresh_token_handle == handle)
-            else {
-                return false;
-            };
-            match oauth.client_id.resolve(values) {
-                Ok(client_id) => {
-                    grant["oauth"] =
-                        serde_json::to_value(crate::network::oauth::OAuthGrantConfig {
-                            token_url: oauth.token_url.clone(),
-                            client_id,
-                            client_secret: oauth.client_secret.clone(),
-                            client_secret_handle: oauth.client_secret_handle.clone(),
-                            refresh_token_handle: oauth.refresh_token_handle.clone(),
-                        })
-                        .expect("OAuth grant serialization");
-                    true
-                }
-                Err(message) => {
-                    error = Some(message);
-                    false
-                }
-            }
-        });
-        if let Some(error) = error {
-            return Err(error);
-        }
-    }
-    let config_json = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
-    let parsed = serde_json::from_value(config).map_err(|err| err.to_string())?;
-    Ok((config_json, parsed))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn selected_oauth_recipe_becomes_the_only_runtime_grant() {
-        let manifest: ToolInstallManifest = serde_json::from_str(include_str!(
-            "../../../../wasm-tools/email/email.install.json"
-        ))
-        .unwrap();
-        validate_oauth(&manifest).unwrap();
-        let package = ToolPackage {
-            name: "email".to_string(),
-            display_name: "Email".to_string(),
-            wasm_path: PathBuf::new(),
-            config_template_path: PathBuf::new(),
-            manifest,
-        };
-        let values = BTreeMap::from([
-            (
-                "/email/oauth/access".to_string(),
-                serde_json::json!("readonly"),
-            ),
-            ("/email/provider".to_string(), serde_json::json!("gmail")),
-        ]);
-
-        let (_, config) = bind_oauth(
-            &package,
-            &values,
-            include_str!("../../../../wasm-tools/email/email.config.template.json"),
-        )
-        .unwrap();
-
-        assert_eq!(config.http_credentials.len(), 1);
-        assert_eq!(config.http_credentials[0].host, "gmail.googleapis.com");
-        assert_eq!(
-            config.http_credentials[0].oauth.as_ref().unwrap().client_id,
-            "REMOVED_GOOGLE_OAUTH_CLIENT_ID"
-        );
-        assert_eq!(
-            config.http_credentials[0]
-                .oauth
-                .as_ref()
-                .unwrap()
-                .client_secret
-                .as_deref(),
-            Some("REMOVED_GOOGLE_OAUTH_CLIENT_SECRET")
-        );
-    }
 }

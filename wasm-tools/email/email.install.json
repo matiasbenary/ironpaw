@@ -4,31 +4,46 @@
   "description": "Read Gmail and Outlook through OAuth or use configured IMAP and SMTP servers.",
   "config_before_secrets": true,
   "setup_handler": "imap_discovery",
+  "accounts": {
+    "path": "/email/accounts",
+    "identity_path": "/username",
+    "template": {
+      "provider": "",
+      "username": "",
+      "password_secret": "EMAIL_PASSWORD",
+      "from": "",
+      "imap": { "host": "", "port": 993, "tls": "tls" },
+      "smtp": { "host": "", "port": 465, "tls": "tls" },
+      "oauth": { "access": "" }
+    }
+  },
   "secrets": [
     {
       "name": "EMAIL_PASSWORD",
+      "path": "/password_secret",
       "prompt": "Paste your email password or app password.",
-      "when": { "path": "/email/provider", "equals": "imap" }
+      "when": { "path": "/provider", "equals": "imap" }
     }
   ],
   "config": [
     {
-      "path": "/email/username",
+      "path": "/username",
       "prompt": "What is your email address? Ironpaw will detect the provider and mail settings.",
       "type": "email",
       "autoconfigure": { "action": "discover", "rerun_on_keep": true }
     },
     {
-      "path": "/email/oauth/access",
+      "path": "/oauth/access",
       "prompt": "How much email access should Ironpaw have?",
       "type": "string",
-      "when": { "path": "/email/provider", "equals": "gmail" },
+      "when": { "path": "/provider", "equals": "gmail" },
       "choices": [
         {
           "label": "Read only",
           "value": "readonly",
           "oauth": {
-            "login_hint_path": "/email/username",
+            "host": "gmail.googleapis.com",
+            "login_hint_path": "/username",
             "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
             "token_url": "https://oauth2.googleapis.com/token",
             "client_id": "REMOVED_GOOGLE_OAUTH_CLIENT_ID",
@@ -43,7 +58,8 @@
           "label": "Take control",
           "value": "control",
           "oauth": {
-            "login_hint_path": "/email/username",
+            "host": "gmail.googleapis.com",
+            "login_hint_path": "/username",
             "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
             "token_url": "https://oauth2.googleapis.com/token",
             "client_id": "REMOVED_GOOGLE_OAUTH_CLIENT_ID",
@@ -60,16 +76,17 @@
       ]
     },
     {
-      "path": "/email/oauth/access",
+      "path": "/oauth/access",
       "prompt": "How much email access should Ironpaw have?",
       "type": "string",
-      "when": { "path": "/email/provider", "equals": "outlook" },
+      "when": { "path": "/provider", "equals": "outlook" },
       "choices": [
         {
           "label": "Read only",
           "value": "readonly",
           "oauth": {
-            "login_hint_path": "/email/username",
+            "host": "graph.microsoft.com",
+            "login_hint_path": "/username",
             "authorize_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
             "token_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
             "client_id": "0755399f-97ab-4fb1-acdb-6371f7615d7f",
@@ -82,7 +99,8 @@
           "label": "Take control",
           "value": "control",
           "oauth": {
-            "login_hint_path": "/email/username",
+            "host": "graph.microsoft.com",
+            "login_hint_path": "/username",
             "authorize_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
             "token_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
             "client_id": "0755399f-97ab-4fb1-acdb-6371f7615d7f",
@@ -98,34 +116,34 @@
       ]
     },
     {
-      "path": "/email/from",
+      "path": "/from",
       "prompt": "Default From address for sent mail.",
       "type": "string",
-      "when": { "path": "/email/provider", "equals": "imap" }
+      "when": { "path": "/provider", "equals": "imap" }
     },
     {
-      "path": "/email/imap/host",
+      "path": "/imap/host",
       "prompt": "IMAP server host, for example imap.fastmail.com.",
       "type": "string",
-      "when": { "path": "/email/provider", "equals": "imap" }
+      "when": { "path": "/provider", "equals": "imap" }
     },
     {
-      "path": "/email/imap/port",
+      "path": "/imap/port",
       "prompt": "IMAP server port, usually 993.",
       "type": "number",
-      "when": { "path": "/email/provider", "equals": "imap" }
+      "when": { "path": "/provider", "equals": "imap" }
     },
     {
-      "path": "/email/smtp/host",
+      "path": "/smtp/host",
       "prompt": "SMTP server host, for example smtp.fastmail.com.",
       "type": "string",
-      "when": { "path": "/email/provider", "equals": "imap" }
+      "when": { "path": "/provider", "equals": "imap" }
     },
     {
-      "path": "/email/smtp/port",
+      "path": "/smtp/port",
       "prompt": "SMTP server port, usually 465.",
       "type": "number",
-      "when": { "path": "/email/provider", "equals": "imap" }
+      "when": { "path": "/provider", "equals": "imap" }
     }
   ]
 }

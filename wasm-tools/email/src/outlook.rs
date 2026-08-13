@@ -3,12 +3,14 @@ use crate::{OutboundEmail, request, truncate};
 const API: &str = "https://graph.microsoft.com/v1.0/me";
 
 pub(crate) struct OutlookClient {
+    account: String,
     control: bool,
 }
 
 impl OutlookClient {
-    pub(crate) fn new(access: &str) -> Self {
+    pub(crate) fn new(account: &str, access: &str) -> Self {
         Self {
+            account: account.to_string(),
             control: access == "control",
         }
     }
@@ -16,6 +18,7 @@ impl OutlookClient {
     pub(crate) fn list(&self, folder: &str, limit: u32) -> Result<String, String> {
         let folder = graph_folder(folder);
         let response = request(
+            &self.account,
             "GET",
             &format!(
                 "{API}/mailFolders/{}/messages?$top={}&$select=id%2Cfrom%2CtoRecipients%2Csubject%2CreceivedDateTime&$orderby=receivedDateTime%20desc",
@@ -44,6 +47,7 @@ impl OutlookClient {
 
     pub(crate) fn read(&self, folder: &str, id: &str) -> Result<String, String> {
         let message = request(
+            &self.account,
             "GET",
             &format!(
                 "{API}/messages/{}?$select=id%2Cfrom%2CtoRecipients%2Csubject%2CreceivedDateTime%2Cbody",
@@ -68,6 +72,7 @@ impl OutlookClient {
         let email: OutboundEmail = serde_json::from_str(message_json)
             .map_err(|err| format!("invalid email message JSON: {err}"))?;
         request(
+            &self.account,
             "POST",
             &format!("{API}/sendMail"),
             serde_json::json!({}),
@@ -111,7 +116,7 @@ impl OutlookClient {
             ),
             _ => return Err(format!("unsupported Outlook operation: {operation}")),
         };
-        let message = request(method, &url, serde_json::json!({}), Some(body))?;
+        let message = request(&self.account, method, &url, serde_json::json!({}), Some(body))?;
         Ok(serde_json::json!({ "ok": true, "id": message["id"] }).to_string())
     }
 
@@ -163,7 +168,7 @@ mod tests {
 
     #[test]
     fn readonly_client_refuses_mutations_without_network_access() {
-        let client = OutlookClient::new("readonly");
+        let client = OutlookClient::new("me@outlook.com", "readonly");
         assert!(
             client
                 .send(r#"{"to":["you@example.com"],"subject":"Hi","body":"Hello"}"#)

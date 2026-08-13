@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
 };
@@ -123,6 +124,12 @@ pub struct WasmToolConfig {
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct EmailCapabilityConfig {
+    #[serde(default)]
+    pub accounts: BTreeMap<String, EmailAccountCapabilityConfig>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct EmailAccountCapabilityConfig {
     #[serde(default)]
     pub imap: Option<EmailServerConfig>,
     #[serde(default)]
@@ -283,29 +290,20 @@ struct StoreData {
 impl ironpaw::tool::tool_host::Host for StoreData {
     fn http_request(
         &mut self,
-        method: String,
-        url: String,
-        body_json: String,
-    ) -> Result<String, String> {
-        self.http
-            .request_bytes_string_blocking(&method, &url, &body_json)
-            .and_then(|bytes| {
-                String::from_utf8(bytes).map_err(|err| {
-                    crate::http::HttpError::Http(format!("response was not UTF-8: {err}"))
-                })
-            })
-            .map_err(|err| err.to_string())
-    }
-
-    fn http_request_headers(
-        &mut self,
+        account: Option<String>,
         method: String,
         url: String,
         headers_json: String,
         body_json: String,
     ) -> Result<String, String> {
         self.http
-            .request_bytes_headers_string_blocking(&method, &url, &headers_json, &body_json)
+            .request_bytes_headers_for_string_blocking(
+                account.as_deref(),
+                &method,
+                &url,
+                &headers_json,
+                &body_json,
+            )
             .and_then(|bytes| {
                 String::from_utf8(bytes).map_err(|err| {
                     crate::http::HttpError::Http(format!("response was not UTF-8: {err}"))
@@ -314,16 +312,30 @@ impl ironpaw::tool::tool_host::Host for StoreData {
             .map_err(|err| err.to_string())
     }
 
-    fn imap_list(&mut self, folder: String, limit: u32) -> Result<String, String> {
-        self.email.list(&folder, limit)
+    fn imap_list(
+        &mut self,
+        account: Option<String>,
+        folder: String,
+        limit: u32,
+    ) -> Result<String, String> {
+        self.email.list(account.as_deref(), &folder, limit)
     }
 
-    fn imap_read(&mut self, folder: String, uid: String) -> Result<String, String> {
-        self.email.read(&folder, &uid)
+    fn imap_read(
+        &mut self,
+        account: Option<String>,
+        folder: String,
+        uid: String,
+    ) -> Result<String, String> {
+        self.email.read(account.as_deref(), &folder, &uid)
     }
 
-    fn smtp_send(&mut self, message_json: String) -> Result<String, String> {
-        self.email.send(&message_json)
+    fn smtp_send(
+        &mut self,
+        account: Option<String>,
+        message_json: String,
+    ) -> Result<String, String> {
+        self.email.send(account.as_deref(), &message_json)
     }
 }
 
@@ -338,8 +350,8 @@ impl EmailHost {
         Self { secrets, config }
     }
 
-    fn list(&self, folder: &str, limit: u32) -> Result<String, String> {
-        let config = self.config()?;
+    fn list(&self, account: Option<&str>, folder: &str, limit: u32) -> Result<String, String> {
+        let config = self.account(account)?;
         let imap = config
             .imap
             .as_ref()
@@ -356,8 +368,8 @@ impl EmailHost {
         )
     }
 
-    fn read(&self, folder: &str, uid: &str) -> Result<String, String> {
-        let config = self.config()?;
+    fn read(&self, account: Option<&str>, folder: &str, uid: &str) -> Result<String, String> {
+        let config = self.account(account)?;
         let imap = config
             .imap
             .as_ref()
@@ -375,8 +387,8 @@ impl EmailHost {
         )
     }
 
-    fn send(&self, message_json: &str) -> Result<String, String> {
-        let config = self.config()?;
+    fn send(&self, account: Option<&str>, message_json: &str) -> Result<String, String> {
+        let config = self.account(account)?;
         let smtp = config
             .smtp
             .as_ref()
@@ -393,10 +405,17 @@ impl EmailHost {
         )
     }
 
-    fn config(&self) -> Result<&EmailCapabilityConfig, String> {
+    fn account(&self, account: Option<&str>) -> Result<&EmailAccountCapabilityConfig, String> {
+        let account = account.ok_or_else(|| "email account is required".to_string())?;
         self.config
             .as_ref()
             .ok_or_else(|| "email capability is not configured for this tool".to_string())
+            .and_then(|config| {
+                config
+                    .accounts
+                    .get(account)
+                    .ok_or_else(|| format!("email account is not configured: {account}"))
+            })
     }
 }
 
@@ -411,6 +430,34 @@ impl WasiView for StoreData {
         WasiCtxView {
             ctx: &mut self.ctx,
             table: &mut self.table,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LoadedTool, WasmToolConfig};
+
+    #[test]
+    fn packaged_tools_link_against_the_host() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let secrets = crate::secrets::Secrets::for_tests().tools;
+        for (name, directory) in [("email", "email"), ("web_search", "web-search")] {
+            let directory = root.join("wasm-tools").join(directory);
+            let config: WasmToolConfig = serde_json::from_str(
+                &std::fs::read_to_string(
+                    directory.join(format!("{}.config.template.json", name.replace('_', "-"))),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let mut tool = LoadedTool::load(
+                directory.join(format!("{}.wasm", name.replace('_', "-"))),
+                secrets.clone(),
+                config,
+            )
+            .unwrap();
+            assert_eq!(tool.name().unwrap(), name);
         }
     }
 }

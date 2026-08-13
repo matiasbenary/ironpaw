@@ -8,6 +8,8 @@ use crate::secrets::Secrets;
 #[derive(Clone, serde::Deserialize)]
 pub struct SetupSecret {
     pub name: String,
+    #[serde(default)]
+    pub path: Option<String>,
     pub prompt: Option<String>,
     #[serde(default)]
     pub optional: bool,
@@ -53,6 +55,7 @@ pub struct SetupChoice {
 
 #[derive(Clone, serde::Deserialize)]
 pub struct SetupOAuth {
+    pub host: String,
     pub login_hint_path: String,
     pub authorize_url: String,
     pub token_url: String,

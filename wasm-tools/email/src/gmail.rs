@@ -7,14 +7,21 @@ use crate::{OutboundEmail, request, truncate};
 const API: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 
 pub(crate) struct GmailClient<'a> {
+    account: &'a str,
     username: &'a str,
     from: Option<&'a str>,
     control: bool,
 }
 
 impl<'a> GmailClient<'a> {
-    pub(crate) fn new(username: &'a str, from: Option<&'a str>, access: &str) -> Self {
+    pub(crate) fn new(
+        account: &'a str,
+        username: &'a str,
+        from: Option<&'a str>,
+        access: &str,
+    ) -> Self {
         Self {
+            account,
             username,
             from,
             control: access == "control",
@@ -23,6 +30,7 @@ impl<'a> GmailClient<'a> {
 
     pub(crate) fn list(&self, folder: &str, limit: u32) -> Result<String, String> {
         let response = request(
+            self.account,
             "GET",
             &format!(
                 "{API}/messages?maxResults={}&labelIds={}",
@@ -38,6 +46,7 @@ impl<'a> GmailClient<'a> {
                 continue;
             };
             let message = request(
+                self.account,
                 "GET",
                 &format!(
                     "{API}/messages/{}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date",
@@ -60,6 +69,7 @@ impl<'a> GmailClient<'a> {
 
     pub(crate) fn read(&self, folder: &str, id: &str) -> Result<String, String> {
         let message = request(
+            self.account,
             "GET",
             &format!("{API}/messages/{}?format=raw", urlencoding::encode(id)),
             serde_json::json!({}),
@@ -95,6 +105,7 @@ impl<'a> GmailClient<'a> {
                 .unwrap_or(self.username),
         )?;
         let response = request(
+            self.account,
             "POST",
             &format!("{API}/messages/send"),
             serde_json::json!({}),
@@ -117,6 +128,7 @@ impl<'a> GmailClient<'a> {
             _ => return Err(format!("unsupported Gmail operation: {operation}")),
         };
         let response = request(
+            self.account,
             "POST",
             &format!("{API}/messages/{id}/{path}"),
             serde_json::json!({}),
@@ -228,7 +240,7 @@ mod tests {
 
     #[test]
     fn readonly_client_refuses_to_send_before_network_access() {
-        let client = GmailClient::new("me@gmail.com", None, "readonly");
+        let client = GmailClient::new("me@gmail.com", "me@gmail.com", None, "readonly");
         assert!(
             client
                 .send(r#"{"to":["you@example.com"],"subject":"Hi","body":"Hello"}"#)

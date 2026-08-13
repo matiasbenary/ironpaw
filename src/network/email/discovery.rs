@@ -19,8 +19,8 @@ pub(super) async fn discover(address: &str) -> Result<BTreeMap<String, serde_jso
     let (_, domain) = email_parts(address)?;
     if let Some(provider) = oauth_provider(domain) {
         return Ok(BTreeMap::from([
-            ("/email/provider".to_string(), provider.into()),
-            ("/email/username".to_string(), address.trim().into()),
+            ("/provider".to_string(), provider.into()),
+            ("/username".to_string(), address.trim().into()),
         ]));
     }
     let settings = if let Some(settings) = known_provider(address, domain) {
@@ -32,15 +32,15 @@ pub(super) async fn discover(address: &str) -> Result<BTreeMap<String, serde_jso
     };
 
     Ok(BTreeMap::from([
-        ("/email/provider".to_string(), "imap".into()),
-        ("/email/username".to_string(), settings.username.into()),
-        ("/email/from".to_string(), address.trim().into()),
-        ("/email/imap/host".to_string(), settings.imap_host.into()),
-        ("/email/imap/port".to_string(), settings.imap_port.into()),
-        ("/email/imap/tls".to_string(), settings.imap_tls.into()),
-        ("/email/smtp/host".to_string(), settings.smtp_host.into()),
-        ("/email/smtp/port".to_string(), settings.smtp_port.into()),
-        ("/email/smtp/tls".to_string(), settings.smtp_tls.into()),
+        ("/provider".to_string(), "imap".into()),
+        ("/username".to_string(), settings.username.into()),
+        ("/from".to_string(), address.trim().into()),
+        ("/imap/host".to_string(), settings.imap_host.into()),
+        ("/imap/port".to_string(), settings.imap_port.into()),
+        ("/imap/tls".to_string(), settings.imap_tls.into()),
+        ("/smtp/host".to_string(), settings.smtp_host.into()),
+        ("/smtp/port".to_string(), settings.smtp_port.into()),
+        ("/smtp/tls".to_string(), settings.smtp_tls.into()),
     ]))
 }
 
@@ -224,24 +224,24 @@ mod tests {
         let gmail = discover("person@gmail.com").await.unwrap();
         let hotmail = discover("person@hotmail.com").await.unwrap();
 
-        assert_eq!(gmail["/email/provider"], "gmail");
-        assert_eq!(hotmail["/email/provider"], "outlook");
+        assert_eq!(gmail["/provider"], "gmail");
+        assert_eq!(hotmail["/provider"], "outlook");
     }
 
     #[tokio::test]
     async fn discovers_yahoo_imap_settings() {
         let values = discover("person@yahoo.com").await.unwrap();
-        assert_eq!(values["/email/provider"], "imap");
-        assert_eq!(values["/email/imap/host"], "imap.mail.yahoo.com");
-        assert_eq!(values["/email/smtp/host"], "smtp.mail.yahoo.com");
+        assert_eq!(values["/provider"], "imap");
+        assert_eq!(values["/imap/host"], "imap.mail.yahoo.com");
+        assert_eq!(values["/smtp/host"], "smtp.mail.yahoo.com");
     }
 
     #[tokio::test]
     async fn discovers_icloud_imap_settings() {
         let values = discover("person@icloud.com").await.unwrap();
-        assert_eq!(values["/email/provider"], "imap");
-        assert_eq!(values["/email/imap/host"], "imap.mail.me.com");
-        assert_eq!(values["/email/smtp/port"], 587);
+        assert_eq!(values["/provider"], "imap");
+        assert_eq!(values["/imap/host"], "imap.mail.me.com");
+        assert_eq!(values["/smtp/port"], 587);
     }
 
     #[test]

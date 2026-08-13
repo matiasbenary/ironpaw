@@ -207,6 +207,7 @@ pub(super) fn required_secrets(
     if package.manifest.external && !secrets_store.exists(NGROK_SECRET) {
         secrets.push(SetupSecret {
             name: NGROK_SECRET.to_string(),
+            path: None,
             prompt: Some(
                 "Paste your ngrok auth token so Ironpaw can expose webhook channels.".to_string(),
             ),
@@ -342,6 +343,7 @@ mod tests {
         let mut secrets = vec![
             SetupSecret {
                 name: "user_supplied_secret".to_string(),
+                path: None,
                 prompt: Some("User supplied secret".to_string()),
                 optional: false,
                 auto_generate: None,
@@ -349,6 +351,7 @@ mod tests {
             },
             SetupSecret {
                 name: "generated_secret".to_string(),
+                path: None,
                 prompt: None,
                 optional: false,
                 auto_generate: Some(AutoGenerate { length: 32 }),

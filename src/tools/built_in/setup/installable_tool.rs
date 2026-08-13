@@ -6,7 +6,7 @@ use crate::{
     tools::setup::{
         install_common::{SetupConfig, SetupSecret, stored_secret_name},
         install_tool::install_tool_package::{
-            ToolPackage, locate_tool_package, required_config, required_secrets,
+            SetupAccounts, ToolPackage, locate_tool_package, required_config, required_secrets,
         },
     },
 };
@@ -61,6 +61,7 @@ impl InstallableTool {
                 .iter()
                 .map(|secret| SetupSecret {
                     name: secret.name.clone(),
+                    path: None,
                     prompt: Some(format!(
                         "Value for {} (injected as {})",
                         secret.name, secret.env
@@ -87,6 +88,13 @@ impl InstallableTool {
     pub(super) fn setup_handler(&self) -> Option<&str> {
         match self {
             Self::Wasm(package) => package.manifest.setup_handler.as_deref(),
+            Self::Shell(_) => None,
+        }
+    }
+
+    pub(super) fn accounts(&self) -> Option<&SetupAccounts> {
+        match self {
+            Self::Wasm(package) => package.manifest.accounts.as_ref(),
             Self::Shell(_) => None,
         }
     }
@@ -142,12 +150,23 @@ fn wasm_capabilities(package: &ToolPackage) -> String {
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default();
-    let hosts = config["http_credentials"]
+    let mut hosts = config["http_credentials"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|grant| grant["host"].as_str())
         .collect::<Vec<_>>();
+    hosts.extend(
+        package
+            .manifest
+            .config
+            .iter()
+            .flat_map(|config| &config.choices)
+            .filter_map(|choice| choice.oauth.as_ref())
+            .map(|oauth| oauth.host.as_str()),
+    );
+    hosts.sort_unstable();
+    hosts.dedup();
     let oauth_endpoints = package
         .manifest
         .config
