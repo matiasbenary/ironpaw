@@ -44,28 +44,21 @@ impl AgentHandler {
                     context,
                 } => {
                     let result = agent
-                        .handle_conversation(Some(&conversation), context)
+                        .handle_conversation(&conversation, context)
                         .await;
-                    if let Ok(Some(text)) = &result {
+                    let text = match &result {
+                        Ok(Some(text)) => Some(text.clone()),
+                        Ok(None) => None,
+                        Err(error) => Some(format!("I couldn't complete your request: {error}")),
+                    };
+                    if let Some(text) = text {
                         bus.publish(Event::MessageOut {
                             channel: conversation.channel.clone(),
                             chat_id: Some(conversation.chat_id.clone()),
                             thread_id: conversation.thread_id.clone(),
                             message_id: None,
                             message: Message::Assistant {
-                                text: Some(text.clone()),
-                                attachments: Vec::new(),
-                                tool_calls: Vec::new(),
-                            },
-                        });
-                    } else if let Err(error) = &result {
-                        bus.publish(Event::MessageOut {
-                            channel: conversation.channel.clone(),
-                            chat_id: Some(conversation.chat_id.clone()),
-                            thread_id: conversation.thread_id.clone(),
-                            message_id: None,
-                            message: Message::Assistant {
-                                text: Some(format!("I couldn't complete your request: {error}")),
+                                text: Some(text),
                                 attachments: Vec::new(),
                                 tool_calls: Vec::new(),
                             },

@@ -5,4 +5,4 @@ mod run;
 mod utils;
 
 pub use handler::AgentHandler;
-pub use run::{Agent, Destination};
+pub use run::Agent;

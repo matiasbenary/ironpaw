@@ -14,9 +14,6 @@ use super::{logger, preamble::system_preamble, utils::publish_channel_action};
 const DEFAULT_TASK_TOOLS: [&str; 4] = ["list_files", "read_file", "create_file", "update_file"];
 const COMPACT_AT_PROMPT_TOKENS: u64 = 256_000;
 
-/// The conversation a run replies to.
-pub type Destination<'a> = Option<&'a ConversationKey>;
-
 /// Entry point for conversation and scheduled-agent runs.
 pub struct Agent {
     pub(super) bus: Bus,
@@ -47,14 +44,11 @@ impl Agent {
 impl Agent {
     pub async fn handle_conversation(
         &self,
-        destination: Destination<'_>,
+        conversation: &ConversationKey,
         context: ExecutionContext,
     ) -> Result<Option<String>, String> {
-        let Some(conversation) = destination else {
-            return Err("conversation is required".to_string());
-        };
         self.run(AgentRun {
-            destination,
+            destination: Some(conversation),
             history_scope: HistoryScope::Conversation(conversation.clone()),
             context,
             transient_messages: Vec::new(),
@@ -383,7 +377,7 @@ impl Agent {
 }
 
 struct AgentRun<'a> {
-    destination: Destination<'a>,
+    destination: Option<&'a ConversationKey>,
     history_scope: HistoryScope,
     context: ExecutionContext,
     transient_messages: Vec<Message>,

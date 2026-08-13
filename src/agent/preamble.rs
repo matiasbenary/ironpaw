@@ -1,7 +1,6 @@
-use super::Destination;
-use crate::message::Message;
+use crate::{bus::ConversationKey, message::Message};
 
-pub(super) fn system_preamble(destination: Destination<'_>) -> Vec<Message> {
+pub(super) fn system_preamble(destination: Option<&ConversationKey>) -> Vec<Message> {
     let mut text = match destination {
         Some(conversation) => {
             let mut text = format!(
