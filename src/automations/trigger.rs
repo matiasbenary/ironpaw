@@ -73,7 +73,7 @@ impl Trigger {
         Ok(Trigger::At { datetime })
     }
 
-    pub(super) fn matches(&self, event: &Event) -> bool {
+    pub(super) fn match_priority(&self, event: &Event) -> Option<u8> {
         match (self, event) {
             (
                 Trigger::MessageIn {
@@ -85,17 +85,16 @@ impl Trigger {
                     conversation: event_conversation,
                     ..
                 },
-            ) => {
-                *sender == event_sender.kind()
-                    && conversation
-                        .as_ref()
-                        .is_none_or(|conversation| conversation == event_conversation)
-            }
+            ) if *sender == event_sender.kind() => match conversation {
+                Some(conversation) if conversation == event_conversation => Some(1),
+                Some(_) => None,
+                None => Some(0),
+            },
             (Trigger::ToolResult, Event::ToolResult { context, .. }) => {
-                matches!(context.invoked_by, InvocationScope::Conversation(_))
+                matches!(context.invoked_by, InvocationScope::Conversation(_)).then_some(0)
             }
-            (Trigger::ApiKeyChangeRequested, Event::ApiKeyChangeRequested { .. }) => true,
-            _ => false,
+            (Trigger::ApiKeyChangeRequested, Event::ApiKeyChangeRequested { .. }) => Some(0),
+            _ => None,
         }
     }
 }
@@ -151,9 +150,18 @@ mod tests {
             conversation: None,
         };
 
-        assert!(trigger.matches(&message_in("tui", Sender::User("local".to_string()))));
-        assert!(trigger.matches(&message_in("telegram", Sender::User("123".to_string()))));
-        assert!(!trigger.matches(&message_in("telegram", Sender::Guest("123".to_string()))));
+        assert_eq!(
+            trigger.match_priority(&message_in("tui", Sender::User("local".to_string()))),
+            Some(0)
+        );
+        assert_eq!(
+            trigger.match_priority(&message_in("telegram", Sender::User("123".to_string()))),
+            Some(0)
+        );
+        assert_eq!(
+            trigger.match_priority(&message_in("telegram", Sender::Guest("123".to_string()))),
+            None
+        );
     }
 
     #[test]
@@ -167,16 +175,25 @@ mod tests {
             sender: SenderKind::Guest,
             conversation: Some(conversation),
         };
-        assert!(trigger.matches(&message_in("telegram", Sender::Guest("123".to_string()))));
-        assert!(!trigger.matches(&message_in_conversation(
-            ConversationKey {
-                channel: "telegram".to_string(),
-                chat_id: "c2".to_string(),
-                thread_id: None,
-            },
-            Sender::Guest("123".to_string()),
-        )));
-        assert!(!trigger.matches(&message_in("tui", Sender::User("local".to_string()))));
+        assert_eq!(
+            trigger.match_priority(&message_in("telegram", Sender::Guest("123".to_string()))),
+            Some(1)
+        );
+        assert_eq!(
+            trigger.match_priority(&message_in_conversation(
+                ConversationKey {
+                    channel: "telegram".to_string(),
+                    chat_id: "c2".to_string(),
+                    thread_id: None,
+                },
+                Sender::Guest("123".to_string()),
+            )),
+            None
+        );
+        assert_eq!(
+            trigger.match_priority(&message_in("tui", Sender::User("local".to_string()))),
+            None
+        );
     }
 
     #[test]
@@ -190,8 +207,11 @@ mod tests {
             },
         };
 
-        assert!(trigger.matches(&event));
-        assert!(!trigger.matches(&message_in("telegram", Sender::User("123".to_string()))));
+        assert_eq!(trigger.match_priority(&event), Some(0));
+        assert_eq!(
+            trigger.match_priority(&message_in("telegram", Sender::User("123".to_string()))),
+            None
+        );
     }
 
     #[test]

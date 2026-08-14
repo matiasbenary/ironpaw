@@ -25,7 +25,7 @@ use crate::{
     secrets::Secrets,
     tools::{
         self, ExecutionContext, InternalTool, ToolResponder,
-        setup::{SessionState, SetupServices, pause_conversation, request_choice},
+        setup::{SessionState, SetupServices, request_choice},
     },
 };
 
@@ -190,7 +190,6 @@ impl InstallToolTool {
             removed_secrets: BTreeSet::new(),
             continuation: Some(responder),
         });
-        pause_conversation(&self.setup.automations)?;
         self.setup
             .automations
             .add(Self::automation(name, conversation))?;
@@ -260,7 +259,6 @@ impl InstallToolTool {
             removed_secrets: BTreeSet::new(),
             continuation: Some(responder),
         });
-        pause_conversation(&self.setup.automations)?;
         self.setup
             .automations
             .add(Self::automation(&name, conversation))?;

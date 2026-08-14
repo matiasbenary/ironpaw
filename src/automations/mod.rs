@@ -298,18 +298,28 @@ impl Automations {
             return;
         }
 
-        let matching: Vec<_> = self
+        let matching = self
             .automations
             .read()
             .expect("automations lock")
             .iter()
-            .filter(|automation| automation.trigger.matches(event))
-            .cloned()
-            .collect();
+            .filter_map(|automation| {
+                automation
+                    .trigger
+                    .match_priority(event)
+                    .map(|priority| (priority, Arc::clone(automation)))
+            })
+            .collect::<Vec<_>>();
+        let Some(highest_priority) = matching.iter().map(|(priority, _)| *priority).max() else {
+            return;
+        };
         let Some((context, trigger)) = invocation::from_bus(event) else {
             return;
         };
-        for automation in matching {
+        for (_, automation) in matching
+            .into_iter()
+            .filter(|(priority, _)| *priority == highest_priority)
+        {
             self.dispatch(&automation.name, context.clone(), trigger.clone());
         }
     }
@@ -594,6 +604,67 @@ mod tests {
                 tools: Vec::new(),
             },
         }
+    }
+
+    fn user_message(conversation: ConversationKey) -> Event {
+        Event::MessageIn {
+            sender: crate::bus::Sender::User("owner".to_string()),
+            conversation,
+            message_id: None,
+            message: crate::message::Message::User {
+                text: "hello".to_string(),
+                attachments: Vec::new(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_conversation_trigger_overrides_wildcard_trigger() {
+        let bus = Bus::new(16);
+        let tools = test_tools(&bus);
+        let automations = Arc::new(Automations::new(
+            bus.clone(),
+            Arc::clone(&tools.registry),
+            temp_store(),
+        ));
+        let scoped_conversation = ConversationKey {
+            channel: "telegram".to_string(),
+            chat_id: "setup".to_string(),
+            thread_id: None,
+        };
+        automations
+            .add_transient(Automations::handle_conversation())
+            .unwrap();
+        automations
+            .add_transient(send_message_automation(
+                "onboarding",
+                Trigger::MessageIn {
+                    sender: SenderKind::User,
+                    conversation: Some(scoped_conversation.clone()),
+                },
+            ))
+            .unwrap();
+        let mut events = bus.subscribe();
+
+        automations.handle(&user_message(scoped_conversation));
+        let Event::AutomationInvocation { automation_id, .. } = events.recv().await.unwrap() else {
+            panic!("expected automation invocation");
+        };
+        assert_eq!(automation_id, "onboarding");
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        automations.handle(&user_message(ConversationKey {
+            channel: "telegram".to_string(),
+            chat_id: "other".to_string(),
+            thread_id: None,
+        }));
+        let Event::AutomationInvocation { automation_id, .. } = events.recv().await.unwrap() else {
+            panic!("expected automation invocation");
+        };
+        assert_eq!(automation_id, "handle-conversation");
     }
 
     #[tokio::test]

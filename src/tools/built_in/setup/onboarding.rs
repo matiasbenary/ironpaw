@@ -8,7 +8,7 @@ use crate::{
     message::ToolDefinition,
     tools::{
         self, ExecutionContext, InternalTool, ToolResponder,
-        setup::{SetupServices, delete_current_message, pause_conversation, send},
+        setup::{SetupServices, delete_current_message, send},
     },
 };
 
@@ -177,7 +177,6 @@ impl OnboardingTool {
         let InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
             return Err("API-key change requires a conversation".to_string());
         };
-        pause_conversation(&self.setup.automations)?;
         self.setup.automations.add_transient(Automation {
             name: API_KEY_CHANGE_SESSION_AUTOMATION.to_string(),
             trigger: Trigger::MessageIn {
@@ -200,18 +199,20 @@ impl OnboardingTool {
     }
 
     async fn finish(&self, ctx: &ExecutionContext, flow: KeyFlow) -> Result<(), String> {
-        self.setup.automations.remove_transient(match flow {
-            KeyFlow::FirstRun => "onboarding",
-            KeyFlow::Change => API_KEY_CHANGE_SESSION_AUTOMATION,
-        });
-        self.setup
-            .automations
-            .add(Automations::handle_conversation())?;
         let message = match flow {
             KeyFlow::FirstRun => {
+                self.setup.automations.remove_transient("onboarding");
+                self.setup
+                    .automations
+                    .add(Automations::handle_conversation())?;
                 "Ironpaw is set up. From now on, I will answer your messages normally."
             }
-            KeyFlow::Change => "API key changed.",
+            KeyFlow::Change => {
+                self.setup
+                    .automations
+                    .remove_transient(API_KEY_CHANGE_SESSION_AUTOMATION);
+                "API key changed."
+            }
         };
         send(&self.setup.tools, message, ctx).await?;
         self.set_stage(Stage::Hello);

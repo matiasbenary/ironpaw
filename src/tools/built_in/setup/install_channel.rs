@@ -14,9 +14,7 @@ use crate::{
     secrets::Secrets,
     tools::{
         self, ExecutionContext, InternalTool, ToolResponder,
-        setup::{
-            SessionState, SetupServices, install_common::SetupSecret, pause_conversation, send,
-        },
+        setup::{SessionState, SetupServices, install_common::SetupSecret, send},
     },
 };
 
@@ -183,20 +181,20 @@ impl InstallChannelTool {
             }));
         }
         let secrets = required_secrets(&package, &self.setup.secrets);
-        let user_conversation = match &ctx.invoked_by {
-            InvocationScope::Conversation(conversation) => Some(conversation.clone()),
-            InvocationScope::ScheduledAutomation { .. } => None,
-        };
+        let user_conversation = setup_conversation(ctx)?.clone();
         self.state.save(InstallSession {
             package,
             secrets,
             stage: InstallStage::Confirm,
             config_values: BTreeMap::new(),
-            setup_conversation: setup_conversation(ctx),
+            setup_conversation: Some(user_conversation.clone()),
             continuation: Some(responder),
         });
-        pause_conversation(automations)?;
-        automations.add(Self::automation(name, SenderKind::User, user_conversation))?;
+        automations.add(Self::automation(
+            name,
+            SenderKind::User,
+            Some(user_conversation),
+        ))?;
         super::request_choice(
             tools,
             &format!("Install the {name} channel?"),
@@ -212,10 +210,12 @@ impl InstallChannelTool {
     }
 }
 
-fn setup_conversation(ctx: &ExecutionContext) -> Option<ConversationKey> {
+fn setup_conversation(ctx: &ExecutionContext) -> Result<&ConversationKey, String> {
     match &ctx.invoked_by {
-        InvocationScope::Conversation(conversation) => Some(conversation.clone()),
-        InvocationScope::ScheduledAutomation { .. } => None,
+        InvocationScope::Conversation(conversation) => Ok(conversation),
+        InvocationScope::ScheduledAutomation { automation_id } => Err(format!(
+            "install_channel cannot start from scheduled automation '{automation_id}'"
+        )),
     }
 }
 
