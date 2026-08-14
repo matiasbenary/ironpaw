@@ -199,7 +199,7 @@ impl Agent {
                 text: "compacting history...".to_string(),
             },
         );
-        if let Err(error) = self.compact_history(&run.history_id).await {
+        if let Err(error) = self.summarize_conversation(&run.history_id).await {
             debug_log(format!("history compaction failed: {error}"));
         }
     }
@@ -248,7 +248,7 @@ impl Agent {
 
     fn model_messages(&self, run: &AgentRun) -> Result<Vec<Message>, String> {
         let mut messages = run.initial_messages.clone();
-        for entry in self.history.load_active_history(&run.history_id)? {
+        for entry in self.history.load_conversation(&run.history_id)? {
             let mut message = entry.message;
             if let Some(external_id) = entry.metadata.external_id {
                 match &mut message {
@@ -283,7 +283,7 @@ impl Agent {
     fn latest_user_text(&self, history_id: &HistoryId) -> Result<Option<String>, String> {
         Ok(self
             .history
-            .load_active_history(history_id)?
+            .load_conversation(history_id)?
             .into_iter()
             .rev()
             .find_map(|entry| match entry.message {
@@ -293,7 +293,7 @@ impl Agent {
     }
 
     fn ingest_memory(&self, history_id: &HistoryId, final_message: Message) {
-        let Ok(entries) = self.history.load_active_history(history_id) else {
+        let Ok(entries) = self.history.load_conversation(history_id) else {
             return;
         };
         let Some(user_index) = entries
@@ -319,24 +319,25 @@ impl Agent {
         });
     }
 
-    async fn compact_history(&self, history_id: &HistoryId) -> Result<(), String> {
-        let history = self.history.load_active_history(history_id)?;
-        if history.is_empty() {
+    async fn summarize_conversation(&self, history_id: &HistoryId) -> Result<(), String> {
+        let conversation = self.history.load_conversation(history_id)?;
+        let Some(latest_user_index) = conversation
+            .iter()
+            .rposition(|entry| matches!(entry.message, Message::User { .. }))
+        else {
             return Ok(());
-        }
-        let retained = retained_entries(&history);
-        let retained_ids = retained
+        };
+        let Some(boundary_index) = (0..latest_user_index)
+            .rev()
+            .find(|index| !is_history_summary(&conversation[*index].message))
+        else {
+            return Ok(());
+        };
+        let compacted_through_entry_id = conversation[boundary_index].metadata.id.clone();
+        let messages = conversation[..=boundary_index]
             .iter()
-            .map(|entry| entry.metadata.id.as_str())
-            .collect::<HashSet<_>>();
-        let messages = history
-            .iter()
-            .filter(|entry| !retained_ids.contains(entry.metadata.id.as_str()))
             .map(|entry| entry.message.clone())
             .collect::<Vec<_>>();
-        if messages.is_empty() {
-            return Ok(());
-        }
         let transcript = serde_json::to_string(&messages).map_err(|err| err.to_string())?;
         let response = self
             .inference
@@ -366,7 +367,7 @@ impl Agent {
             return Err("history compaction response was empty".to_string());
         }
         self.history
-            .compact_history(history_id, &summary, &retained)
+            .save_conversation_summary(history_id, &summary, &compacted_through_entry_id)
     }
 }
 
@@ -429,20 +430,8 @@ impl TryFrom<Message> for AssistantOutput {
     }
 }
 
-fn retained_entries(history: &[HistoryEntry]) -> Vec<HistoryEntry> {
-    let mut retained = history.iter().rev().take(4).cloned().collect::<Vec<_>>();
-    if let Some(user) = history
-        .iter()
-        .rev()
-        .find(|entry| matches!(entry.message, Message::User { .. }))
-        && !retained
-            .iter()
-            .any(|entry| entry.metadata.id == user.metadata.id)
-    {
-        retained.push(user.clone());
-    }
-    retained.reverse();
-    retained
+fn is_history_summary(message: &Message) -> bool {
+    matches!(message, Message::System(text) if text.starts_with("[history summary] "))
 }
 
 fn strip_message_id_prefix(text: &str) -> &str {

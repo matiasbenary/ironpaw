@@ -62,7 +62,8 @@ impl HistoryId {
 }
 
 pub trait History: Send + Sync {
-    fn load_active_history(&self, history_id: &HistoryId) -> Result<Vec<HistoryEntry>, String>;
+    /// Return the saved summary followed by messages written after its boundary.
+    fn load_conversation(&self, history_id: &HistoryId) -> Result<Vec<HistoryEntry>, String>;
 
     fn append_history(
         &self,
@@ -96,17 +97,17 @@ pub trait History: Send + Sync {
         self.append_history(history_id, &entries)
     }
 
-    fn compact_history(
+    /// Replace the saved summary and advance its boundary to a persisted entry.
+    fn save_conversation_summary(
         &self,
         history_id: &HistoryId,
         summary: &str,
-        retained: &[HistoryEntry],
+        compacted_through_entry_id: &str,
     ) -> Result<(), String>;
 
-    /// Return active items for a conversation, oldest first.
-    /// Inactive items stay on disk for search.
+    /// Return the conversation sent to the model, oldest first.
     fn load(&self, conversation: &ConversationKey) -> Result<Vec<HistoryEntry>, String> {
-        self.load_active_history(&HistoryId::Conversation(conversation.clone()))
+        self.load_conversation(&HistoryId::Conversation(conversation.clone()))
     }
 
     /// Persist new items for a conversation.
@@ -120,11 +121,6 @@ pub trait History: Send + Sync {
 
     /// Delete local entries that correspond to a channel/provider message id.
     fn delete_external_message(&self, message: &MessageRef) -> Result<(), String>;
-
-    /// Replace a conversation with a summary item.
-    fn compact(&self, conversation: &ConversationKey, summary: &str) -> Result<(), String> {
-        self.compact_history(&HistoryId::Conversation(conversation.clone()), summary, &[])
-    }
 
     /// Full-text search over all stored items.
     /// Returns matching items newest first.

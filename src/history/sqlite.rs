@@ -3,22 +3,21 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::message::Message;
 
-use super::{History, HistoryEntry, HistoryId, MessageMetadata};
+use super::{History, HistoryEntry, HistoryId, metadata_for_history};
 
 /// SQLite-backed persistent history.
 ///
 /// Schema:
-///   entries(id, conversation_key, item_json, metadata_json, search_text, active)
+///   entries(id, conversation_key, item_json, metadata_json, search_text)
+///   conversation_summaries(history_key, summary, compacted_through_id)
 ///
 /// `item_json`    — full serialised `Message`
 /// `metadata_json` — full serialised `MessageMetadata`
 /// `search_text`  — plain text extracted from the item, used for FTS5
-/// `active`       — 1 for messages loaded into the live context, 0 for cold
-///                  storage retained for search
 pub struct SqliteHistory {
     conn: Mutex<Connection>,
 }
@@ -36,10 +35,15 @@ impl SqliteHistory {
                  conversation_key TEXT    NOT NULL,
                  item_json       TEXT    NOT NULL,
                  metadata_json   TEXT    NOT NULL DEFAULT '',
-                 search_text     TEXT    NOT NULL DEFAULT '',
-                 active          INTEGER NOT NULL DEFAULT 1
+                 search_text     TEXT    NOT NULL DEFAULT ''
              );
-             CREATE INDEX IF NOT EXISTS idx_conv ON entries(conversation_key, active);
+             CREATE INDEX IF NOT EXISTS idx_history_entries
+                 ON entries(conversation_key, id);
+             CREATE TABLE IF NOT EXISTS conversation_summaries (
+                 history_key         TEXT PRIMARY KEY,
+                 summary             TEXT    NOT NULL,
+                 compacted_through_id INTEGER NOT NULL
+             );
              CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
                  search_text, content='entries', content_rowid='id'
              );
@@ -53,7 +57,6 @@ impl SqliteHistory {
              END;",
         )
         .map_err(|e| e.to_string())?;
-
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -111,25 +114,42 @@ fn entry_from_row(item_json: String, metadata_json: String) -> Option<HistoryEnt
 }
 
 impl History for SqliteHistory {
-    fn load_active_history(&self, history_id: &HistoryId) -> Result<Vec<HistoryEntry>, String> {
-        let conversation_key = history_id.storage_key();
+    fn load_conversation(&self, history_id: &HistoryId) -> Result<Vec<HistoryEntry>, String> {
+        let history_key = history_id.storage_key();
         let conn = self.conn()?;
+        let saved = conn
+            .query_row(
+                "SELECT summary, compacted_through_id
+                 FROM conversation_summaries WHERE history_key = ?1",
+                params![&history_key],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let (summary, compacted_through_id) = match saved {
+            Some((summary, boundary)) => (Some(summary), boundary),
+            None => (None, 0),
+        };
         let mut stmt = conn
             .prepare(
                 "SELECT item_json, metadata_json FROM entries
-                 WHERE conversation_key = ?1 AND active = 1
-                 ORDER BY CASE
-                     WHEN json_extract(item_json, '$.System') LIKE '[history summary] %' THEN 0
-                     ELSE 1
-                 END, id ASC",
+                 WHERE conversation_key = ?1
+                   AND id > ?2
+                 ORDER BY id ASC",
             )
             .map_err(|err| err.to_string())?;
         let rows = stmt
-            .query_map(params![conversation_key], |row| {
+            .query_map(params![history_key, compacted_through_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|err| err.to_string())?;
         let mut entries = Vec::new();
+        if let Some(summary) = summary {
+            entries.push(HistoryEntry {
+                message: Message::System(format!("[history summary] {summary}")),
+                metadata: metadata_for_history(history_id),
+            });
+        }
         for row in rows {
             let (item_json, metadata_json) = row.map_err(|err| err.to_string())?;
             if let Some(entry) = entry_from_row(item_json, metadata_json) {
@@ -204,50 +224,39 @@ impl History for SqliteHistory {
         Ok(())
     }
 
-    fn compact_history(
+    fn save_conversation_summary(
         &self,
         history_id: &HistoryId,
         summary: &str,
-        retained: &[HistoryEntry],
+        compacted_through_entry_id: &str,
     ) -> Result<(), String> {
-        let conversation_key = history_id.storage_key();
+        let history_key = history_id.storage_key();
         let mut conn = self.conn()?;
         let transaction = conn.transaction().map_err(|err| err.to_string())?;
+        let boundary = transaction
+            .query_row(
+                "SELECT id FROM entries
+                 WHERE conversation_key = ?1
+                   AND json_extract(metadata_json, '$.id') = ?2",
+                params![&history_key, compacted_through_entry_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "conversation summary boundary was not found".to_string())?;
         transaction
             .execute(
-                "UPDATE entries SET active = 0 WHERE conversation_key = ?1 AND active = 1",
-                params![&conversation_key],
+                "INSERT INTO conversation_summaries(
+                     history_key, summary, compacted_through_id
+                 ) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(history_key) DO UPDATE SET
+                     summary = excluded.summary,
+                     compacted_through_id = excluded.compacted_through_id
+                 WHERE excluded.compacted_through_id
+                     > conversation_summaries.compacted_through_id",
+                params![&history_key, summary, boundary],
             )
             .map_err(|err| err.to_string())?;
-        let summary_item = Message::System(format!("[history summary] {summary}"));
-        let summary_metadata = match history_id {
-            HistoryId::Conversation(conversation) => {
-                MessageMetadata::new(conversation.clone(), None)
-            }
-            HistoryId::Automation(automation_id) => {
-                MessageMetadata::for_automation(automation_id.clone())
-            }
-        };
-        let json = serde_json::to_string(&summary_item).map_err(|err| err.to_string())?;
-        let metadata_json =
-            serde_json::to_string(&summary_metadata).map_err(|err| err.to_string())?;
-        transaction
-            .execute(
-                "INSERT INTO entries(conversation_key, item_json, metadata_json, search_text)
-             VALUES (?1, ?2, ?3, ?4)",
-                params![&conversation_key, json, metadata_json, summary],
-            )
-            .map_err(|err| err.to_string())?;
-        for entry in retained {
-            transaction
-                .execute(
-                    "UPDATE entries SET active = 1
-                     WHERE conversation_key = ?1
-                       AND json_extract(metadata_json, '$.id') = ?2",
-                    params![&conversation_key, &entry.metadata.id],
-                )
-                .map_err(|err| err.to_string())?;
-        }
         transaction.commit().map_err(|err| err.to_string())
     }
 
@@ -288,6 +297,7 @@ impl History for SqliteHistory {
 mod tests {
     use super::*;
     use crate::bus::{ConversationKey, MessageRef};
+    use crate::history::MessageMetadata;
 
     fn temp_history() -> SqliteHistory {
         let path =
@@ -318,7 +328,7 @@ mod tests {
             .append_tool_turn(&history_id, &assistant, &[result])
             .unwrap();
 
-        let entries = history.load_active_history(&history_id).unwrap();
+        let entries = history.load_conversation(&history_id).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].message, assistant);
         let Message::ToolResult { result, .. } = &entries[1].message else {
@@ -333,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn compaction_retains_active_task_context() {
+    fn conversation_is_summary_followed_by_entries_after_the_boundary() {
         let history = temp_history();
         let history_id = HistoryId::Automation("daily-album".to_string());
         let entries = vec![
@@ -355,10 +365,10 @@ mod tests {
         history.append_history(&history_id, &entries).unwrap();
 
         history
-            .compact_history(&history_id, "older context", &entries[1..])
+            .save_conversation_summary(&history_id, "older context", &entries[0].metadata.id)
             .unwrap();
 
-        let loaded = history.load_active_history(&history_id).unwrap();
+        let loaded = history.load_conversation(&history_id).unwrap();
         assert!(
             matches!(&loaded[0].message, Message::System(text) if text.contains("older context"))
         );
