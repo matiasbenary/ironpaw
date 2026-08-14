@@ -48,20 +48,37 @@ impl Agent {
         context: ExecutionContext,
     ) -> Result<Option<String>, String> {
         let history_id = HistoryId::Conversation(conversation.clone());
+        let core_memories = match self.memory.core() {
+            Ok(memories) => memories,
+            Err(error) => {
+                debug_log(format!("core memory load failed: {error}"));
+                Vec::new()
+            }
+        };
         let recalled_memories = self.recall_memories(&history_id).await?;
         let tools = self.tools.agent_tools();
-        let mut initial_messages = system_preamble(Some(conversation));
+        let mut messages = system_preamble(Some(conversation));
+        if !core_memories.is_empty() {
+            let core = core_memories
+                .iter()
+                .map(|memory| format!("- {memory}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            messages.push(Message::System(format!(
+                "[core user memory]\n{core}\nTreat these as established user facts."
+            )));
+        }
         if !recalled_memories.is_empty() {
             let recalled = recalled_memories
                 .iter()
                 .map(|memory| format!("- {memory}"))
                 .collect::<Vec<_>>()
                 .join("\n");
-            initial_messages.push(Message::System(format!(
+            messages.push(Message::System(format!(
                 "[recalled user memory]\n{recalled}\nUse these memories only when relevant."
             )));
         }
-        let run = AgentRun::new(history_id.clone(), context, tools, initial_messages);
+        let run = AgentRun::new(history_id.clone(), context, tools, messages);
         let output = self.run(run).await?;
         let Some(text) = output.text.filter(|text| !text.is_empty()) else {
             return Ok(None);

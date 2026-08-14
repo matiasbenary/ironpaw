@@ -6,6 +6,8 @@ use std::{
 
 use rusqlite::{Connection, params};
 
+use super::CoreMemory;
+
 #[derive(Clone)]
 pub(super) struct MemoryRecord {
     pub id: String,
@@ -34,6 +36,11 @@ impl SqliteMemory {
                  hash          TEXT NOT NULL UNIQUE,
                  attributed_to TEXT NOT NULL,
                  created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );
+             CREATE TABLE IF NOT EXISTS core_memories (
+                 key        TEXT PRIMARY KEY,
+                 text       TEXT NOT NULL,
+                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
              );
              CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
                  id UNINDEXED,
@@ -87,6 +94,40 @@ impl SqliteMemory {
             .map_err(|error| error.to_string())?;
         rows.collect::<Result<HashSet<_>, _>>()
             .map_err(|error| error.to_string())
+    }
+
+    pub fn core(&self, limit: usize) -> Result<Vec<CoreMemory>, String> {
+        let conn = self.conn()?;
+        let mut statement = conn
+            .prepare("SELECT key, text FROM core_memories ORDER BY key LIMIT ?1")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![limit], |row| {
+                Ok(CoreMemory {
+                    key: row.get(0)?,
+                    text: row.get(1)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn upsert_core(&self, updates: &[CoreMemory]) -> Result<(), String> {
+        let mut conn = self.conn()?;
+        let transaction = conn.transaction().map_err(|error| error.to_string())?;
+        for update in updates {
+            transaction
+                .execute(
+                    "INSERT INTO core_memories(key, text) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET
+                         text = excluded.text,
+                         updated_at = CURRENT_TIMESTAMP",
+                    params![update.key, update.text],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())
     }
 
     pub fn search(
@@ -200,7 +241,7 @@ fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryRecord, SqliteMemory};
+    use super::{CoreMemory, MemoryRecord, SqliteMemory};
 
     #[test]
     fn text_search_preserves_exact_identifiers() {
@@ -218,5 +259,27 @@ mod tests {
 
         let matches = store.search_text("Lumio Hub v2 2.7.4", 10).unwrap();
         assert_eq!(matches[0].id, "hub");
+    }
+
+    #[test]
+    fn core_memory_updates_replace_the_same_key() {
+        let path = std::env::temp_dir().join(format!("ironpaw-memory-{}.db", uuid::Uuid::new_v4()));
+        let store = SqliteMemory::new(path).unwrap();
+        store
+            .upsert_core(&[CoreMemory {
+                key: "identity.location".into(),
+                text: "The user lives in Bristol".into(),
+            }])
+            .unwrap();
+        store
+            .upsert_core(&[CoreMemory {
+                key: "identity.location".into(),
+                text: "The user lives in Edinburgh".into(),
+            }])
+            .unwrap();
+
+        let memories = store.core(20).unwrap();
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].text, "The user lives in Edinburgh");
     }
 }

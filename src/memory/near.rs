@@ -4,7 +4,7 @@ use crate::{
     secrets::ToolSecrets,
 };
 
-use super::sqlite::MemoryRecord;
+use super::{CoreMemory, sqlite::MemoryRecord};
 
 const EXTRACTION_PROMPT: &str = include_str!("extraction_prompt.txt");
 #[derive(serde::Deserialize)]
@@ -15,9 +15,11 @@ pub(super) struct ExtractedMemory {
 }
 
 #[derive(serde::Deserialize)]
-struct ExtractionResponse {
+pub(super) struct ExtractionResponse {
     #[serde(default)]
-    memory: Vec<ExtractedMemory>,
+    pub memory: Vec<ExtractedMemory>,
+    #[serde(default)]
+    pub core_updates: Vec<CoreMemory>,
 }
 
 pub(super) struct MemoryInference {
@@ -34,7 +36,8 @@ impl MemoryInference {
         previous_messages: &[Message],
         new_messages: &[Message],
         existing: &[MemoryRecord],
-    ) -> Result<Vec<ExtractedMemory>, String> {
+        core: &[CoreMemory],
+    ) -> Result<ExtractionResponse, String> {
         let existing = existing
             .iter()
             .enumerate()
@@ -44,6 +47,7 @@ impl MemoryInference {
         let input = serde_json::json!({
             "previous_messages": previous_messages,
             "existing_memories": existing,
+            "core_memory": core,
             "new_messages": new_messages,
             "observation_date": today,
             "current_date": today,
@@ -70,7 +74,6 @@ impl MemoryInference {
             return Err("memory extraction returned no text".to_string());
         };
         serde_json::from_str::<ExtractionResponse>(json_object(&text)?)
-            .map(|response| response.memory)
             .map_err(|error| format!("invalid memory extraction: {error}"))
     }
 

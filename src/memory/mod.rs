@@ -11,6 +11,12 @@ use crate::{inference::Inference, message::Message, secrets::ToolSecrets};
 use near::MemoryInference;
 use sqlite::{MemoryRecord, SqliteMemory};
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub(super) struct CoreMemory {
+    pub key: String,
+    pub text: String,
+}
+
 pub struct Memory {
     store: SqliteMemory,
     inference: MemoryInference,
@@ -50,6 +56,15 @@ impl Memory {
             .collect())
     }
 
+    pub fn core(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .store
+            .core(20)?
+            .into_iter()
+            .map(|memory| memory.text)
+            .collect())
+    }
+
     pub async fn ingest(
         &self,
         previous_messages: &[Message],
@@ -62,18 +77,19 @@ impl Memory {
 
         let query_embedding = self.inference.embed(&conversation).await?;
         let existing = self.store.search(&query_embedding, 10, 0.0)?;
+        let core = self.store.core(20)?;
         let extracted = self
             .inference
-            .extract(previous_messages, new_messages, &existing)
+            .extract(previous_messages, new_messages, &existing, &core)
             .await?;
-        if extracted.is_empty() {
+        if extracted.memory.is_empty() && extracted.core_updates.is_empty() {
             return Ok(());
         }
 
         let known_hashes = self.store.hashes()?;
         let mut batch_hashes = HashSet::new();
         let mut memories = Vec::new();
-        for extracted in extracted {
+        for extracted in extracted.memory {
             let text = extracted.text.trim().to_string();
             if text.is_empty() {
                 continue;
@@ -110,7 +126,17 @@ impl Memory {
                 memories.retain(|memory| !memory.embedding.is_empty());
             }
         }
-        self.store.insert(&memories)
+        self.store.insert(&memories)?;
+        let core_updates = extracted
+            .core_updates
+            .into_iter()
+            .filter_map(|memory| {
+                let key = memory.key.trim().to_string();
+                let text = memory.text.trim().to_string();
+                (!key.is_empty() && !text.is_empty()).then_some(CoreMemory { key, text })
+            })
+            .collect::<Vec<_>>();
+        self.store.upsert_core(&core_updates)
     }
 }
 

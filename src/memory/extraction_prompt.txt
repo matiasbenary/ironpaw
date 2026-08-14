@@ -8,7 +8,11 @@ Use observation_date to resolve relative dates such as today, yesterday, or next
 
 Do not extract greetings, filler, vague acknowledgements, assistant restatements, speculation, or unsupported inferences. Attribute ownership precisely: something explicitly belonging to a housemate is not the user's. Attribute user facts to "user" and genuinely new assistant recommendations or plans to "assistant".
 
-Return JSON only:
-{"memory":[{"text":"A self-contained memory","attributed_to":"user"}]}
+Core memory is the small user profile included in every future conversation. Add a core update only for the user's identity or a hard constraint whose relevance does not depend on the current topic. Examples include the user's name, accessibility requirements, allergies, and important household safety constraints. Do not put ordinary preferences, events, plans, recommendations, device details, or assistant facts in core memory.
 
-If nothing is worth remembering, return {"memory":[]}.
+Use a stable lowercase dot-separated key such as "identity.name" or "constraint.allergy.peanut". When new messages change an existing core fact, reuse its key so the old value is replaced. Only return core updates established by new_messages. Do not repeat unchanged core memory. A fact placed in core_updates does not also need to appear in memory.
+
+Return JSON only:
+{"memory":[{"text":"A self-contained memory","attributed_to":"user"}],"core_updates":[{"key":"identity.name","text":"The user's name is Sarah"}]}
+
+If nothing is worth remembering, return {"memory":[],"core_updates":[]}.
