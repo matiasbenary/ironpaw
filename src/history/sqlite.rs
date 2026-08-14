@@ -7,7 +7,7 @@ use rusqlite::{Connection, params};
 
 use crate::message::Message;
 
-use super::{History, HistoryEntry, HistoryScope, MessageMetadata};
+use super::{History, HistoryEntry, HistoryId, MessageMetadata};
 
 /// SQLite-backed persistent history.
 ///
@@ -111,8 +111,8 @@ fn entry_from_row(item_json: String, metadata_json: String) -> Option<HistoryEnt
 }
 
 impl History for SqliteHistory {
-    fn load_scope(&self, scope: &HistoryScope) -> Result<Vec<HistoryEntry>, String> {
-        let conversation_key = scope.storage_key();
+    fn load_active_history(&self, history_id: &HistoryId) -> Result<Vec<HistoryEntry>, String> {
+        let conversation_key = history_id.storage_key();
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
@@ -139,8 +139,12 @@ impl History for SqliteHistory {
         Ok(entries)
     }
 
-    fn append_scope(&self, scope: &HistoryScope, entries: &[HistoryEntry]) -> Result<(), String> {
-        let conversation_key = scope.storage_key();
+    fn append_history(
+        &self,
+        history_id: &HistoryId,
+        entries: &[HistoryEntry],
+    ) -> Result<(), String> {
+        let conversation_key = history_id.storage_key();
         let conn = self.conn()?;
         for entry in entries {
             let json = serde_json::to_string(&entry.message).map_err(|err| err.to_string())?;
@@ -200,13 +204,13 @@ impl History for SqliteHistory {
         Ok(())
     }
 
-    fn compact_scope(
+    fn compact_history(
         &self,
-        scope: &HistoryScope,
+        history_id: &HistoryId,
         summary: &str,
         retained: &[HistoryEntry],
     ) -> Result<(), String> {
-        let conversation_key = scope.storage_key();
+        let conversation_key = history_id.storage_key();
         let mut conn = self.conn()?;
         let transaction = conn.transaction().map_err(|err| err.to_string())?;
         transaction
@@ -216,11 +220,11 @@ impl History for SqliteHistory {
             )
             .map_err(|err| err.to_string())?;
         let summary_item = Message::System(format!("[history summary] {summary}"));
-        let summary_metadata = match scope {
-            HistoryScope::Conversation(conversation) => {
+        let summary_metadata = match history_id {
+            HistoryId::Conversation(conversation) => {
                 MessageMetadata::new(conversation.clone(), None)
             }
-            HistoryScope::Automation(automation_id) => {
+            HistoryId::Automation(automation_id) => {
                 MessageMetadata::for_automation(automation_id.clone())
             }
         };
@@ -294,7 +298,7 @@ mod tests {
     #[test]
     fn appends_a_complete_bounded_tool_turn() {
         let history = temp_history();
-        let scope = HistoryScope::Automation("daily-album".to_string());
+        let history_id = HistoryId::Automation("daily-album".to_string());
         let assistant = Message::Assistant {
             text: Some("checking".to_string()),
             attachments: Vec::new(),
@@ -311,10 +315,10 @@ mod tests {
         };
 
         history
-            .append_tool_turn(&scope, &assistant, &[result])
+            .append_tool_turn(&history_id, &assistant, &[result])
             .unwrap();
 
-        let entries = history.load_scope(&scope).unwrap();
+        let entries = history.load_active_history(&history_id).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].message, assistant);
         let Message::ToolResult { result, .. } = &entries[1].message else {
@@ -331,7 +335,7 @@ mod tests {
     #[test]
     fn compaction_retains_active_task_context() {
         let history = temp_history();
-        let scope = HistoryScope::Automation("daily-album".to_string());
+        let history_id = HistoryId::Automation("daily-album".to_string());
         let entries = vec![
             HistoryEntry {
                 message: Message::User {
@@ -348,13 +352,13 @@ mod tests {
                 metadata: MessageMetadata::for_automation("daily-album"),
             },
         ];
-        history.append_scope(&scope, &entries).unwrap();
+        history.append_history(&history_id, &entries).unwrap();
 
         history
-            .compact_scope(&scope, "older context", &entries[1..])
+            .compact_history(&history_id, "older context", &entries[1..])
             .unwrap();
 
-        let loaded = history.load_scope(&scope).unwrap();
+        let loaded = history.load_active_history(&history_id).unwrap();
         assert!(
             matches!(&loaded[0].message, Message::System(text) if text.contains("older context"))
         );

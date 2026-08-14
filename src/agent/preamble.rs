@@ -1,7 +1,7 @@
 use crate::{bus::ConversationKey, message::Message};
 
-pub(super) fn system_preamble(destination: Option<&ConversationKey>) -> Vec<Message> {
-    let mut text = match destination {
+pub(super) fn system_preamble(conversation: Option<&ConversationKey>) -> Vec<Message> {
+    let mut text = match conversation {
         Some(conversation) => {
             let mut text = format!(
                 "You are a personal assistant. \

@@ -284,7 +284,7 @@ Once a trigger fires, the automation runtime publishes an invocation event. That
 
 One-shot `at` automations are removed from memory and storage immediately after their invocation is dispatched. Tool invocations from cron ticks are dispatched independently. Agent-task invocations for the same automation are queued and run in order, so they do not concurrently mutate their shared automation workspace.
 
-Inbound-message triggers can match all conversations, or a specific `ConversationKey`. Setup flows that temporarily take over replies should scope their trigger to the conversation that started the flow.
+Inbound-message triggers can match all conversations, or a specific `ConversationKey`. Exact conversation matches take precedence over wildcard matches, so setup flows temporarily own only the conversation that started them while the default handler remains active elsewhere.
 
 ### Examples
 

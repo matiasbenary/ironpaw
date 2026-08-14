@@ -47,12 +47,12 @@ impl MessageMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HistoryScope {
+pub enum HistoryId {
     Conversation(ConversationKey),
     Automation(String),
 }
 
-impl HistoryScope {
+impl HistoryId {
     pub(crate) fn storage_key(&self) -> String {
         match self {
             Self::Conversation(conversation) => conversation.storage_key(),
@@ -62,13 +62,17 @@ impl HistoryScope {
 }
 
 pub trait History: Send + Sync {
-    fn load_scope(&self, scope: &HistoryScope) -> Result<Vec<HistoryEntry>, String>;
+    fn load_active_history(&self, history_id: &HistoryId) -> Result<Vec<HistoryEntry>, String>;
 
-    fn append_scope(&self, scope: &HistoryScope, entries: &[HistoryEntry]) -> Result<(), String>;
+    fn append_history(
+        &self,
+        history_id: &HistoryId,
+        entries: &[HistoryEntry],
+    ) -> Result<(), String>;
 
     fn append_tool_turn(
         &self,
-        scope: &HistoryScope,
+        history_id: &HistoryId,
         assistant: &Message,
         results: &[Message],
     ) -> Result<(), String> {
@@ -86,15 +90,15 @@ pub trait History: Send + Sync {
         let entries = messages
             .map(|message| HistoryEntry {
                 message,
-                metadata: metadata_for_scope(scope),
+                metadata: metadata_for_history(history_id),
             })
             .collect::<Vec<_>>();
-        self.append_scope(scope, &entries)
+        self.append_history(history_id, &entries)
     }
 
-    fn compact_scope(
+    fn compact_history(
         &self,
-        scope: &HistoryScope,
+        history_id: &HistoryId,
         summary: &str,
         retained: &[HistoryEntry],
     ) -> Result<(), String>;
@@ -102,7 +106,7 @@ pub trait History: Send + Sync {
     /// Return active items for a conversation, oldest first.
     /// Inactive items stay on disk for search.
     fn load(&self, conversation: &ConversationKey) -> Result<Vec<HistoryEntry>, String> {
-        self.load_scope(&HistoryScope::Conversation(conversation.clone()))
+        self.load_active_history(&HistoryId::Conversation(conversation.clone()))
     }
 
     /// Persist new items for a conversation.
@@ -111,7 +115,7 @@ pub trait History: Send + Sync {
         conversation: &ConversationKey,
         entries: &[HistoryEntry],
     ) -> Result<(), String> {
-        self.append_scope(&HistoryScope::Conversation(conversation.clone()), entries)
+        self.append_history(&HistoryId::Conversation(conversation.clone()), entries)
     }
 
     /// Delete local entries that correspond to a channel/provider message id.
@@ -119,11 +123,7 @@ pub trait History: Send + Sync {
 
     /// Replace a conversation with a summary item.
     fn compact(&self, conversation: &ConversationKey, summary: &str) -> Result<(), String> {
-        self.compact_scope(
-            &HistoryScope::Conversation(conversation.clone()),
-            summary,
-            &[],
-        )
+        self.compact_history(&HistoryId::Conversation(conversation.clone()), summary, &[])
     }
 
     /// Full-text search over all stored items.
@@ -131,12 +131,10 @@ pub trait History: Send + Sync {
     fn search(&self, query: &str) -> Result<Vec<HistoryEntry>, String>;
 }
 
-fn metadata_for_scope(scope: &HistoryScope) -> MessageMetadata {
-    match scope {
-        HistoryScope::Conversation(conversation) => {
-            MessageMetadata::new(conversation.clone(), None)
-        }
-        HistoryScope::Automation(automation_id) => {
+fn metadata_for_history(history_id: &HistoryId) -> MessageMetadata {
+    match history_id {
+        HistoryId::Conversation(conversation) => MessageMetadata::new(conversation.clone(), None),
+        HistoryId::Automation(automation_id) => {
             MessageMetadata::for_automation(automation_id.clone())
         }
     }
