@@ -15,7 +15,7 @@ async fn memory_production_ingestion() {
     std::fs::create_dir_all(&files_dir).expect("live test files directory");
     let bus = Bus::new(64);
     let mut events = bus.subscribe();
-    let (_task, history, _, memory) = start_ironpaw_config(&bus, files_dir);
+    let (_task, history, _, memory, _) = start_ironpaw_config(&bus, files_dir);
     let conversation = ConversationKey {
         channel: "tui".to_string(),
         chat_id: "memory-production-ingestion".to_string(),
@@ -32,8 +32,13 @@ async fn memory_production_ingestion() {
         "My storage locker code is Q7-MARBLE-42. Please acknowledge that you noted it.",
     )
     .await;
+    let entries = history.load(&conversation).expect("load conversation");
     history
-        .compact(&conversation, "Older conversation was compacted.")
+        .save_conversation_summary(
+            &HistoryId::Conversation(conversation.clone()),
+            "Older conversation was compacted.",
+            &entries.last().expect("conversation entry").metadata.id,
+        )
         .expect("compact production ingestion conversation");
     assert_cold_history(history.as_ref(), &conversation);
 

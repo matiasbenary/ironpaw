@@ -9,7 +9,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    bus::{ConversationKey, Event, Sender, SenderKind},
+    bus::{ConversationKey, Event, MessageIn, Sender, SenderKind},
     channels::{
         append_inbound_message,
         bridge::{BridgeState, LoadedChannel, auth::authorize},
@@ -85,12 +85,16 @@ pub(super) async fn message_channel_to_ironpaw(
         )
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err))?;
 
-        state.bus.publish(Event::MessageIn {
+        let Message::User { text, attachments } = message else {
+            unreachable!("channel inbound messages are user messages");
+        };
+        state.bus.publish(Event::MessageIn(MessageIn {
             sender,
             conversation: inbound.conversation,
             message_id: inbound.message_id,
-            message,
-        });
+            text,
+            attachments,
+        }));
         accepted += 1;
     }
 

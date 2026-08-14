@@ -15,7 +15,7 @@ async fn memory_native_eval() {
     std::fs::create_dir_all(&files_dir).unwrap();
     let bus = Bus::new(64);
     let mut events = bus.subscribe();
-    let (_task, history, _, memory) = start_ironpaw_config(&bus, files_dir);
+    let (_task, history, _, memory, _) = start_ironpaw_config(&bus, files_dir);
     let mut passed = 0;
     let mut evaluated = 0;
     let mut retrieval_failures = Vec::new();

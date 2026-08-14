@@ -19,7 +19,7 @@ async fn album_recommendation_automation() {
     let existing = automations
         .list()
         .into_iter()
-        .map(|automation| automation.name)
+        .map(|automation| automation.name().to_string())
         .collect::<HashSet<_>>();
 
     let prompt = r#"I am trying to listing to new bands, the more distant from my usual experience the better. The idea is not to listen to crap, but to move away from the mainstream influx of music we get bombarded with, which sounds all the same. Here are the albums I already listened to:
@@ -49,7 +49,7 @@ suggest me one new album to listen every day at 10am, including the band name an
             let generated = automations
                 .list()
                 .into_iter()
-                .filter(|automation| !existing.contains(&automation.name))
+                .filter(|automation| !existing.contains(automation.name()))
                 .collect::<Vec<_>>();
             if !generated.is_empty() {
                 break generated;
@@ -69,7 +69,7 @@ suggest me one new album to listen every day at 10am, including the band name an
                 break automations
                     .list()
                     .into_iter()
-                    .filter(|automation| !existing.contains(&automation.name))
+                    .filter(|automation| !existing.contains(automation.name()))
                     .collect();
             }
         }
@@ -86,7 +86,7 @@ suggest me one new album to listen every day at 10am, including the band name an
         );
     }
 
-    let automation_name = &generated[0].name;
+    let automation_name = generated[0].name();
     let first = trigger_automation_and_wait(&bus, &mut events, automation_name).await;
     let second = trigger_automation_and_wait(&bus, &mut events, automation_name).await;
     eprintln!("[live_test] first recommendation: {first:?}");

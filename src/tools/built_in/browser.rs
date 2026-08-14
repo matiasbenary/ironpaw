@@ -11,10 +11,9 @@ use chromiumoxide::{Browser, BrowserConfig, Page};
 use futures::StreamExt;
 
 use crate::{
-    automations::{Automation, AutomationEffect, Trigger},
-    bus::InvocationScope,
+    automations::{Automation, AutomationEffect, Schedule, ToolEffect},
     config::RuntimeLayout,
-    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolResponder},
 };
 
 mod install;
@@ -179,13 +178,13 @@ impl BrowserUpdateTool {
     }
 
     pub fn automation() -> Automation {
-        Automation {
+        Automation::Scheduled {
             name: UPDATE_AUTOMATION_NAME.to_string(),
-            trigger: Trigger::cron("0 0 * * * * *").expect("valid hourly cron"),
-            effect: AutomationEffect::Tool {
+            schedule: Schedule::cron("0 0 * * * * *").expect("valid hourly cron"),
+            effect: AutomationEffect::Tool(ToolEffect {
                 tool: "browser_update".to_string(),
                 args: serde_json::json!({}),
-            },
+            }),
         }
     }
 }

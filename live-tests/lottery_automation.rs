@@ -18,7 +18,7 @@ async fn lottery_automation() {
     let existing = automations
         .list()
         .into_iter()
-        .map(|automation| automation.name)
+        .map(|automation| automation.name().to_string())
         .collect::<HashSet<_>>();
     let conversation = ConversationKey {
         channel: "tui".to_string(),
@@ -37,13 +37,17 @@ async fn lottery_automation() {
     let automation = timeout(Duration::from_secs(60), async {
         loop {
             if let Some(automation) = automations.list().into_iter().find(|automation| {
-                !existing.contains(&automation.name)
-                    && automation.effect["type"] == "agent_task"
-                    && automation.effect["tools"].as_array().is_some_and(|tools| {
-                        ["send_message", "delete_automation"]
-                            .into_iter()
-                            .all(|name| tools.iter().any(|tool| tool == name))
-                    })
+                let Automation::Scheduled {
+                    effect: AutomationEffect::AgentTask(effect),
+                    ..
+                } = automation
+                else {
+                    return false;
+                };
+                !existing.contains(automation.name())
+                    && ["send_message", "delete_automation"]
+                        .into_iter()
+                        .all(|name| effect.tools.iter().any(|tool| tool == name))
             }) {
                 break automation;
             }
@@ -52,13 +56,16 @@ async fn lottery_automation() {
     })
     .await
     .expect("agent did not create the lottery automation");
-    assert_eq!(automation.trigger["type"], "cron");
-    let cron = automation.trigger["expression"]
-        .as_str()
-        .expect("cron expression");
+    let Automation::Scheduled {
+        schedule: Schedule::Cron { expression: cron },
+        ..
+    } = &automation
+    else {
+        panic!("lottery automation must use cron");
+    };
     assert_eq!(cron.split_whitespace().next(), Some("*/5"));
     assert!(cron.split_whitespace().count() >= 6);
-    let automation_name = automation.name;
+    let automation_name = automation.name().to_string();
 
     timeout(Duration::from_secs(120), async {
         while automations.contains(&automation_name) {
@@ -82,7 +89,7 @@ async fn lottery_automation() {
     }
 
     let entries = history
-        .load_scope(&HistoryScope::Automation(automation_name))
+        .load_conversation(&HistoryId::Automation(automation_name))
         .expect("load automation history");
     let numbers = entries
         .iter()

@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use rand::seq::SliceRandom;
 
 use crate::{
-    automations::{Automation, AutomationEffect, Trigger},
-    bus::{Bus, Event, SenderKind},
+    automations::{Automation, ToolEffect, UserMessageEffect},
+    bus::{Bus, Event},
     config::RuntimeLayout,
     message::ToolDefinition,
     secrets::{EncryptedSecretStore, Secrets, generate_phrase, phrase_is_valid, phrase_words},
@@ -50,19 +50,16 @@ impl UnlockSecretsTool {
     }
 
     pub fn automation() -> Automation {
-        Automation {
+        Automation::OnUserMessageIn {
             name: AUTOMATION_NAME.to_string(),
-            trigger: Trigger::MessageIn {
-                sender: SenderKind::User,
-                conversation: None,
-            },
-            effect: AutomationEffect::Tool {
+            conversation: None,
+            effect: UserMessageEffect::Tool(ToolEffect {
                 tool: "unlock_secrets".to_string(),
                 args: serde_json::json!({
                     "message": "{{event.text}}",
                     "message_id": "{{event.message_id}}",
                 }),
-            },
+            }),
         }
     }
 
@@ -374,7 +371,7 @@ async fn send_unlock_message(
     let Some(message_id) = &message.message_id else {
         return send(tools, &message.content, ctx).await;
     };
-    let crate::bus::InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
+    let crate::tools::InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
         return Err("unlock messages require a conversation".to_string());
     };
     let result = tools::run_tool(

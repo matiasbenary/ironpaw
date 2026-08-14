@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
 use crate::{
-    bus::{Bus, Event, InvocationScope, UserInputOption, UserInputRequest},
-    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+    bus::{Bus, Event, UserInputOption, UserInputRequest},
+    tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolResponder},
 };
 
 pub struct RequestUserInputTool {

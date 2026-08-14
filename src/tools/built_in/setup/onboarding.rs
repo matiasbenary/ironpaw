@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use crate::{
-    automations::{Automation, AutomationEffect, Automations, Trigger},
-    bus::{InvocationScope, SenderKind},
+    automations::{Automation, ToolEffect, UserMessageEffect},
+    bus::Event,
     message::ToolDefinition,
     tools::{
-        self, ExecutionContext, InternalTool, ToolResponder,
+        self, ExecutionContext, InternalTool, InvocationScope, ToolResponder,
         setup::{SetupServices, delete_current_message, send},
     },
 };
@@ -20,9 +20,6 @@ pub struct OnboardingParams {
     /// Provider message id for the latest user message, when available.
     #[serde(default)]
     pub message_id: Option<String>,
-    /// Start an owner-requested API-key change.
-    #[serde(default)]
-    pub change_api_key: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,7 +34,6 @@ enum KeyFlow {
     Change,
 }
 
-const API_KEY_CHANGE_REQUEST_AUTOMATION: &str = "request-api-key-change";
 const API_KEY_CHANGE_SESSION_AUTOMATION: &str = "change-api-key";
 
 pub struct OnboardingTool {
@@ -54,31 +50,40 @@ impl OnboardingTool {
     }
 
     pub fn automation() -> Automation {
-        Automation {
+        Automation::OnUserMessageIn {
             name: "onboarding".to_string(),
-            trigger: Trigger::MessageIn {
-                sender: SenderKind::User,
-                conversation: None,
-            },
-            effect: AutomationEffect::Tool {
+            conversation: None,
+            effect: UserMessageEffect::Tool(ToolEffect {
                 tool: "onboarding".to_string(),
                 args: serde_json::json!({
                     "message": "{{event.text}}",
                     "message_id": "{{event.message_id}}",
                 }),
-            },
+            }),
         }
     }
 
-    pub fn api_key_change_automation() -> Automation {
-        Automation {
-            name: API_KEY_CHANGE_REQUEST_AUTOMATION.to_string(),
-            trigger: Trigger::ApiKeyChangeRequested,
-            effect: AutomationEffect::Tool {
-                tool: "onboarding".to_string(),
-                args: serde_json::json!({ "change_api_key": true }),
-            },
-        }
+    pub fn start(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let this = Arc::clone(self);
+        let mut events = self.setup.bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(Event::ApiKeyChangeRequested { conversation }) => {
+                        let this = Arc::clone(&this);
+                        tokio::spawn(async move {
+                            let context =
+                                ExecutionContext::new(InvocationScope::Conversation(conversation));
+                            if let Err(error) = this.start_api_key_change(&context).await {
+                                eprintln!("could not start API-key change: {error}");
+                            }
+                        });
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
     }
 
     async fn execute(
@@ -86,9 +91,6 @@ impl OnboardingTool {
         params: OnboardingParams,
         ctx: &ExecutionContext,
     ) -> Result<serde_json::Value, String> {
-        if params.change_api_key {
-            return self.start_api_key_change(ctx).await;
-        }
         let stage = *self.stage.lock().expect("onboarding stage lock");
         match stage {
             Stage::Hello => {
@@ -177,20 +179,19 @@ impl OnboardingTool {
         let InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
             return Err("API-key change requires a conversation".to_string());
         };
-        self.setup.automations.add_transient(Automation {
-            name: API_KEY_CHANGE_SESSION_AUTOMATION.to_string(),
-            trigger: Trigger::MessageIn {
-                sender: SenderKind::User,
+        self.setup
+            .automations
+            .add_runtime(Automation::OnUserMessageIn {
+                name: API_KEY_CHANGE_SESSION_AUTOMATION.to_string(),
                 conversation: Some(conversation.clone()),
-            },
-            effect: AutomationEffect::Tool {
-                tool: "onboarding".to_string(),
-                args: serde_json::json!({
-                    "message": "{{event.text}}",
-                    "message_id": "{{event.message_id}}",
+                effect: UserMessageEffect::Tool(ToolEffect {
+                    tool: "onboarding".to_string(),
+                    args: serde_json::json!({
+                        "message": "{{event.text}}",
+                        "message_id": "{{event.message_id}}",
+                    }),
                 }),
-            },
-        })?;
+            })?;
         self.set_stage(Stage::NearKey {
             flow: KeyFlow::Change,
         });
@@ -201,16 +202,13 @@ impl OnboardingTool {
     async fn finish(&self, ctx: &ExecutionContext, flow: KeyFlow) -> Result<(), String> {
         let message = match flow {
             KeyFlow::FirstRun => {
-                self.setup.automations.remove_transient("onboarding");
-                self.setup
-                    .automations
-                    .add(Automations::handle_conversation())?;
+                self.setup.automations.remove_runtime("onboarding");
                 "Ironpaw is set up. From now on, I will answer your messages normally."
             }
             KeyFlow::Change => {
                 self.setup
                     .automations
-                    .remove_transient(API_KEY_CHANGE_SESSION_AUTOMATION);
+                    .remove_runtime(API_KEY_CHANGE_SESSION_AUTOMATION);
                 "API key changed."
             }
         };

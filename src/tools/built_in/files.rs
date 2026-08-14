@@ -255,7 +255,7 @@ file_tool!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::InvocationScope;
+    use crate::tools::InvocationScope;
 
     #[tokio::test]
     async fn paths_cannot_escape_the_scope() {

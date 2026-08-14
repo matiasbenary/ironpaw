@@ -123,7 +123,7 @@ async fn main() -> io::Result<()> {
         )
         .map_err(std::io::Error::other)?;
     automations
-        .add_transient(UnlockSecretsTool::automation())
+        .add_runtime(UnlockSecretsTool::automation())
         .map_err(std::io::Error::other)?;
     let tool_handler_task = tool_handler.start();
     let agent_handler_task = agent_handler.start();
@@ -134,7 +134,7 @@ async fn main() -> io::Result<()> {
     println!("Use `ironpaw-tui {token}` to unlock Ironpaw.");
 
     wait_for_unlocked_store(boot_events).await?;
-    automations.remove_transient(UNLOCK_AUTOMATION);
+    automations.remove_runtime(UNLOCK_AUTOMATION);
     let tool_state = EnabledTools::new(layout.tools_state_path());
 
     for manifest in ironpaw::tools::wasm::discover(&layout).map_err(std::io::Error::other)? {
@@ -171,16 +171,15 @@ async fn main() -> io::Result<()> {
         secrets.clone(),
         tool_state,
     ));
+    let onboarding = Arc::new(OnboardingTool::new(Arc::clone(&setup_services)));
     tools
         .registry
         .add(
-            Arc::new(OnboardingTool::new(Arc::clone(&setup_services))),
+            Arc::clone(&onboarding) as Arc<dyn InternalTool>,
             ToolVisibility::Internal,
         )
         .map_err(std::io::Error::other)?;
-    automations
-        .add_transient(OnboardingTool::api_key_change_automation())
-        .map_err(std::io::Error::other)?;
+    let onboarding_task = onboarding.start();
     let install_channel = Arc::new(InstallChannelTool::new(Arc::clone(&setup_services)));
     tools
         .registry
@@ -225,29 +224,20 @@ async fn main() -> io::Result<()> {
             ToolVisibility::Agent,
         )
         .map_err(std::io::Error::other)?;
-    let stored_count = automations.load_stored().map_err(std::io::Error::other)?;
+    automations.load_stored().map_err(std::io::Error::other)?;
     if !automations
         .list()
         .iter()
-        .any(|automation| automation.name == ironpaw::tools::browser::UPDATE_AUTOMATION_NAME)
+        .any(|automation| automation.name() == ironpaw::tools::browser::UPDATE_AUTOMATION_NAME)
     {
         automations
-            .add_transient(BrowserUpdateTool::automation())
+            .add_runtime(BrowserUpdateTool::automation())
             .map_err(std::io::Error::other)?;
     }
-    automations
-        .recover_stale_setup()
-        .map_err(std::io::Error::other)?;
-    if stored_count == 0 {
-        if secrets.exists("NEAR_API_KEY") {
-            automations
-                .add(Automations::handle_conversation())
-                .map_err(std::io::Error::other)?;
-        } else {
-            automations
-                .add_transient(OnboardingTool::automation())
-                .map_err(std::io::Error::other)?;
-        }
+    if !secrets.exists("NEAR_API_KEY") {
+        automations
+            .add_runtime(OnboardingTool::automation())
+            .map_err(std::io::Error::other)?;
     }
 
     channel_runtime
@@ -279,6 +269,7 @@ async fn main() -> io::Result<()> {
     let _tool_handler_task = tool_handler_task;
     let _agent_handler_task = agent_handler_task;
     let _automations_task = automations_task;
+    let _onboarding_task = onboarding_task;
     tokio::signal::ctrl_c().await?;
 
     Ok(())

@@ -19,12 +19,12 @@ mod install_tool_prompts;
 mod installable_tool;
 
 use crate::{
-    automations::{Automation, AutomationEffect, Trigger},
-    bus::{ConversationKey, InvocationScope, SenderKind},
+    automations::{Automation, ToolEffect, UserMessageEffect},
+    bus::ConversationKey,
     config::RuntimeLayout,
     secrets::Secrets,
     tools::{
-        self, ExecutionContext, InternalTool, ToolResponder,
+        self, ExecutionContext, InternalTool, InvocationScope, ToolResponder,
         setup::{SessionState, SetupServices, request_choice},
     },
 };
@@ -142,20 +142,17 @@ impl InstallToolTool {
     }
 
     fn automation(tool_name: &str, conversation: &ConversationKey) -> Automation {
-        Automation {
+        Automation::OnUserMessageIn {
             name: format!("tool_auth:{tool_name}"),
-            trigger: Trigger::MessageIn {
-                sender: SenderKind::User,
-                conversation: Some(conversation.clone()),
-            },
-            effect: AutomationEffect::Tool {
+            conversation: Some(conversation.clone()),
+            effect: UserMessageEffect::Tool(ToolEffect {
                 tool: "setup_tool".to_string(),
                 args: serde_json::json!({
                     "name": tool_name,
                     "message": "{{event.text}}",
                     "message_id": "{{event.message_id}}",
                 }),
-            },
+            }),
         }
     }
 
@@ -192,7 +189,7 @@ impl InstallToolTool {
         });
         self.setup
             .automations
-            .add(Self::automation(name, conversation))?;
+            .add_runtime(Self::automation(name, conversation))?;
         request_choice(
             &self.setup.tools,
             &approval_prompt,
@@ -261,7 +258,7 @@ impl InstallToolTool {
         });
         self.setup
             .automations
-            .add(Self::automation(&name, conversation))?;
+            .add_runtime(Self::automation(&name, conversation))?;
         let session = self.state.get().expect("configure session");
         if account_setup {
             self.setup_tool().prompt_account_menu(session, ctx).await?;

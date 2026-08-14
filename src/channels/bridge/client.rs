@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::{
-    bus::{Bus, ChannelAction, ConversationKey, Event},
+    bus::{Bus, ChannelAction, ConversationKey, Event, MessageIn},
     channels::{append_inbound_message, bridge::history::append_channel_history},
     history::History,
     message::{Attachment, Message, ToolCall},
@@ -129,12 +129,16 @@ async fn send_message(
         &message,
     )
     .map_err(internal_error)?;
-    state.bus.publish(Event::MessageIn {
+    let Message::User { text, attachments } = message else {
+        unreachable!("client inbound messages are user messages");
+    };
+    state.bus.publish(Event::MessageIn(MessageIn {
         sender: crate::bus::Sender::User(incoming.client_id),
         conversation,
         message_id: incoming.message_id,
-        message,
-    });
+        text,
+        attachments,
+    }));
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

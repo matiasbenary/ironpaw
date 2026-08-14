@@ -218,7 +218,7 @@ impl SetupChannelTool {
                 self.state.save(session.clone());
                 self.setup
                     .automations
-                    .add(super::InstallChannelTool::automation(
+                    .add_runtime(super::InstallChannelTool::automation(
                         &session.package.name,
                         SenderKind::Guest,
                         None,

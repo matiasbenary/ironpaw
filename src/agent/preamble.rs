@@ -33,7 +33,13 @@ pub(super) fn system_preamble(conversation: Option<&ConversationKey>) -> Vec<Mes
         When the user requests a future or recurring action, create an automation. Build a \
         deterministic tool only for stateless fixed logic. Create a recurrent agent task when \
         the work needs persistent state, must stop or change its own automation, requires \
-        judgment, or requires research.\n\n\
+        judgment, or requires research.\n `OnUserMessageIn` handles user messages and may \
+        continue the conversation. `OnGuestMessageIn` handles untrusted guest messages with only \
+        its explicitly configured effect. User messages reach you by default; guest messages are \
+        ignored by default. Requests to handle all or future inbound messages require one of these \
+        automations; do not perform the effect while creating it. Omit the automation's conversation \
+        to match every conversation. Reference inbound data in an effect with placeholders such as \
+        `{{event.text}}`.\n\n\
         ## Tips\n\
         Use focused tool calls to verify external facts or process user-provided data. Stop once \
         you have enough evidence to act; do not research broadly when it will not improve the result.",

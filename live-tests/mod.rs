@@ -4,6 +4,7 @@ mod agent_checks_first_partner_stock;
 mod agent_identifies_dog_image;
 mod agent_reads_pdf_content;
 mod agent_replies_to_hi;
+mod agent_stores_guest_messages;
 mod agent_uses_web_search_for_wikipedia;
 mod album_recommendation_automation;
 mod delayed_message_automation;

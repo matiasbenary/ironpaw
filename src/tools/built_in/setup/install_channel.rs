@@ -8,12 +8,12 @@ mod install_channel_package;
 mod install_channel_setup;
 
 use crate::{
-    automations::{Automation, AutomationEffect, Trigger},
-    bus::{ConversationKey, InvocationScope, SenderKind},
+    automations::{Automation, AutomationEffect, ToolEffect, UserMessageEffect},
+    bus::{ConversationKey, SenderKind},
     config::RuntimeLayout,
     secrets::Secrets,
     tools::{
-        self, ExecutionContext, InternalTool, ToolResponder,
+        self, ExecutionContext, InternalTool, InvocationScope, ToolResponder,
         setup::{SessionState, SetupServices, install_common::SetupSecret, send},
     },
 };
@@ -119,29 +119,28 @@ impl InstallChannelTool {
         sender: SenderKind,
         conversation: Option<ConversationKey>,
     ) -> Automation {
-        Automation {
-            name: format!(
-                "channel_auth:{channel_name}:{}",
-                match sender {
-                    SenderKind::User => "user",
-                    SenderKind::Guest => "guest",
-                    SenderKind::System => "system",
-                }
-            ),
-            trigger: Trigger::MessageIn {
-                sender,
+        let effect = ToolEffect {
+            tool: "setup_channel".to_string(),
+            args: serde_json::json!({
+                "name": channel_name,
+                "channel": "{{event.conversation.channel}}",
+                "channel_user_id": "{{event.sender.channel_user_id}}",
+                "message": "{{event.text}}",
+                "message_id": "{{event.message_id}}",
+            }),
+        };
+        match sender {
+            SenderKind::User => Automation::OnUserMessageIn {
+                name: format!("channel_auth:{channel_name}:user"),
                 conversation,
+                effect: UserMessageEffect::Tool(effect),
             },
-            effect: AutomationEffect::Tool {
-                tool: "setup_channel".to_string(),
-                args: serde_json::json!({
-                    "name": channel_name,
-                    "channel": "{{event.channel}}",
-                    "channel_user_id": "{{event.channel_user_id}}",
-                    "message": "{{event.text}}",
-                    "message_id": "{{event.message_id}}",
-                }),
+            SenderKind::Guest => Automation::OnGuestMessageIn {
+                name: format!("channel_auth:{channel_name}:guest"),
+                conversation,
+                effect: AutomationEffect::Tool(effect),
             },
+            SenderKind::System => unreachable!("system messages cannot configure channels"),
         }
     }
 
@@ -190,7 +189,7 @@ impl InstallChannelTool {
             setup_conversation: Some(user_conversation.clone()),
             continuation: Some(responder),
         });
-        automations.add(Self::automation(
+        automations.add_runtime(Self::automation(
             name,
             SenderKind::User,
             Some(user_conversation),

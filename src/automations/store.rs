@@ -16,7 +16,7 @@ impl FileAutomations {
 
     pub fn write(&self, automation: &Automation) -> Result<(), String> {
         fs::write(
-            self.path(&automation.name),
+            self.path(automation.name()),
             format!(
                 "{}\n",
                 serde_json::to_string_pretty(automation).map_err(|err| err.to_string())?
@@ -44,7 +44,7 @@ impl FileAutomations {
                 .map_err(|err| format!("invalid {}: {err}", path.display()))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        automations.sort_by(|left, right| left.name.cmp(&right.name));
+        automations.sort_by(|left, right| left.name().cmp(right.name()));
         Ok(automations)
     }
 

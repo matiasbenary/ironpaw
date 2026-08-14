@@ -3,9 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::{
-    bus::{Bus, ConversationKey, Event, InvocationScope, MessageRef},
+    bus::{Bus, ConversationKey, Event, MessageRef},
     message::{Attachment, Message},
-    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolResponder},
 };
 
 type AttachmentResolver =

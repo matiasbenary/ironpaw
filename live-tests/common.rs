@@ -3,10 +3,10 @@ pub(crate) use std::{path::PathBuf, sync::Arc};
 
 pub(crate) use ironpaw::{
     agent::{Agent, AgentHandler},
-    automations::{Automations, FileAutomations},
-    bus::{AutomationAction, Bus, ConversationKey, Event, Sender},
+    automations::{Automation, AutomationEffect, Automations, FileAutomations, Schedule},
+    bus::{AutomationAction, Bus, ConversationKey, Event, MessageIn, Sender},
     channels::append_inbound_message,
-    history::{History, HistoryEntry, HistoryScope, MessageMetadata, SqliteHistory},
+    history::{History, HistoryEntry, HistoryId, MessageMetadata, SqliteHistory},
     inference::Inference,
     memory::Memory,
     message::{Attachment, Message},
@@ -35,7 +35,7 @@ pub(crate) fn start_ironpaw_with_automations(
     Arc<dyn History>,
     Arc<Automations>,
 ) {
-    let (task, history, automations, _) = start_ironpaw_config(bus, files_dir);
+    let (task, history, automations, _, _) = start_ironpaw_config(bus, files_dir);
     (task, history, automations)
 }
 
@@ -47,6 +47,7 @@ pub(crate) fn start_ironpaw_config(
     Arc<dyn History>,
     Arc<Automations>,
     Arc<Memory>,
+    PathBuf,
 ) {
     reset_raw_inference_log();
     let history = temp_history();
@@ -54,6 +55,7 @@ pub(crate) fn start_ironpaw_config(
         "ironpaw-live-test-runtime-{}",
         uuid::Uuid::new_v4()
     )));
+    let automation_files_dir = layout.files_dir();
     install_test_telegram_channel(&layout);
     let secrets = ironpaw::secrets::Secrets::for_tests();
     if let Ok(near_api_key) = std::env::var("NEAR_API_KEY") {
@@ -68,7 +70,7 @@ pub(crate) fn start_ironpaw_config(
     if let Ok(brave_search_api) = std::env::var("BRAVE_SEARCH_API") {
         secrets.set("BRAVE_SEARCH_API", &brave_search_api).unwrap();
     }
-    let inference = Inference::new(bus.clone(), secrets.tools.clone()).expect("create inference");
+    let inference = Inference::new(secrets.tools.clone()).expect("create inference");
     let tools = InternalTools::new(
         bus.clone(),
         layout.clone(),
@@ -124,15 +126,15 @@ pub(crate) fn start_ironpaw_config(
             ironpaw::tools::ToolVisibility::Internal,
         )
         .expect("onboarding registers");
-    automations
-        .add_transient(OnboardingTool::api_key_recovery_automation())
-        .expect("API-key recovery registers");
-    automations
-        .add(Automations::handle_conversation())
-        .expect("stock automation registers");
     let _tool_handler_task = tool_handler.start();
     let _agent_handler_task = agent_handler.start();
-    (automations.start(), history, automations, memory)
+    (
+        automations.start(),
+        history,
+        automations,
+        memory,
+        automation_files_dir,
+    )
 }
 
 fn install_test_telegram_channel(layout: &ironpaw::config::RuntimeLayout) {
@@ -209,12 +211,34 @@ pub(crate) fn publish_user_message(
 ) {
     append_inbound_message(history, &conversation, None, &message)
         .expect("persist live test user message");
-    bus.publish(Event::MessageIn {
+    let Message::User { text, attachments } = message else {
+        panic!("inbound live test message must be a user message");
+    };
+    bus.publish(Event::MessageIn(MessageIn {
         sender: Sender::User("live-test".to_string()),
         conversation,
         message_id: None,
-        message,
-    });
+        text,
+        attachments,
+    }));
+}
+
+pub(crate) fn publish_guest_message(
+    bus: &Bus,
+    history: &dyn History,
+    conversation: ConversationKey,
+    text: &str,
+) {
+    let message = user_message(text);
+    append_inbound_message(history, &conversation, None, &message)
+        .expect("persist live test guest message");
+    bus.publish(Event::MessageIn(MessageIn {
+        sender: Sender::Guest("live-test-guest".to_string()),
+        conversation,
+        message_id: None,
+        text: text.to_string(),
+        attachments: Vec::new(),
+    }));
 }
 
 fn send_message_tool(bus: &Bus, files_dir: PathBuf) -> SendMessageTool {
@@ -266,10 +290,10 @@ pub(crate) fn seed_cold_history(
         .append(conversation, &entries)
         .expect("seed memory evaluation history");
     history
-        .compact_scope(
-            &HistoryScope::Conversation(conversation.clone()),
+        .save_conversation_summary(
+            &HistoryId::Conversation(conversation.clone()),
             "Older conversation was compacted.",
-            &[],
+            &entries.last().expect("seeded history entry").metadata.id,
         )
         .expect("make seeded history cold");
     assert_cold_history(history, conversation);

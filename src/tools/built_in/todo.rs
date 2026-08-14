@@ -7,10 +7,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    bus::InvocationScope,
-    tools::{self, ExecutionContext, InternalTool, ToolResponder},
-};
+use crate::tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolResponder};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]

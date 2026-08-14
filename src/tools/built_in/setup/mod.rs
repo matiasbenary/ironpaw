@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     automations::Automations,
-    bus::{InvocationScope, MessageRef},
-    tools::{self, ExecutionContext, InternalTools, ToolResponder},
+    bus::MessageRef,
+    tools::{self, ExecutionContext, InternalTools, InvocationScope, ToolResponder},
 };
 
 pub use install_channel::{
@@ -42,7 +42,11 @@ impl<T: Clone> SessionState<T> {
 }
 
 fn stop_setup_automation(automations: &Arc<Automations>, name: &str) -> Result<(), String> {
-    automations.delete(name)
+    if automations.remove_runtime(name) {
+        Ok(())
+    } else {
+        Err(format!("unknown automation: {name}"))
+    }
 }
 
 pub(super) async fn send(

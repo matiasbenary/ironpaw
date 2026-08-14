@@ -1,37 +1,11 @@
 use async_trait::async_trait;
 
 use crate::{
-    automations::AutomationEffect,
-    bus::{AutomationAction, AutomationSpec, AutomationTriggerSpec, Bus, Event},
+    automations::Automation,
+    bus::{AutomationAction, Bus, Event},
     message::ToolDefinition,
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
-
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-pub struct CreateAutomationParams {
-    /// Short kebab-case name for the automation, e.g. 'daily-news'.
-    pub name: String,
-    /// Run once at an absolute local time, RFC 3339 format. Set exactly one of `at` or `cron`.
-    #[serde(default)]
-    pub at: Option<String>,
-    /// Recurring 5-field cron expression, or 6/7 fields with seconds.
-    #[serde(default)]
-    pub cron: Option<String>,
-    /// Tool name to run when the automation fires. Set exactly one of this or `agent_prompt`.
-    #[serde(default)]
-    pub tool: Option<String>,
-    /// Arguments for `tool`, matching that tool's schema.
-    #[serde(default)]
-    pub args: Option<serde_json::Value>,
-    /// Prompt for an agent task that runs on each trigger.
-    #[serde(default)]
-    pub agent_prompt: Option<String>,
-    /// Additional tools available to the agent task.
-    #[serde(default)]
-    pub agent_tools: Vec<String>,
-}
-
-pub type EditAutomationParams = CreateAutomationParams;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct NamedAutomationParams {
@@ -90,45 +64,6 @@ impl AutomationTool {
             }
         }
     }
-
-    fn spec(params: CreateAutomationParams) -> Result<AutomationSpec, String> {
-        let trigger = match (
-            params.at.filter(|value| !value.trim().is_empty()),
-            params.cron.filter(|value| !value.trim().is_empty()),
-        ) {
-            (Some(datetime), None) => AutomationTriggerSpec::At { datetime },
-            (None, Some(expression)) => AutomationTriggerSpec::Cron { expression },
-            _ => return Err("set exactly one of at or cron".to_string()),
-        };
-        let effect = match (
-            params.tool.filter(|value| !value.trim().is_empty()),
-            params.agent_prompt.filter(|value| !value.trim().is_empty()),
-        ) {
-            (Some(tool), None) => AutomationEffect::Tool {
-                tool,
-                args: parse_args(params.args)?,
-            },
-            (None, Some(prompt)) => AutomationEffect::AgentTask {
-                prompt,
-                tools: params.agent_tools,
-            },
-            _ => return Err("set exactly one of tool or agent_prompt".to_string()),
-        };
-        Ok(AutomationSpec {
-            name: params.name,
-            trigger,
-            effect,
-        })
-    }
-}
-
-fn parse_args(args: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
-    match args {
-        None => Ok(serde_json::json!({})),
-        Some(serde_json::Value::String(text)) => serde_json::from_str(&text)
-            .map_err(|err| format!("args must be JSON, got a string: {err}")),
-        Some(value) => Ok(value),
-    }
 }
 
 #[async_trait]
@@ -146,11 +81,11 @@ impl InternalTool for AutomationTool {
 
     fn tool_definition(&self) -> ToolDefinition {
         match self.kind {
-            AutomationToolKind::Create => tools::tool_definition::<CreateAutomationParams>(
+            AutomationToolKind::Create => tools::tool_definition::<Automation>(
                 self.name(),
-                "Create a tool-call or agent-task automation that runs once at an absolute time or repeatedly on a cron schedule.",
+                "Create a scheduled or inbound-message automation.",
             ),
-            AutomationToolKind::Edit => tools::tool_definition::<EditAutomationParams>(
+            AutomationToolKind::Edit => tools::tool_definition::<Automation>(
                 self.name(),
                 "Replace an existing automation with the supplied complete definition. Use inspect_automation first when changing an existing automation.",
             ),
@@ -181,20 +116,14 @@ impl InternalTool for AutomationTool {
     ) {
         let result = match self.kind {
             AutomationToolKind::Create => {
-                tools::execute_typed(args, |params| async {
-                    self.request(AutomationAction::Create {
-                        automation: Self::spec(params)?,
-                    })
-                    .await
+                tools::execute_typed(args, |automation| async {
+                    self.request(AutomationAction::Create { automation }).await
                 })
                 .await
             }
             AutomationToolKind::Edit => {
-                tools::execute_typed(args, |params| async {
-                    self.request(AutomationAction::Edit {
-                        automation: Self::spec(params)?,
-                    })
-                    .await
+                tools::execute_typed(args, |automation| async {
+                    self.request(AutomationAction::Edit { automation }).await
                 })
                 .await
             }
