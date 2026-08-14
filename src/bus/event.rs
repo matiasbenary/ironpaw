@@ -20,13 +20,6 @@ impl Sender {
             Sender::System => SenderKind::System,
         }
     }
-
-    pub fn channel_user_id(&self) -> Option<&str> {
-        match self {
-            Sender::User(channel_user_id) | Sender::Guest(channel_user_id) => Some(channel_user_id),
-            Sender::System => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, schemars::JsonSchema, Serialize, Deserialize)]
