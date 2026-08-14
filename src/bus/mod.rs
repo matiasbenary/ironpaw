@@ -1,9 +1,9 @@
 mod event;
 
 pub use event::{
-    AgentRequest, ApiKeyError, AutomationAction, AutomationEffectSpec, AutomationSpec,
-    AutomationTriggerSpec, ChannelAction, ConversationKey, Event, ExecutionContext,
-    InvocationScope, MessageRef, Sender, SenderKind, UserInputOption, UserInputRequest,
+    AgentRequest, AutomationAction, AutomationEffectSpec, AutomationSpec, AutomationTriggerSpec,
+    ChannelAction, ConversationKey, Event, ExecutionContext, InvocationScope, MessageRef, Sender,
+    SenderKind, UserInputOption, UserInputRequest,
 };
 use tokio::sync::broadcast;
 

@@ -68,9 +68,7 @@ impl InternalTool for InspectFileTool {
             let query = params.query.as_deref().unwrap_or("describe this file");
 
             if attachment.mime_type.starts_with("image/") {
-                let answer = self
-                    .inspect_image(attachment, query, ctx.conversation())
-                    .await?;
+                let answer = self.inspect_image(attachment, query).await?;
                 return Ok(serde_json::Value::String(answer));
             }
 
@@ -83,7 +81,7 @@ impl InternalTool for InspectFileTool {
                 bounded_raw_text(&data)
             };
 
-            let answer = self.inspect_text(&text, query, ctx.conversation()).await?;
+            let answer = self.inspect_text(&text, query).await?;
             Ok(serde_json::Value::String(answer))
         }
         .await;
@@ -92,29 +90,18 @@ impl InternalTool for InspectFileTool {
 }
 
 impl InspectFileTool {
-    async fn inspect_text(
-        &self,
-        content: &str,
-        query: &str,
-        conversation: Option<&crate::bus::ConversationKey>,
-    ) -> Result<String, String> {
+    async fn inspect_text(&self, content: &str, query: &str) -> Result<String, String> {
         let prompt = format!(
             "Query: {query}\n\nFile content:\n{content}\n\nAnswer the query using only the file content."
         );
         self.call_model(
             self.inference.provider().text_model.clone(),
             vec![system_item(), text_item(prompt)],
-            conversation,
         )
         .await
     }
 
-    async fn inspect_image(
-        &self,
-        attachment: Attachment,
-        query: &str,
-        conversation: Option<&crate::bus::ConversationKey>,
-    ) -> Result<String, String> {
+    async fn inspect_image(&self, attachment: Attachment, query: &str) -> Result<String, String> {
         self.call_model(
             self.inference.provider().vision_model.clone(),
             vec![
@@ -124,27 +111,18 @@ impl InspectFileTool {
                     attachments: vec![attachment],
                 },
             ],
-            conversation,
         )
         .await
     }
 
-    async fn call_model(
-        &self,
-        model: String,
-        input: Vec<Message>,
-        conversation: Option<&crate::bus::ConversationKey>,
-    ) -> Result<String, String> {
+    async fn call_model(&self, model: String, input: Vec<Message>) -> Result<String, String> {
         let response = self
             .inference
-            .execute(
-                InferenceRequest {
-                    model,
-                    messages: input,
-                    tools: Vec::new(),
-                },
-                conversation,
-            )
+            .execute(InferenceRequest {
+                model,
+                messages: input,
+                tools: Vec::new(),
+            })
             .await
             .map_err(|error| error.to_string())?;
         let Message::Assistant { text, .. } = response.message else {

@@ -341,7 +341,7 @@ mod tests {
         let tools = Arc::new(InternalTools::new(
             bus.clone(),
             layout.clone(),
-            Inference::new(bus.clone(), secrets.tools.clone()).unwrap(),
+            Inference::new(secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_, _| Err("no attachments".to_string())),
             crate::tools::messages::DeleteMessageTool::new(bus),
             files_dir,

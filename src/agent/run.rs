@@ -93,110 +93,130 @@ impl Agent {
     }
 
     async fn run(&self, mut run: AgentRun<'_>) -> Result<Option<String>, String> {
-        if let Some(query) = self.latest_user_text(&run.history_scope)? {
-            match self.memory.recall(&query).await {
-                Ok(memories) => run.recalled_memories = memories,
-                Err(error) => debug_log(format!("memory recall failed: {error}")),
-            }
-        }
-        let ctx = run.context.clone();
+        self.recall_memories(&mut run).await?;
         let mut round = 0;
         loop {
             round += 1;
-            run.transient_messages
-                .extend(ctx.drain_tool_budget_messages());
-            if let Some(conversation) = run.destination {
-                publish_channel_action(&self.bus, conversation, ChannelAction::Typing);
+            match self.run_round(&mut run, round).await? {
+                RoundOutcome::Continue => {}
+                RoundOutcome::Complete(text) => return Ok(text),
             }
-
-            let active_tools = match &run.tool_selection {
-                ToolSelection::AgentVisible => self.tools.agent_tools(),
-                ToolSelection::Selected(tools) => tools.clone(),
-            };
-            let allowed_tool_names = active_tools
-                .iter()
-                .map(|tool| tool.name().to_string())
-                .collect::<Vec<_>>();
-            let tools = active_tools
-                .iter()
-                .map(|tool| tools::definition_for_model(tool.as_ref()))
-                .collect::<Vec<_>>();
-            let messages = self.model_messages(&run)?;
-            debug_log(format!(
-                "agent: round {round} calling chat_completions(messages={}, tools={})",
-                messages.len(),
-                tools.len()
-            ));
-            let request = InferenceRequest {
-                model: self.inference.provider().text_model.clone(),
-                messages,
-                tools,
-            };
-            logger::raw_inference_request_logged(&request);
-            let inference = match self.inference.execute(request, run.destination).await {
-                Ok(inference) => inference,
-                Err(InferenceError::ApiKey(_)) => return Ok(None),
-                Err(error) => return Err(error.to_string()),
-            };
-            logger::raw_inference_response_logged(&inference);
-            if inference.usage.prompt_tokens >= COMPACT_AT_PROMPT_TOKENS {
-                if let Some(conversation) = run.destination {
-                    publish_channel_action(
-                        &self.bus,
-                        conversation,
-                        ChannelAction::Progress {
-                            text: "compacting history...".to_string(),
-                        },
-                    );
-                }
-                if let Err(error) = self.compact_history(&run.history_scope).await {
-                    debug_log(format!("history compaction failed: {error}"));
-                }
-            }
-
-            let mut output = inference.message;
-            if let Message::Assistant {
-                text: Some(text), ..
-            } = &mut output
-            {
-                *text = strip_message_id_prefix(text).to_string();
-            }
-            let Message::Assistant {
-                text, tool_calls, ..
-            } = output.clone()
-            else {
-                return Err("model did not return an assistant message".to_string());
-            };
-            run.transient_messages.clear();
-            if tool_calls.is_empty() {
-                if text.as_deref().is_some_and(|text| !text.is_empty()) {
-                    if run.destination.is_none() {
-                        let metadata = match &run.history_scope {
-                            HistoryScope::Conversation(conversation) => {
-                                MessageMetadata::new(conversation.clone(), None)
-                            }
-                            HistoryScope::Automation(automation_id) => {
-                                MessageMetadata::for_automation(automation_id.clone())
-                            }
-                        };
-                        self.history.append_scope(
-                            &run.history_scope,
-                            &[HistoryEntry {
-                                message: output.clone(),
-                                metadata,
-                            }],
-                        )?;
-                    }
-                    self.ingest_memory(
-                        &run.history_scope,
-                        run.destination.is_some().then_some(output),
-                    );
-                }
-                return Ok(text.filter(|text| !text.is_empty()));
-            }
-            self.handle_tool_calls(&mut run, output, tool_calls, allowed_tool_names)
-                .await?;
         }
+    }
+
+    async fn recall_memories(&self, run: &mut AgentRun<'_>) -> Result<(), String> {
+        let Some(query) = self.latest_user_text(&run.history_scope)? else {
+            return Ok(());
+        };
+        match self.memory.recall(&query).await {
+            Ok(memories) => run.recalled_memories = memories,
+            Err(error) => debug_log(format!("memory recall failed: {error}")),
+        }
+        Ok(())
+    }
+
+    async fn run_round(
+        &self,
+        run: &mut AgentRun<'_>,
+        round: usize,
+    ) -> Result<RoundOutcome, String> {
+        run.transient_messages
+            .extend(run.context.drain_tool_budget_messages());
+        run.publish_action(&self.bus, ChannelAction::Typing);
+
+        let active_tools = match &run.tool_selection {
+            ToolSelection::AgentVisible => self.tools.agent_tools(),
+            ToolSelection::Selected(tools) => tools.clone(),
+        };
+        let allowed_tool_names = active_tools
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        let tools = active_tools
+            .iter()
+            .map(|tool| tools::definition_for_model(tool.as_ref()))
+            .collect::<Vec<_>>();
+        let messages = self.model_messages(run)?;
+        debug_log(format!(
+            "agent: round {round} calling chat_completions(messages={}, tools={})",
+            messages.len(),
+            tools.len()
+        ));
+        let request = InferenceRequest {
+            model: self.inference.provider().text_model.clone(),
+            messages,
+            tools,
+        };
+        logger::raw_inference_request_logged(&request);
+        let inference = match self.inference.execute(request).await {
+            Ok(inference) => inference,
+            Err(InferenceError::ApiKey(_)) => {
+                return Err(
+                    "AI provider authentication failed. Run /change_api_key to replace the key."
+                        .to_string(),
+                );
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        logger::raw_inference_response_logged(&inference);
+        self.compact_if_needed(run, inference.usage.prompt_tokens)
+            .await;
+
+        let output = AssistantOutput::try_from(inference.message)?;
+        run.transient_messages.clear();
+        if output.tool_calls.is_empty() {
+            return self.complete_run(run, output).map(RoundOutcome::Complete);
+        }
+        self.handle_tool_calls(run, output.message, output.tool_calls, allowed_tool_names)
+            .await?;
+        Ok(RoundOutcome::Continue)
+    }
+
+    async fn compact_if_needed(&self, run: &AgentRun<'_>, prompt_tokens: u64) {
+        if prompt_tokens < COMPACT_AT_PROMPT_TOKENS {
+            return;
+        }
+        run.publish_action(
+            &self.bus,
+            ChannelAction::Progress {
+                text: "compacting history...".to_string(),
+            },
+        );
+        if let Err(error) = self.compact_history(&run.history_scope).await {
+            debug_log(format!("history compaction failed: {error}"));
+        }
+    }
+
+    fn complete_run(
+        &self,
+        run: &AgentRun<'_>,
+        output: AssistantOutput,
+    ) -> Result<Option<String>, String> {
+        let Some(text) = output.text.filter(|text| !text.is_empty()) else {
+            return Ok(None);
+        };
+        if run.destination.is_none() {
+            let metadata = match &run.history_scope {
+                HistoryScope::Conversation(conversation) => {
+                    MessageMetadata::new(conversation.clone(), None)
+                }
+                HistoryScope::Automation(automation_id) => {
+                    MessageMetadata::for_automation(automation_id.clone())
+                }
+            };
+            self.history.append_scope(
+                &run.history_scope,
+                &[HistoryEntry {
+                    message: output.message.clone(),
+                    metadata,
+                }],
+            )?;
+        }
+        self.ingest_memory(
+            &run.history_scope,
+            run.destination.is_some().then_some(output.message),
+        );
+        Ok(Some(text))
     }
 
     async fn handle_tool_calls(
@@ -208,15 +228,12 @@ impl Agent {
     ) -> Result<(), String> {
         for tool_call in &tool_calls {
             logger::raw_tool_call_logged(tool_call);
-            if let Some(conversation) = run.destination {
-                publish_channel_action(
-                    &self.bus,
-                    conversation,
-                    ChannelAction::Progress {
-                        text: format!("calling {}", tool_call.name),
-                    },
-                );
-            }
+            run.publish_action(
+                &self.bus,
+                ChannelAction::Progress {
+                    text: format!("calling {}", tool_call.name),
+                },
+            );
         }
 
         let mut events = self.bus.subscribe();
@@ -344,8 +361,7 @@ impl Agent {
         let transcript = serde_json::to_string(&messages).map_err(|err| err.to_string())?;
         let response = self
             .inference
-            .execute(
-                InferenceRequest {
+            .execute(InferenceRequest {
                     model: self.inference.provider().text_model.clone(),
                     messages: vec![
                         Message::System(
@@ -358,9 +374,7 @@ impl Agent {
                         },
                     ],
                     tools: Vec::new(),
-                },
-                None,
-            )
+                })
             .await
             .map_err(|error| error.to_string())?;
         let Message::Assistant { text, .. } = response.message else {
@@ -385,9 +399,49 @@ struct AgentRun<'a> {
     recalled_memories: Vec<String>,
 }
 
+impl AgentRun<'_> {
+    fn publish_action(&self, bus: &Bus, action: ChannelAction) {
+        if let Some(conversation) = self.destination {
+            publish_channel_action(bus, conversation, action);
+        }
+    }
+}
+
 enum ToolSelection {
     AgentVisible,
     Selected(Vec<Arc<dyn InternalTool>>),
+}
+
+enum RoundOutcome {
+    Continue,
+    Complete(Option<String>),
+}
+
+struct AssistantOutput {
+    message: Message,
+    text: Option<String>,
+    tool_calls: Vec<ToolCall>,
+}
+
+impl TryFrom<Message> for AssistantOutput {
+    type Error = String;
+
+    fn try_from(mut message: Message) -> Result<Self, Self::Error> {
+        let Message::Assistant {
+            text, tool_calls, ..
+        } = &mut message
+        else {
+            return Err("model did not return an assistant message".to_string());
+        };
+        if let Some(text) = text {
+            *text = strip_message_id_prefix(text).to_string();
+        }
+        Ok(Self {
+            text: text.clone(),
+            tool_calls: tool_calls.clone(),
+            message,
+        })
+    }
 }
 
 fn retained_entries(history: &[HistoryEntry]) -> Vec<HistoryEntry> {

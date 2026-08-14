@@ -206,12 +206,6 @@ pub(crate) enum ClientEvent {
         question: String,
         options: Vec<crate::bus::UserInputOption>,
     },
-    #[serde(rename = "error")]
-    Error {
-        client_id: String,
-        conversation_id: String,
-        message: String,
-    },
 }
 
 impl ClientEvent {
@@ -220,8 +214,7 @@ impl ClientEvent {
             Self::Message { client_id, .. }
             | Self::Delete { client_id, .. }
             | Self::Activity { client_id, .. }
-            | Self::Choice { client_id, .. }
-            | Self::Error { client_id, .. } => client_id,
+            | Self::Choice { client_id, .. } => client_id,
         }
     }
 }
@@ -329,16 +322,6 @@ pub(super) async fn forward_events(
                     id: uuid::Uuid::new_v4().to_string(),
                     question: request.question,
                     options: request.options,
-                }
-            }
-            Event::ApiKeyError {
-                conversation,
-                error,
-            } if conversation.channel == CHANNEL && conversation.thread_id.is_some() => {
-                ClientEvent::Error {
-                    client_id: conversation.thread_id.unwrap(),
-                    conversation_id: conversation.chat_id,
-                    message: error.message,
                 }
             }
             _ => continue,

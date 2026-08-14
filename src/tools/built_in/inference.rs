@@ -31,7 +31,7 @@ impl InternalTool for RawInferenceTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &tools::ExecutionContext,
+        _ctx: &tools::ExecutionContext,
         responder: ToolResponder,
     ) {
         let result = async {
@@ -39,7 +39,7 @@ impl InternalTool for RawInferenceTool {
                 serde_json::from_value(args).map_err(|error| ToolError::new(error.to_string()))?;
             let output = self
                 .inference
-                .execute(request, ctx.conversation())
+                .execute(request)
                 .await
                 .map_err(|error| ToolError::new(error.to_string()))?;
             serde_json::to_value(output).map_err(|error| ToolError::new(error.to_string()))

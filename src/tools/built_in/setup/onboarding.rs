@@ -4,12 +4,11 @@ use async_trait::async_trait;
 
 use crate::{
     automations::{Automation, AutomationEffect, Automations, Trigger},
-    bus::{AgentRequest, Event, InvocationScope, SenderKind},
-    history::{HistoryEntry, MessageMetadata},
-    message::{Message, ToolDefinition},
+    bus::{InvocationScope, SenderKind},
+    message::ToolDefinition,
     tools::{
         self, ExecutionContext, InternalTool, ToolResponder,
-        setup::{SetupServices, delete_current_message, pause_conversation, request_choice, send},
+        setup::{SetupServices, delete_current_message, pause_conversation, send},
     },
 };
 
@@ -21,20 +20,25 @@ pub struct OnboardingParams {
     /// Provider message id for the latest user message, when available.
     #[serde(default)]
     pub message_id: Option<String>,
-    /// Start API-key recovery after an inference request was rejected.
+    /// Start an owner-requested API-key change.
     #[serde(default)]
-    pub recover: bool,
+    pub change_api_key: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stage {
     Hello,
-    RenewalChoice,
-    NearKey { resume_conversation: bool },
+    NearKey { flow: KeyFlow },
 }
 
-const API_KEY_ERROR_AUTOMATION: &str = "recover-api-key";
-const API_KEY_RENEWAL_AUTOMATION: &str = "renew-api-key";
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyFlow {
+    FirstRun,
+    Change,
+}
+
+const API_KEY_CHANGE_REQUEST_AUTOMATION: &str = "request-api-key-change";
+const API_KEY_CHANGE_SESSION_AUTOMATION: &str = "change-api-key";
 
 pub struct OnboardingTool {
     stage: Mutex<Stage>,
@@ -66,13 +70,13 @@ impl OnboardingTool {
         }
     }
 
-    pub fn api_key_recovery_automation() -> Automation {
+    pub fn api_key_change_automation() -> Automation {
         Automation {
-            name: API_KEY_ERROR_AUTOMATION.to_string(),
-            trigger: Trigger::ApiKeyError,
+            name: API_KEY_CHANGE_REQUEST_AUTOMATION.to_string(),
+            trigger: Trigger::ApiKeyChangeRequested,
             effect: AutomationEffect::Tool {
                 tool: "onboarding".to_string(),
-                args: serde_json::json!({ "recover": true }),
+                args: serde_json::json!({ "change_api_key": true }),
             },
         }
     }
@@ -82,14 +86,14 @@ impl OnboardingTool {
         params: OnboardingParams,
         ctx: &ExecutionContext,
     ) -> Result<serde_json::Value, String> {
-        if params.recover {
-            return self.start_api_key_recovery(ctx).await;
+        if params.change_api_key {
+            return self.start_api_key_change(ctx).await;
         }
         let stage = *self.stage.lock().expect("onboarding stage lock");
         match stage {
             Stage::Hello => {
                 self.set_stage(Stage::NearKey {
-                    resume_conversation: false,
+                    flow: KeyFlow::FirstRun,
                 });
                 send(
                     &self.setup.tools,
@@ -98,37 +102,9 @@ impl OnboardingTool {
                 )
                 .await?;
             }
-            Stage::RenewalChoice => {
-                if is_yes(&params.message) {
-                    self.set_stage(Stage::NearKey {
-                        resume_conversation: true,
-                    });
-                    send(
-                        &self.setup.tools,
-                        "Paste a new NEAR API key. Once it works, I will retry your request.",
-                        ctx,
-                    )
-                    .await?;
-                } else {
-                    self.setup
-                        .automations
-                        .remove_transient(API_KEY_RENEWAL_AUTOMATION);
-                    self.setup
-                        .automations
-                        .add(Automations::handle_conversation())?;
-                    self.set_stage(Stage::Hello);
-                    send(
-                        &self.setup.tools,
-                        "Keeping the current NEAR API key. The failed request was not retried.",
-                        ctx,
-                    )
-                    .await?;
-                }
-            }
-            Stage::NearKey {
-                resume_conversation,
-            } => {
+            Stage::NearKey { flow } => {
                 let key = clean_key(&params.message)?;
+                let previous_key = self.setup.secrets.get("NEAR_API_KEY");
                 send(
                     &self.setup.tools,
                     "Thanks, let me redact that for you.",
@@ -150,7 +126,12 @@ impl OnboardingTool {
                 )
                 .await?;
                 if let Err(err) = self.test_near(ctx).await {
-                    self.setup.secrets.remove("NEAR_API_KEY")?;
+                    match previous_key {
+                        Some(previous_key) => {
+                            self.setup.secrets.set("NEAR_API_KEY", &previous_key)?
+                        }
+                        None => self.setup.secrets.remove("NEAR_API_KEY")?,
+                    }
                     send(
                         &self.setup.tools,
                         &format!(
@@ -161,7 +142,7 @@ impl OnboardingTool {
                     .await?;
                     return Ok(serde_json::json!({ "verified": false, "error": err }));
                 }
-                self.finish(ctx, resume_conversation).await?;
+                self.finish(ctx, flow).await?;
             }
         }
         Ok(serde_json::json!({ "ok": true }))
@@ -183,7 +164,7 @@ impl OnboardingTool {
         result.map(|_| ()).map_err(|error| error.message)
     }
 
-    async fn start_api_key_recovery(
+    async fn start_api_key_change(
         &self,
         ctx: &ExecutionContext,
     ) -> Result<serde_json::Value, String> {
@@ -194,11 +175,11 @@ impl OnboardingTool {
             return Ok(serde_json::json!({ "waiting_for_key": true }));
         }
         let InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
-            return Err("API-key recovery requires a conversation".to_string());
+            return Err("API-key change requires a conversation".to_string());
         };
         pause_conversation(&self.setup.automations)?;
         self.setup.automations.add_transient(Automation {
-            name: API_KEY_RENEWAL_AUTOMATION.to_string(),
+            name: API_KEY_CHANGE_SESSION_AUTOMATION.to_string(),
             trigger: Trigger::MessageIn {
                 sender: SenderKind::User,
                 conversation: Some(conversation.clone()),
@@ -211,67 +192,29 @@ impl OnboardingTool {
                 }),
             },
         })?;
-        self.set_stage(Stage::RenewalChoice);
-        request_choice(
-            &self.setup.tools,
-            "My NEAR API key failed. Do you want to replace it? A validated replacement will retry your request.",
-            &[("Replace key", "yes"), ("Keep key", "no")],
-            ctx,
-        )
-        .await?;
+        self.set_stage(Stage::NearKey {
+            flow: KeyFlow::Change,
+        });
+        send(&self.setup.tools, "Paste a new NEAR API key.", ctx).await?;
         Ok(serde_json::json!({ "waiting_for_key": true }))
     }
 
-    async fn finish(
-        &self,
-        ctx: &ExecutionContext,
-        resume_conversation: bool,
-    ) -> Result<(), String> {
-        self.setup
-            .automations
-            .remove_transient(if resume_conversation {
-                API_KEY_RENEWAL_AUTOMATION
-            } else {
-                "onboarding"
-            });
+    async fn finish(&self, ctx: &ExecutionContext, flow: KeyFlow) -> Result<(), String> {
+        self.setup.automations.remove_transient(match flow {
+            KeyFlow::FirstRun => "onboarding",
+            KeyFlow::Change => API_KEY_CHANGE_SESSION_AUTOMATION,
+        });
         self.setup
             .automations
             .add(Automations::handle_conversation())?;
-        let message = if resume_conversation {
-            "API key refreshed. Resuming your request."
-        } else {
-            "Ironpaw is set up. From now on, I will answer your messages normally."
+        let message = match flow {
+            KeyFlow::FirstRun => {
+                "Ironpaw is set up. From now on, I will answer your messages normally."
+            }
+            KeyFlow::Change => "API key changed.",
         };
         send(&self.setup.tools, message, ctx).await?;
-        if resume_conversation {
-            self.resume_conversation(ctx, message)?;
-        }
         self.set_stage(Stage::Hello);
-        Ok(())
-    }
-
-    fn resume_conversation(&self, ctx: &ExecutionContext, status: &str) -> Result<(), String> {
-        let InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
-            return Err("API-key recovery requires a conversation".to_string());
-        };
-        self.setup.tools.history.append(
-            conversation,
-            &[HistoryEntry {
-                message: Message::Assistant {
-                    text: Some(status.to_string()),
-                    attachments: Vec::new(),
-                    tool_calls: Vec::new(),
-                },
-                metadata: MessageMetadata::new(conversation.clone(), None),
-            }],
-        )?;
-        self.setup.bus.publish(Event::AgentRequest {
-            execution_id: uuid::Uuid::new_v4().to_string(),
-            request: AgentRequest::ContinueConversation {
-                conversation: conversation.clone(),
-                context: ctx.clone(),
-            },
-        });
         Ok(())
     }
 
@@ -288,10 +231,6 @@ fn clean_key(message: &str) -> Result<String, String> {
     Ok(key.to_string())
 }
 
-fn is_yes(message: &str) -> bool {
-    matches!(message.trim().to_ascii_lowercase().as_str(), "yes" | "y")
-}
-
 #[async_trait]
 impl InternalTool for OnboardingTool {
     fn name(&self) -> &str {
@@ -301,9 +240,8 @@ impl InternalTool for OnboardingTool {
     fn tool_definition(&self) -> ToolDefinition {
         tools::tool_definition::<OnboardingParams>(
             self.name(),
-            "First-run Ironpaw setup. Greets the user, collects NEAR_API_KEY, \
-             stores it encrypted, tests raw_inference, then enables the normal \
-             handle-conversation automation.",
+            "First-run setup and owner-requested API-key changes. Collects NEAR_API_KEY, stores \
+             it encrypted, tests raw_inference, then enables normal conversation handling.",
         )
     }
 

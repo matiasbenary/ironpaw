@@ -646,7 +646,7 @@ mod tests {
         InternalTools::new(
             bus.clone(),
             layout,
-            crate::inference::Inference::new(bus.clone(), secrets.tools.clone()).unwrap(),
+            crate::inference::Inference::new(secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_, _| Err("no attachments".to_string())),
             DeleteMessageTool::new(bus),
             files_dir,

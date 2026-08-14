@@ -50,20 +50,17 @@ impl MemoryInference {
         });
         let response = self
             .inference
-            .execute(
-                InferenceRequest {
-                    model: self.inference.provider().text_model.clone(),
-                    messages: vec![
-                        Message::System(EXTRACTION_PROMPT.to_string()),
-                        Message::User {
-                            text: input.to_string(),
-                            attachments: Vec::new(),
-                        },
-                    ],
-                    tools: Vec::new(),
-                },
-                None,
-            )
+            .execute(InferenceRequest {
+                model: self.inference.provider().text_model.clone(),
+                messages: vec![
+                    Message::System(EXTRACTION_PROMPT.to_string()),
+                    Message::User {
+                        text: input.to_string(),
+                        attachments: Vec::new(),
+                    },
+                ],
+                tools: Vec::new(),
+            })
             .await
             .map_err(|error| error.to_string())?;
         let Message::Assistant {

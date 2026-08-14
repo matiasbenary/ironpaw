@@ -182,7 +182,7 @@ impl Automations {
                 conversation,
             },
             AutomationTriggerSpec::ToolResult => Trigger::ToolResult,
-            AutomationTriggerSpec::ApiKeyError => Trigger::ApiKeyError,
+            AutomationTriggerSpec::ApiKeyChangeRequested => Trigger::ApiKeyChangeRequested,
         };
         let automation = Automation {
             name: spec.name,
@@ -225,7 +225,7 @@ impl Automations {
         match &automation.trigger {
             Trigger::At { datetime } => self.spawn_at(automation.clone(), *datetime),
             Trigger::Cron { expression } => self.spawn_cron(automation.clone(), expression.clone()),
-            Trigger::MessageIn { .. } | Trigger::ToolResult | Trigger::ApiKeyError => {}
+            Trigger::MessageIn { .. } | Trigger::ToolResult | Trigger::ApiKeyChangeRequested => {}
         }
         Ok(())
     }
@@ -550,7 +550,7 @@ mod tests {
         Arc::new(InternalTools::new(
             bus.clone(),
             layout,
-            Inference::new(bus.clone(), secrets.tools.clone()).unwrap(),
+            Inference::new(secrets.tools.clone()).unwrap(),
             SendMessageTool::new(bus.clone(), |_, _| Err("no attachments".to_string())),
             crate::tools::messages::DeleteMessageTool::new(bus.clone()),
             files_dir,

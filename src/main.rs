@@ -61,9 +61,8 @@ async fn main() -> io::Result<()> {
         .map_err(std::io::Error::other)?,
     );
     let provider = Arc::new(ironpaw::config::ProviderConfig::from_env());
-    let inference =
-        Inference::with_config(bus.clone(), secrets.tools.clone(), Arc::clone(&provider))
-            .map_err(std::io::Error::other)?;
+    let inference = Inference::with_config(secrets.tools.clone(), Arc::clone(&provider))
+        .map_err(std::io::Error::other)?;
     let tools = Arc::new(InternalTools::new(
         bus.clone(),
         layout.clone(),
@@ -180,7 +179,7 @@ async fn main() -> io::Result<()> {
         )
         .map_err(std::io::Error::other)?;
     automations
-        .add_transient(OnboardingTool::api_key_recovery_automation())
+        .add_transient(OnboardingTool::api_key_change_automation())
         .map_err(std::io::Error::other)?;
     let install_channel = Arc::new(InstallChannelTool::new(Arc::clone(&setup_services)));
     tools

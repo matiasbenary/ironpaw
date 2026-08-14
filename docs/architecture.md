@@ -52,6 +52,8 @@ On a fresh install, Ironpaw starts the bus, loads the TUI channel, runs the boot
 
 Once unlocked, Ironpaw installs a transient onboarding automation if required setup secrets such as `NEAR_API_KEY` are missing. It exists only for that process lifetime; a later startup recreates it whenever setup is still required.
 
+An owner can run `/change_api_key` from any installed channel. The bridge converts that command into `ApiKeyChangeRequested` without adding it to conversation history. A transient automation pauses normal conversation handling, collects and validates the replacement, restores the previous key if validation fails, then returns control to `handle-conversation`.
+
 After onboarding, it sets `handle-conversation` as the default automation, which routes inbound messages to the agent and sends answers back to the user through the same channel. Web search is an external WASM tool installed by default into the runtime tools directory; its Brave key remains optional until configured.
 
 ---
@@ -593,12 +595,6 @@ The agent therefore does not rely on `previous_response_id` or `function_call_ou
 
 ---
 
-## Brainstorming: Recovering on AI Inference Error
+## Changing the AI API Key
 
-AI Inference can have a specific problem: the api-key runs out of money, or expires, and now the agent becomes obsolete. When that happens, we cannot rely on the LLM fixing itself, because we literally cannot call it. This means that, we need a way for `ironpaw` as a whole to recover from this situation (i.e. to start an automation that asks the user to provide a new api-key, and then continue the conversation).
-
-One option would be, we could make the AI agent raise a specific error, lets call it `InferenceError`, and then the agent would publish that error to the bus, and then we could have an automation that listens for that error, and then asks the user to provide a new api-key, and then continue the conversation.
-
-It is important to remember though that not only the agent relies on the AI inference, but also the `history` (for compaction), the `memory` (for embeddings), `tools`, and `automations` (those that use `AgentTasks`). I think `history`, `memory` and `tools` would only fail because of inference within an agent loop, so those cases should be covered (i.e. the agent can detect them and trigger the `InferenceError`).
-
-Other option would be to separate the agent's logic in such a way that it does `ai inference` through a request in the `bus` (i.e. we introduce `InferenceRequest` and `InferenceAnswer` and model Agents around it... and possibly other modules). Then, it is the Inference module itself (called ModelInference I think) the one that could centralize the error and raise it. But again, we need to handle the case of `automations` because for those we cannot raise an error, because they are not in a conversation, thus we cannot ask the user for a new api-key.
+Inference returns authentication failures normally and has no bus or conversation dependency. Key changes are initiated explicitly by the owner with `/change_api_key`, which publishes `ApiKeyChangeRequested`. The onboarding automation handles the replacement without relying on the agent, and failed inference requests are not retried automatically.

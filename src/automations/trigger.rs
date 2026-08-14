@@ -20,8 +20,8 @@ pub enum Trigger {
     },
     /// Fires when a conversation-owned tool request has finished.
     ToolResult,
-    /// Fires when the conversation agent cannot authenticate with its API key.
-    ApiKeyError,
+    /// Fires when the owner requests the API-key change flow.
+    ApiKeyChangeRequested,
 }
 
 mod datetime_serde {
@@ -94,7 +94,7 @@ impl Trigger {
             (Trigger::ToolResult, Event::ToolResult { context, .. }) => {
                 matches!(context.invoked_by, InvocationScope::Conversation(_))
             }
-            (Trigger::ApiKeyError, Event::ApiKeyError { .. }) => true,
+            (Trigger::ApiKeyChangeRequested, Event::ApiKeyChangeRequested { .. }) => true,
             _ => false,
         }
     }
@@ -177,6 +177,21 @@ mod tests {
             Sender::Guest("123".to_string()),
         )));
         assert!(!trigger.matches(&message_in("tui", Sender::User("local".to_string()))));
+    }
+
+    #[test]
+    fn api_key_change_trigger_matches_only_change_requests() {
+        let trigger = Trigger::ApiKeyChangeRequested;
+        let event = Event::ApiKeyChangeRequested {
+            conversation: ConversationKey {
+                channel: "telegram".to_string(),
+                chat_id: "c1".to_string(),
+                thread_id: None,
+            },
+        };
+
+        assert!(trigger.matches(&event));
+        assert!(!trigger.matches(&message_in("telegram", Sender::User("123".to_string()))));
     }
 
     #[test]

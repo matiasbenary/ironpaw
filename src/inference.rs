@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::{
-    bus::{ApiKeyError, Bus, ConversationKey, Event},
     config::ProviderConfig,
     http::{HttpError, NetworkGate, NetworkGrant},
     message::{Attachment, Message, ToolCall, ToolDefinition},
@@ -79,21 +78,19 @@ impl std::fmt::Display for InferenceError {
     }
 }
 
-/// Executes model requests and reports conversation-scoped credential errors.
+/// Executes model requests.
 #[derive(Clone)]
 pub struct Inference {
-    bus: Bus,
     http: NetworkGate<ToolSecrets>,
     provider: Arc<ProviderConfig>,
 }
 
 impl Inference {
-    pub fn new(bus: Bus, secrets: ToolSecrets) -> Result<Self, HttpError> {
-        Self::with_config(bus, secrets, Arc::new(ProviderConfig::from_env()))
+    pub fn new(secrets: ToolSecrets) -> Result<Self, HttpError> {
+        Self::with_config(secrets, Arc::new(ProviderConfig::from_env()))
     }
 
     pub fn with_config(
-        bus: Bus,
         secrets: ToolSecrets,
         provider: Arc<ProviderConfig>,
     ) -> Result<Self, HttpError> {
@@ -103,7 +100,6 @@ impl Inference {
             .ok_or_else(|| HttpError::InvalidRequest("provider URL has no host".to_string()))?
             .to_string();
         Ok(Self {
-            bus,
             http: NetworkGate::new(secrets, vec![NetworkGrant::bearer(host, "NEAR_API_KEY")])
                 .with_timeout(provider.chat_timeout),
             provider,
@@ -133,21 +129,8 @@ impl Inference {
     pub async fn execute(
         &self,
         request: InferenceRequest,
-        conversation: Option<&ConversationKey>,
     ) -> Result<InferenceOutput, InferenceError> {
-        let result = self.near_inference(request).await;
-        if let Err(error) = &result
-            && let Some(conversation) = conversation
-            && matches!(error, InferenceError::ApiKey(_))
-        {
-            self.bus.publish(Event::ApiKeyError {
-                conversation: conversation.clone(),
-                error: ApiKeyError {
-                    message: error.to_string(),
-                },
-            });
-        }
-        result
+        self.near_inference(request).await
     }
 
     async fn near_inference(
@@ -315,37 +298,19 @@ mod tests {
     use crate::secrets::Secrets;
 
     #[tokio::test]
-    async fn missing_key_is_reported_to_the_conversation() {
-        let bus = Bus::new(1);
-        let mut events = bus.subscribe();
-        let service = Inference::new(bus, Secrets::for_tests().tools.clone()).expect("inference");
-        let conversation = ConversationKey {
-            channel: "local-client".to_string(),
-            chat_id: "test".to_string(),
-            thread_id: None,
-        };
+    async fn missing_key_is_reported_as_an_error() {
+        let service = Inference::new(Secrets::for_tests().tools.clone()).expect("inference");
         let error = service
-            .execute(
-                InferenceRequest {
-                    model: "test".to_string(),
-                    messages: vec![Message::User {
-                        text: "hello".to_string(),
-                        attachments: Vec::new(),
-                    }],
-                    tools: Vec::new(),
-                },
-                Some(&conversation),
-            )
+            .execute(InferenceRequest {
+                model: "test".to_string(),
+                messages: vec![Message::User {
+                    text: "hello".to_string(),
+                    attachments: Vec::new(),
+                }],
+                tools: Vec::new(),
+            })
             .await
             .expect_err("missing key must fail");
         assert!(error.to_string().contains("NEAR_API_KEY"));
-        let Event::ApiKeyError {
-            conversation: reported,
-            ..
-        } = events.recv().await.expect("API-key event")
-        else {
-            panic!("expected API-key event");
-        };
-        assert_eq!(reported, conversation);
     }
 }

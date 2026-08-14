@@ -44,7 +44,10 @@ impl<T: Clone> SessionState<T> {
 }
 
 fn pause_conversation(automations: &Arc<Automations>) -> Result<(), String> {
-    automations.delete(HANDLE_CONVERSATION_AUTOMATION)
+    if automations.contains(HANDLE_CONVERSATION_AUTOMATION) {
+        automations.delete(HANDLE_CONVERSATION_AUTOMATION)?;
+    }
+    Ok(())
 }
 
 fn stop_setup_automation(automations: &Arc<Automations>, name: &str) -> Result<(), String> {

@@ -70,6 +70,13 @@ pub(super) async fn message_channel_to_ironpaw(
         }
 
         let message = content_to_message(inbound.content, &state.files_dir, &sender);
+        if api_key_change_requested(&sender, &message) {
+            state.bus.publish(Event::ApiKeyChangeRequested {
+                conversation: inbound.conversation,
+            });
+            accepted += 1;
+            continue;
+        }
         append_inbound_message(
             state.history.as_ref(),
             &inbound.conversation,
@@ -91,6 +98,21 @@ pub(super) async fn message_channel_to_ironpaw(
         "ok": true,
         "accepted": accepted
     })))
+}
+
+fn api_key_change_requested(sender: &Sender, message: &Message) -> bool {
+    if sender.kind() != SenderKind::User {
+        return false;
+    }
+    let Message::User { text, attachments } = message else {
+        return false;
+    };
+    attachments.is_empty()
+        && matches!(
+            text.trim().split_whitespace().next(),
+            Some("/change_api_key")
+        )
+        && text.trim().split_whitespace().count() == 1
 }
 
 async fn remember_default_conversation(
@@ -283,6 +305,36 @@ mod tests {
             }
         );
         assert!(!files_dir.exists());
+    }
+
+    #[test]
+    fn only_owner_can_request_api_key_change() {
+        let command = Message::User {
+            text: "/change_api_key".to_string(),
+            attachments: Vec::new(),
+        };
+
+        assert!(api_key_change_requested(
+            &Sender::User("owner".to_string()),
+            &command
+        ));
+        assert!(!api_key_change_requested(
+            &Sender::Guest("guest".to_string()),
+            &command
+        ));
+    }
+
+    #[test]
+    fn api_key_change_command_does_not_accept_a_key_argument() {
+        let command = Message::User {
+            text: "/change_api_key secret".to_string(),
+            attachments: Vec::new(),
+        };
+
+        assert!(!api_key_change_requested(
+            &Sender::User("owner".to_string()),
+            &command
+        ));
     }
 
     fn unique_test_files_dir() -> PathBuf {

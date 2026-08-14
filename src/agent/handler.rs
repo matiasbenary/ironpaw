@@ -43,9 +43,7 @@ impl AgentHandler {
                     conversation,
                     context,
                 } => {
-                    let result = agent
-                        .handle_conversation(&conversation, context)
-                        .await;
+                    let result = agent.handle_conversation(&conversation, context).await;
                     let text = match &result {
                         Ok(Some(text)) => Some(text.clone()),
                         Ok(None) => None,
