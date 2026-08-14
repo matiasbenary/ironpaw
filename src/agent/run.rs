@@ -9,7 +9,7 @@ use crate::{
     tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolRegistry},
 };
 
-use super::{logger, preamble::system_preamble, utils::publish_channel_action};
+use super::{logger, preamble::system_preamble};
 
 const DEFAULT_TASK_TOOLS: [&str; 4] = ["list_files", "read_file", "create_file", "update_file"];
 const COMPACT_AT_PROMPT_TOKENS: u64 = 256_000;
@@ -80,10 +80,13 @@ impl Agent {
         }
         let run = AgentRun::new(history_id.clone(), context, tools, messages);
         let output = self.run(run).await?;
-        let Some(text) = output.text.filter(|text| !text.is_empty()) else {
+        let Message::Assistant { text, .. } = &output else {
+            unreachable!("run only returns assistant messages");
+        };
+        let Some(text) = text.clone().filter(|text| !text.is_empty()) else {
             return Ok(None);
         };
-        self.ingest_memory(&history_id, output.message);
+        self.ingest_memory(&history_id, output);
         Ok(Some(text))
     }
 
@@ -119,20 +122,23 @@ impl Agent {
             system_preamble(None),
         );
         let output = self.run(run).await?;
-        let Some(text) = output.text.filter(|text| !text.is_empty()) else {
+        let Message::Assistant { text, .. } = &output else {
+            unreachable!("run only returns assistant messages");
+        };
+        let Some(text) = text.clone().filter(|text| !text.is_empty()) else {
             return Ok(None);
         };
         self.history.append_history(
             &history_id,
             &[HistoryEntry {
-                message: output.message,
+                message: output,
                 metadata: MessageMetadata::for_automation(automation_id.clone()),
             }],
         )?;
         Ok(Some(text))
     }
 
-    async fn run(&self, mut run: AgentRun) -> Result<AssistantOutput, String> {
+    async fn run(&self, mut run: AgentRun) -> Result<Message, String> {
         let mut round = 0;
         loop {
             round += 1;
@@ -166,13 +172,22 @@ impl Agent {
             self.compact_if_needed(&run, inference.usage.prompt_tokens)
                 .await;
 
-            let output = AssistantOutput::try_from(inference.message)?;
+            let mut output = inference.message;
+            let Message::Assistant {
+                text, tool_calls, ..
+            } = &mut output
+            else {
+                return Err("model did not return an assistant message".to_string());
+            };
+            if let Some(text) = text {
+                *text = strip_message_id_prefix(text).to_string();
+            }
+            let tool_calls = tool_calls.clone();
             run.transient_messages.clear();
-            if output.tool_calls.is_empty() {
+            if tool_calls.is_empty() {
                 return Ok(output);
             }
-            self.handle_tool_calls(&mut run, output.message, output.tool_calls)
-                .await?;
+            self.handle_tool_calls(&mut run, output, tool_calls).await?;
         }
     }
 
@@ -276,7 +291,10 @@ impl Agent {
 
     fn publish_action(&self, context: &ExecutionContext, action: ChannelAction) {
         if let Some(conversation) = context.conversation() {
-            publish_channel_action(&self.bus, conversation, action);
+            self.bus.publish(Event::ChannelAction {
+                conversation: conversation.clone(),
+                action,
+            });
         }
     }
 
@@ -400,33 +418,6 @@ impl AgentRun {
             allowed_tool_names,
             transient_messages: Vec::new(),
         }
-    }
-}
-
-struct AssistantOutput {
-    message: Message,
-    text: Option<String>,
-    tool_calls: Vec<ToolCall>,
-}
-
-impl TryFrom<Message> for AssistantOutput {
-    type Error = String;
-
-    fn try_from(mut message: Message) -> Result<Self, Self::Error> {
-        let Message::Assistant {
-            text, tool_calls, ..
-        } = &mut message
-        else {
-            return Err("model did not return an assistant message".to_string());
-        };
-        if let Some(text) = text {
-            *text = strip_message_id_prefix(text).to_string();
-        }
-        Ok(Self {
-            text: text.clone(),
-            tool_calls: tool_calls.clone(),
-            message,
-        })
     }
 }
 
