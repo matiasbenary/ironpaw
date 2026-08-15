@@ -2,12 +2,10 @@ use std::sync::{Arc, RwLock};
 
 use crate::{
     bus::{AutomationAction, Bus, ConversationKey, Event, MessageIn, SenderKind},
-    tools::ToolRegistry,
+    tools::{ExecutionContext, InvocationScope, ToolRegistry},
 };
 
 mod effect;
-mod invocation;
-mod render_args;
 mod store;
 mod trigger;
 
@@ -335,8 +333,7 @@ impl Automations {
                 if !matches!(&*automation, Automation::Scheduled { .. }) {
                     return Err("message automations cannot be triggered manually".to_string());
                 }
-                let (context, trigger) = invocation::from_timer("manual", automation.name());
-                let execution_id = self.invoke(automation.name(), context, trigger);
+                let execution_id = self.invoke_scheduled(automation.name(), "manual");
                 Ok(serde_json::json!({
                     "ok": true,
                     "name": name,
@@ -360,8 +357,7 @@ impl Automations {
             if !this.contains(automation.name()) {
                 return;
             }
-            let (context, trigger) = invocation::from_timer("at", automation.name());
-            this.invoke(automation.name(), context, trigger);
+            this.invoke_scheduled(automation.name(), "at");
         });
     }
 
@@ -383,8 +379,7 @@ impl Automations {
                 if !this.contains(automation.name()) {
                     break;
                 }
-                let (context, trigger) = invocation::from_timer("cron", automation.name());
-                this.invoke(automation.name(), context, trigger);
+                this.invoke_scheduled(automation.name(), "cron");
             }
         });
     }
@@ -429,6 +424,19 @@ impl Automations {
             eprintln!("failed to delete one-shot automation '{automation_id}': {err}");
         }
         execution_id
+    }
+
+    fn invoke_scheduled(&self, automation_id: &str, kind: &str) -> String {
+        self.invoke(
+            automation_id,
+            ExecutionContext::new(InvocationScope::ScheduledAutomation {
+                automation_id: automation_id.to_string(),
+            }),
+            serde_json::json!({
+                "kind": kind,
+                "automation": automation_id,
+            }),
+        )
     }
 }
 
