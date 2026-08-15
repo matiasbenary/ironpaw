@@ -8,9 +8,12 @@ use async_trait::async_trait;
 
 use crate::{
     message::ToolDefinition,
-    scripts::ScriptRuntime,
     tools::{self, ExecutionContext, InternalTool, ToolRegistry, ToolResponder},
 };
+
+mod script;
+
+pub use script::JavaScriptRuntime;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateToolParams {
@@ -34,7 +37,7 @@ pub struct DeleteToolParams {
 /// Creates, updates, or deletes a sandboxed JavaScript tool.
 pub struct DynamicToolTool {
     registry: Arc<ToolRegistry>,
-    scripts: Arc<ScriptRuntime>,
+    scripts: Arc<JavaScriptRuntime>,
     tools_dir: PathBuf,
     kind: DynamicToolKind,
 }
@@ -49,7 +52,7 @@ pub enum DynamicToolKind {
 impl DynamicToolTool {
     pub fn new(
         registry: Arc<ToolRegistry>,
-        scripts: Arc<ScriptRuntime>,
+        scripts: Arc<JavaScriptRuntime>,
         tools_dir: PathBuf,
         kind: DynamicToolKind,
     ) -> Self {
@@ -171,7 +174,7 @@ pub struct DynamicTool {
     description: String,
     parameters: serde_json::Value,
     script: String,
-    scripts: Arc<ScriptRuntime>,
+    scripts: Arc<JavaScriptRuntime>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -187,7 +190,7 @@ impl DynamicTool {
         description: String,
         parameters: Option<serde_json::Value>,
         script: String,
-        scripts: Arc<ScriptRuntime>,
+        scripts: Arc<JavaScriptRuntime>,
     ) -> Self {
         Self {
             name,
@@ -198,7 +201,7 @@ impl DynamicTool {
         }
     }
 
-    pub fn from_directory(dir: &Path, scripts: Arc<ScriptRuntime>) -> Result<Self, String> {
+    pub fn from_directory(dir: &Path, scripts: Arc<JavaScriptRuntime>) -> Result<Self, String> {
         let name = tool_name_from_directory(dir)?;
         let script_path = dir.join("tool.js");
         let config_path = dir.join("config.json");
@@ -230,7 +233,7 @@ impl DynamicTool {
             .map_err(|err| format!("failed to write {}: {err}", config_path.display()))
     }
 
-    pub fn discover(dir: &Path, scripts: Arc<ScriptRuntime>) -> Result<Vec<Self>, String> {
+    pub fn discover(dir: &Path, scripts: Arc<JavaScriptRuntime>) -> Result<Vec<Self>, String> {
         if !dir.exists() {
             return Ok(Vec::new());
         }
@@ -321,7 +324,7 @@ mod tests {
         create_tool: DynamicToolTool,
         edit_tool: DynamicToolTool,
         delete_tool: DynamicToolTool,
-        scripts: Arc<ScriptRuntime>,
+        scripts: Arc<JavaScriptRuntime>,
         tools_dir: PathBuf,
     }
 

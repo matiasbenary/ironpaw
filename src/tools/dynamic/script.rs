@@ -14,11 +14,11 @@ const SCRIPT_MEMORY_LIMIT: usize = 32 * 1024 * 1024;
 /// capabilities: the only way to act is by calling registered tools exposed
 /// as global functions. The tool's arguments are exposed as the global `args`,
 /// and the script returns the tool result with an explicit `return`.
-pub struct ScriptRuntime {
+pub struct JavaScriptRuntime {
     registry: Arc<ToolRegistry>,
 }
 
-impl ScriptRuntime {
+impl JavaScriptRuntime {
     pub fn new(registry: Arc<ToolRegistry>) -> Self {
         Self { registry }
     }
@@ -321,7 +321,7 @@ mod tests {
         ))
     }
 
-    fn test_runtime(bus: &Bus) -> Arc<ScriptRuntime> {
+    fn test_runtime(bus: &Bus) -> Arc<JavaScriptRuntime> {
         Arc::clone(&test_tools(bus).scripts)
     }
 

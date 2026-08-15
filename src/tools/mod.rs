@@ -27,8 +27,8 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    bus::Bus, config::RuntimeLayout, history::History, message::ToolDefinition,
-    scripts::ScriptRuntime, secrets::Secrets, shell_tools::ShellExecutor,
+    bus::Bus, config::RuntimeLayout, history::History, message::ToolDefinition, secrets::Secrets,
+    shell_tools::ShellExecutor,
 };
 
 pub use built_in::{
@@ -55,7 +55,7 @@ use self::built_in::{
     todo::TodoTool,
     web::WebFetchTool,
 };
-use self::dynamic::{DynamicToolKind, DynamicToolTool};
+use self::dynamic::{DynamicToolKind, DynamicToolTool, JavaScriptRuntime};
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ToolError {
@@ -94,7 +94,7 @@ pub fn tool_result_json(result: &ToolResult) -> serde_json::Value {
 
 pub struct InternalTools {
     pub inference: crate::inference::Inference,
-    pub scripts: Arc<ScriptRuntime>,
+    pub scripts: Arc<JavaScriptRuntime>,
     pub history: Arc<dyn History>,
     pub registry: Arc<ToolRegistry>,
     pub shell_executor: ShellExecutor,
@@ -276,7 +276,7 @@ impl InternalTools {
         let send_message = Arc::new(send_message);
         let delete_message = Arc::new(delete_message);
         let registry = Arc::new(ToolRegistry::new());
-        let scripts = Arc::new(ScriptRuntime::new(Arc::clone(&registry)));
+        let scripts = Arc::new(JavaScriptRuntime::new(Arc::clone(&registry)));
         let shell_executor = ShellExecutor::new(layout.tools_dir(), secrets.tools.clone());
         let dynamic_tool = |kind| {
             Arc::new(DynamicToolTool::new(
