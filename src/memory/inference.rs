@@ -7,6 +7,7 @@ use crate::{
 use super::{CoreMemory, sqlite::MemoryRecord};
 
 const EXTRACTION_PROMPT: &str = include_str!("extraction_prompt.txt");
+
 #[derive(serde::Deserialize)]
 pub(super) struct ExtractedMemory {
     pub text: String,
@@ -81,7 +82,7 @@ impl MemoryInference {
         let mut embeddings = self.embed_batch(&[text]).await?;
         embeddings
             .pop()
-            .ok_or_else(|| "NEAR returned no embedding".to_string())
+            .ok_or_else(|| "inference provider returned no embedding".to_string())
     }
 
     pub async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
@@ -102,7 +103,7 @@ impl MemoryInference {
             .map_err(|error| error.to_string())?;
         if !(200..300).contains(&response.status) {
             return Err(format!(
-                "NEAR embeddings failed with {}: {}",
+                "embedding request failed with {}: {}",
                 response.status, response.body
             ));
         }
@@ -111,7 +112,7 @@ impl MemoryInference {
         response.data.sort_by_key(|item| item.index);
         if response.data.len() != texts.len() {
             return Err(format!(
-                "NEAR returned {} embeddings for {} inputs",
+                "inference provider returned {} embeddings for {} inputs",
                 response.data.len(),
                 texts.len()
             ));

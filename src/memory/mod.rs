@@ -1,4 +1,4 @@
-mod near;
+mod inference;
 mod sqlite;
 
 use std::{
@@ -8,7 +8,7 @@ use std::{
 
 use crate::{inference::Inference, message::Message, secrets::ToolSecrets};
 
-use near::MemoryInference;
+use inference::MemoryInference;
 use sqlite::{MemoryRecord, SqliteMemory};
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
