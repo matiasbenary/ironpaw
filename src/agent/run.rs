@@ -103,7 +103,7 @@ impl Agent {
         }
         let tools = self.tools.named_tools(&tool_names)?;
         let history_id = HistoryId::Automation(automation_id.clone());
-        self.history.append_history(
+        self.history.append(
             &history_id,
             &[HistoryEntry {
                 message: Message::User {
@@ -128,7 +128,7 @@ impl Agent {
         let Some(text) = text.clone().filter(|text| !text.is_empty()) else {
             return Ok(None);
         };
-        self.history.append_history(
+        self.history.append(
             &history_id,
             &[HistoryEntry {
                 message: output,
@@ -263,7 +263,7 @@ impl Agent {
 
     fn model_messages(&self, run: &AgentRun) -> Result<Vec<Message>, String> {
         let mut messages = run.initial_messages.clone();
-        for entry in self.history.load_conversation(&run.history_id)? {
+        for entry in self.history.load_active(&run.history_id)? {
             let mut message = entry.message;
             if let Some(external_id) = entry.metadata.external_id {
                 match &mut message {
@@ -301,7 +301,7 @@ impl Agent {
     fn latest_user_text(&self, history_id: &HistoryId) -> Result<Option<String>, String> {
         Ok(self
             .history
-            .load_conversation(history_id)?
+            .load_active(history_id)?
             .into_iter()
             .rev()
             .find_map(|entry| match entry.message {
@@ -311,7 +311,7 @@ impl Agent {
     }
 
     fn ingest_memory(&self, history_id: &HistoryId, final_message: Message) {
-        let Ok(entries) = self.history.load_conversation(history_id) else {
+        let Ok(entries) = self.history.load_active(history_id) else {
             return;
         };
         let Some(user_index) = entries
@@ -338,7 +338,7 @@ impl Agent {
     }
 
     async fn summarize_conversation(&self, history_id: &HistoryId) -> Result<(), String> {
-        let conversation = self.history.load_conversation(history_id)?;
+        let conversation = self.history.load_active(history_id)?;
         let Some(latest_user_index) = conversation
             .iter()
             .rposition(|entry| matches!(entry.message, Message::User { .. }))

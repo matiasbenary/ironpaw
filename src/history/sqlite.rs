@@ -114,7 +114,7 @@ fn entry_from_row(item_json: String, metadata_json: String) -> Option<HistoryEnt
 }
 
 impl History for SqliteHistory {
-    fn load_conversation(&self, history_id: &HistoryId) -> Result<Vec<HistoryEntry>, String> {
+    fn load_active(&self, history_id: &HistoryId) -> Result<Vec<HistoryEntry>, String> {
         let history_key = history_id.storage_key();
         let conn = self.conn()?;
         let saved = conn
@@ -159,11 +159,7 @@ impl History for SqliteHistory {
         Ok(entries)
     }
 
-    fn append_history(
-        &self,
-        history_id: &HistoryId,
-        entries: &[HistoryEntry],
-    ) -> Result<(), String> {
+    fn append(&self, history_id: &HistoryId, entries: &[HistoryEntry]) -> Result<(), String> {
         let conversation_key = history_id.storage_key();
         let conn = self.conn()?;
         for entry in entries {
@@ -328,7 +324,7 @@ mod tests {
             .append_tool_turn(&history_id, &assistant, &[result])
             .unwrap();
 
-        let entries = history.load_conversation(&history_id).unwrap();
+        let entries = history.load_active(&history_id).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].message, assistant);
         let Message::ToolResult { result, .. } = &entries[1].message else {
@@ -362,13 +358,13 @@ mod tests {
                 metadata: MessageMetadata::for_automation("daily-album"),
             },
         ];
-        history.append_history(&history_id, &entries).unwrap();
+        history.append(&history_id, &entries).unwrap();
 
         history
             .save_conversation_summary(&history_id, "older context", &entries[0].metadata.id)
             .unwrap();
 
-        let loaded = history.load_conversation(&history_id).unwrap();
+        let loaded = history.load_active(&history_id).unwrap();
         assert!(
             matches!(&loaded[0].message, Message::System(text) if text.contains("older context"))
         );
@@ -390,7 +386,7 @@ mod tests {
         };
         history
             .append(
-                &thread_1,
+                &HistoryId::Conversation(thread_1.clone()),
                 &[HistoryEntry {
                     message: Message::User {
                         text: "secret".to_string(),
@@ -405,7 +401,7 @@ mod tests {
             .unwrap();
         history
             .append(
-                &thread_2,
+                &HistoryId::Conversation(thread_2.clone()),
                 &[HistoryEntry {
                     message: Message::User {
                         text: "keep".to_string(),
@@ -426,7 +422,9 @@ mod tests {
             })
             .unwrap();
 
-        let loaded = history.load(&thread_2).unwrap();
+        let loaded = history
+            .load_active(&HistoryId::Conversation(thread_2))
+            .unwrap();
         assert_eq!(loaded.len(), 1);
         let Message::User { text, .. } = &loaded[0].message else {
             panic!("expected user message");

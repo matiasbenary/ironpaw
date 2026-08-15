@@ -63,38 +63,26 @@ impl HistoryId {
 
 pub trait History: Send + Sync {
     /// Return the saved summary followed by messages written after its boundary.
-    fn load_conversation(&self, history_id: &HistoryId) -> Result<Vec<HistoryEntry>, String>;
+    fn load_active(&self, history_id: &HistoryId) -> Result<Vec<HistoryEntry>, String>;
 
-    fn append_history(
-        &self,
-        history_id: &HistoryId,
-        entries: &[HistoryEntry],
-    ) -> Result<(), String>;
+    fn append(&self, history_id: &HistoryId, entries: &[HistoryEntry]) -> Result<(), String>;
 
     fn append_tool_turn(
         &self,
         history_id: &HistoryId,
-        assistant: &Message,
+        assistant_message: &Message,
         results: &[Message],
     ) -> Result<(), String> {
-        if !matches!(assistant, Message::Assistant { .. }) {
-            return Err("tool turn did not contain an assistant message".to_string());
-        }
-        if results
-            .iter()
-            .any(|message| !matches!(message, Message::ToolResult { .. }))
-        {
-            return Err("tool turn contained a non-tool result".to_string());
-        }
-        let messages =
-            std::iter::once(assistant.clone()).chain(results.iter().map(bounded_history_message));
-        let entries = messages
-            .map(|message| HistoryEntry {
-                message,
-                metadata: metadata_for_history(history_id),
-            })
-            .collect::<Vec<_>>();
-        self.append_history(history_id, &entries)
+        let mut entries = Vec::with_capacity(results.len() + 1);
+        entries.push(HistoryEntry {
+            message: assistant_message.clone(),
+            metadata: metadata_for_history(history_id),
+        });
+        entries.extend(results.iter().map(|message| HistoryEntry {
+            message: bounded_history_message(message),
+            metadata: metadata_for_history(history_id),
+        }));
+        self.append(history_id, &entries)
     }
 
     /// Replace the saved summary and advance its boundary to a persisted entry.
@@ -104,20 +92,6 @@ pub trait History: Send + Sync {
         summary: &str,
         compacted_through_entry_id: &str,
     ) -> Result<(), String>;
-
-    /// Return the conversation sent to the model, oldest first.
-    fn load(&self, conversation: &ConversationKey) -> Result<Vec<HistoryEntry>, String> {
-        self.load_conversation(&HistoryId::Conversation(conversation.clone()))
-    }
-
-    /// Persist new items for a conversation.
-    fn append(
-        &self,
-        conversation: &ConversationKey,
-        entries: &[HistoryEntry],
-    ) -> Result<(), String> {
-        self.append_history(&HistoryId::Conversation(conversation.clone()), entries)
-    }
 
     /// Delete local entries that correspond to a channel/provider message id.
     fn delete_external_message(&self, message: &MessageRef) -> Result<(), String>;
