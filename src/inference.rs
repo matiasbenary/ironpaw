@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     config::ProviderConfig,
-    http::{HttpError, NetworkGate, NetworkGrant},
     message::{Attachment, Message, ToolCall, ToolDefinition},
+    network::http::{HttpError, NetworkGate, NetworkGrant},
     secrets::ToolSecrets,
 };
 use base64::Engine as _;
@@ -114,7 +114,7 @@ impl Inference {
         &self,
         path: &str,
         body: &T,
-    ) -> Result<crate::http::HttpResponse, HttpError>
+    ) -> Result<crate::network::http::HttpResponse, HttpError>
     where
         T: serde::Serialize + ?Sized,
     {

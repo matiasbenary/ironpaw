@@ -157,7 +157,7 @@ fn installed_channel_names(layout: &RuntimeLayout) -> Result<Vec<String>, String
         .map(|name| name.to_string())
         .collect::<Vec<_>>();
     names.extend(
-        channels::config::discover(layout)
+        channels::manifest::discover(layout)
             .map_err(|err| err.to_string())?
             .into_iter()
             .map(|channel| channel.name),

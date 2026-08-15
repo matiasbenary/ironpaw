@@ -67,7 +67,7 @@ struct InstallSession {
     config_values: BTreeMap<String, serde_json::Value>,
     secret_values: BTreeMap<String, String>,
     accounts: BTreeMap<String, serde_json::Value>,
-    grants: Vec<crate::http::NetworkGrantConfig>,
+    grants: Vec<crate::network::http::NetworkGrantConfig>,
     account_current: Option<serde_json::Value>,
     removed_secrets: BTreeSet<String>,
     continuation: Option<ToolResponder>,

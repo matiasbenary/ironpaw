@@ -154,7 +154,7 @@ impl ChannelSecrets {
     }
 }
 
-impl crate::http::SecretLookup for ChannelSecrets {
+impl crate::network::http::SecretLookup for ChannelSecrets {
     fn get_secret(&self, name: &str) -> Option<String> {
         self.get(name)
     }
@@ -171,7 +171,7 @@ impl ToolSecrets {
     }
 }
 
-impl crate::http::SecretLookup for ToolSecrets {
+impl crate::network::http::SecretLookup for ToolSecrets {
     fn get_secret(&self, name: &str) -> Option<String> {
         self.get(name)
     }

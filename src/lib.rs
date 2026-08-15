@@ -8,7 +8,6 @@ pub mod inference;
 pub mod memory;
 pub mod message;
 pub mod network;
-pub use network::http;
 pub mod scripts;
 pub mod secrets;
 pub mod shell_tools;

@@ -63,7 +63,7 @@ pub(super) fn write_account_package(
     layout: &RuntimeLayout,
     package: &ToolPackage,
     accounts: &BTreeMap<String, serde_json::Value>,
-    grants: &[crate::http::NetworkGrantConfig],
+    grants: &[crate::network::http::NetworkGrantConfig],
     installed: bool,
 ) -> Result<WasmToolManifest, String> {
     let mut config: serde_json::Value = serde_json::from_str(
@@ -102,7 +102,7 @@ pub(super) fn build_account(
     (
         String,
         serde_json::Value,
-        Vec<crate::http::NetworkGrantConfig>,
+        Vec<crate::network::http::NetworkGrantConfig>,
     ),
     String,
 > {
@@ -130,7 +130,7 @@ pub(super) fn build_account(
         else {
             continue;
         };
-        grants.push(crate::http::NetworkGrantConfig {
+        grants.push(crate::network::http::NetworkGrantConfig {
             host: oauth.host.clone(),
             account: Some(identity.clone()),
             secret: None,

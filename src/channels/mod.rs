@@ -4,29 +4,33 @@ use tokio::{sync::Mutex, task::JoinHandle};
 
 use crate::{bus::Bus, config::RuntimeLayout, history::History, secrets::ChannelSecrets};
 
-mod bridge;
-pub mod config;
-mod inbound;
+pub(crate) mod bridge;
+pub(crate) mod local_client;
+pub mod manifest;
 pub mod ngrok;
 pub mod wasm;
 
-pub use bridge::DEFAULT_ADDR;
-pub use inbound::append_inbound_message;
+pub use crate::network::server::DEFAULT_ADDR;
 
 pub struct ChannelRuntime {
     pub statuses: Mutex<Vec<String>>,
     layout: RuntimeLayout,
     addr: String,
     secrets: ChannelSecrets,
-    registry: Arc<bridge::ChannelRegistry>,
+    wasm_channels: Arc<wasm::WasmChannels>,
+    local_client: Arc<local_client::LocalClient>,
     ngrok: Arc<Mutex<Option<ngrok::ActiveNgrok>>>,
-    bridge_task: JoinHandle<()>,
+    server_task: JoinHandle<()>,
 }
 
 impl ChannelRuntime {
+    pub fn connection_token(&self) -> &str {
+        self.local_client.connection_token()
+    }
+
     pub async fn shutdown(self) {
-        self.bridge_task.abort();
-        let _ = self.bridge_task.await;
+        self.server_task.abort();
+        let _ = self.server_task.await;
     }
 
     pub async fn statuses(&self) -> Vec<String> {
@@ -39,14 +43,14 @@ impl ChannelRuntime {
         external: bool,
     ) -> Result<(), String> {
         let public_url = self.public_url_for_activation(external).await?;
-        let manifest = config::discover(&self.layout)
+        let manifest = manifest::discover(&self.layout)
             .map_err(|err| err.to_string())?
             .into_iter()
             .find(|manifest| manifest.name == name)
             .ok_or_else(|| format!("installed channel not found: {name}"))?;
-        let manifest = config::inject_public_url(manifest, public_url.as_deref())
+        let manifest = manifest::inject_public_url(manifest, public_url.as_deref())
             .map_err(|err| err.to_string())?;
-        let channel = bridge::load_channel(manifest, self.secrets.clone())?;
+        let channel = wasm::load_channel(manifest, self.secrets.clone())?;
         let config_json = channel.state.lock().await.config_json.clone();
         channel
             .wasm
@@ -54,12 +58,12 @@ impl ChannelRuntime {
             .await
             .on_start(&config_json)
             .map_err(|err| err.to_string())?;
-        self.registry.add(channel).await;
+        self.wasm_channels.add(channel).await;
         Ok(())
     }
 
     pub async fn remove_channel(&self, name: &str) -> bool {
-        self.registry.remove_by_name(name).await
+        self.wasm_channels.remove_by_name(name).await
     }
 
     pub async fn load_installed_channels(&self) -> Result<(), String> {
@@ -74,7 +78,7 @@ impl ChannelRuntime {
         &self,
         only_names: Option<&[String]>,
     ) -> Result<(), String> {
-        let manifests = config::discover(&self.layout)
+        let manifests = manifest::discover(&self.layout)
             .map_err(|err| err.to_string())?
             .into_iter()
             .filter(|manifest| {
@@ -87,7 +91,7 @@ impl ChannelRuntime {
             .map_err(|err| err.to_string())?;
         let manifests = manifests
             .into_iter()
-            .map(|manifest| config::inject_public_url(manifest, public_url.as_deref()))
+            .map(|manifest| manifest::inject_public_url(manifest, public_url.as_deref()))
             .collect::<io::Result<Vec<_>>>()
             .map_err(|err| err.to_string())?;
         let mut statuses = Vec::new();
@@ -98,13 +102,13 @@ impl ChannelRuntime {
                 manifest.wasm_path.display(),
                 manifest.config_path.display()
             ));
-            let channel = bridge::load_channel(manifest, self.secrets.clone())?;
+            let channel = wasm::load_channel(manifest, self.secrets.clone())?;
             let config_json = channel.state.lock().await.config_json.clone();
             let start_result = channel.wasm.lock().await.on_start(&config_json);
             if let Err(err) = start_result {
                 eprintln!("{} channel start failed: {err}", channel.name);
             }
-            self.registry.add(channel).await;
+            self.wasm_channels.add(channel).await;
         }
         if let Some(public_url) = public_url {
             statuses.push(format!("ngrok -> {public_url}"));
@@ -135,7 +139,7 @@ impl ChannelRuntime {
 
     async fn public_url_for_manifests(
         &self,
-        manifests: &[config::ChannelManifest],
+        manifests: &[manifest::ChannelManifest],
     ) -> io::Result<Option<String>> {
         if !manifests.iter().any(|manifest| {
             manifest
@@ -159,9 +163,8 @@ pub async fn start(
     layout: &RuntimeLayout,
     secrets: ChannelSecrets,
     addr: &str,
-    token: String,
 ) -> io::Result<ChannelRuntime> {
-    let runtime = start_bridge(bus, history, layout, secrets, addr, token).await?;
+    let runtime = start_bridge(bus, history, layout, secrets, addr).await?;
     runtime
         .load_installed_channels()
         .await
@@ -175,35 +178,35 @@ pub async fn start_bridge(
     layout: &RuntimeLayout,
     secrets: ChannelSecrets,
     addr: &str,
-    token: String,
 ) -> io::Result<ChannelRuntime> {
-    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|err| {
-        io::Error::new(
-            err.kind(),
-            format!("failed to bind channel bridge at {addr}: {err}"),
-        )
-    })?;
-    let registry = Arc::new(bridge::ChannelRegistry::new(Vec::new()).await);
-    let bridge_addr = addr.to_string();
-    let runtime_addr = bridge_addr.clone();
-    let bridge_secrets = secrets.clone();
+    let listener = crate::network::server::bind(addr).await?;
+    let server_addr = addr.to_string();
+    let runtime_addr = server_addr.clone();
     let files_dir = layout.files_dir();
     let auth_log_path = layout.root().join("authentication.log");
-    let bridge_registry = Arc::clone(&registry);
-    let bridge_task = tokio::spawn(async move {
-        let (client_events, _) = tokio::sync::broadcast::channel(256);
-        let state = bridge::BridgeState {
-            bus,
-            history,
-            token: Arc::new(token),
-            secrets: bridge_secrets,
-            registry: bridge_registry,
+    let bridge = bridge::Bridge::new(bus, history);
+    let wasm_channels = Arc::new(wasm::WasmChannels::new(bridge.clone()));
+    let outbound_bridge = bridge.clone();
+    tokio::spawn(async move {
+        outbound_bridge.run().await;
+    });
+
+    let local_client = local_client::LocalClient::new(bridge.clone(), files_dir.clone());
+    bridge
+        .add_channel(Arc::clone(&local_client) as Arc<dyn bridge::Channel>)
+        .await;
+    let app = axum::Router::new()
+        .merge(local_client.routes())
+        .merge(wasm::routes(
+            secrets.clone(),
+            Arc::clone(&wasm_channels),
             files_dir,
-            client_events,
-            auth_log_path,
-        };
-        if let Err(err) = bridge::run_server(listener, &bridge_addr, state).await {
-            eprintln!("channel bridge failed: {err}");
+        ));
+    let server_task = tokio::spawn(async move {
+        if let Err(err) =
+            crate::network::server::run(listener, &server_addr, app, auth_log_path).await
+        {
+            eprintln!("network server failed: {err}");
         }
     });
 
@@ -212,8 +215,9 @@ pub async fn start_bridge(
         layout: layout.clone(),
         addr: runtime_addr,
         secrets: secrets.clone(),
-        registry,
+        wasm_channels,
+        local_client,
         ngrok: Arc::new(Mutex::new(None)),
-        bridge_task,
+        server_task,
     })
 }

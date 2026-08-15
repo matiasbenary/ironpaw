@@ -5,6 +5,7 @@ pub(crate) mod oauth;
 pub(crate) mod policy;
 pub(crate) mod proxy;
 pub(crate) mod public;
+pub(crate) mod server;
 
 #[cfg(test)]
 mod tests {

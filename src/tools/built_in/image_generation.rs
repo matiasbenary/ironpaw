@@ -4,8 +4,8 @@ use async_trait::async_trait;
 
 use crate::{
     config::ProviderConfig,
-    http::{NetworkGate, NetworkGrant},
     message::{available_filename, execution_files_dir},
+    network::http::{NetworkGate, NetworkGrant},
     secrets::ToolSecrets,
     tools::{self, InternalTool, ToolError},
 };

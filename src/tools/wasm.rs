@@ -13,14 +13,14 @@ use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiVie
 
 use crate::{
     config::RuntimeLayout,
-    http::NetworkGate,
     message::ToolDefinition,
     network::email::protocol,
+    network::http::NetworkGate,
     secrets::ToolSecrets,
     tools::{ExecutionContext, InternalTool, ToolError, ToolResponder},
 };
 
-pub use crate::http::NetworkGrantConfig;
+pub use crate::network::http::NetworkGrantConfig;
 
 wasmtime::component::bindgen!({
     world: "tool",
@@ -306,7 +306,7 @@ impl ironpaw::tool::tool_host::Host for StoreData {
             )
             .and_then(|bytes| {
                 String::from_utf8(bytes).map_err(|err| {
-                    crate::http::HttpError::Http(format!("response was not UTF-8: {err}"))
+                    crate::network::http::HttpError::Http(format!("response was not UTF-8: {err}"))
                 })
             })
             .map_err(|err| err.to_string())

@@ -41,7 +41,6 @@ async fn main() -> io::Result<()> {
 
     let layout = RuntimeLayout::discover();
     let _ = dotenvy::from_path(layout.root().join(".env"));
-    let token = uuid::Uuid::new_v4().to_string();
     let addr = std::env::var("IRONPAW_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
     let bus = Bus::new(512);
     let secrets = ironpaw::secrets::Secrets::locked();
@@ -55,11 +54,11 @@ async fn main() -> io::Result<()> {
             &layout,
             secrets.channels.clone(),
             &addr,
-            token.clone(),
         )
         .await
         .map_err(std::io::Error::other)?,
     );
+    let token = channel_runtime.connection_token().to_string();
     let provider = Arc::new(ironpaw::config::ProviderConfig::from_env());
     let inference = Inference::with_config(secrets.tools.clone(), Arc::clone(&provider))
         .map_err(std::io::Error::other)?;
@@ -129,7 +128,7 @@ async fn main() -> io::Result<()> {
     let agent_handler_task = agent_handler.start();
     let automations_task = automations.start();
 
-    println!("unlock bridge token: {token}");
+    println!("local client connection token: {token}");
     println!("runtime root: {}", layout.root().display());
     println!("Use `ironpaw-tui {token}` to unlock Ironpaw.");
 
@@ -246,7 +245,7 @@ async fn main() -> io::Result<()> {
         .map_err(std::io::Error::other)?;
     setup_services.set_channel_runtime(Arc::clone(&channel_runtime));
 
-    println!("channel bridge token: {token}");
+    println!("local client connection token: {token}");
     println!("runtime root: {}", layout.root().display());
     println!(
         "loaded secrets: {}",

@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::{bus::ConversationKey, config::RuntimeLayout};
 
-pub type ChannelHttpCredential = crate::http::NetworkGrantConfig;
+pub type ChannelHttpCredential = crate::network::http::NetworkGrantConfig;
 
 #[derive(Clone, Debug)]
 pub struct ChannelManifest {
@@ -23,7 +23,6 @@ pub struct ChannelManifest {
 pub enum ChannelAuth {
     #[default]
     None,
-    Bearer,
     HeaderSecret {
         header: String,
         value: Option<String>,
