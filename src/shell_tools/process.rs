@@ -21,6 +21,12 @@ enum Isolation {
     Linux,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum ProcessMode {
+    Install,
+    Execute,
+}
+
 pub struct ProcessRequest {
     pub executable: PathBuf,
     pub args: Vec<String>,
@@ -41,36 +47,72 @@ pub struct ProcessOutput {
 
 pub struct ProcessRunner {
     tool_dir: PathBuf,
+    workspace: PathBuf,
     allowed_hosts: Vec<String>,
     isolation: Isolation,
+    mode: ProcessMode,
 }
 
 impl ProcessRunner {
-    pub fn new(tool_dir: PathBuf, allowed_hosts: Vec<String>) -> Result<Self, String> {
+    pub(super) fn new(
+        tool_dir: PathBuf,
+        allowed_hosts: Vec<String>,
+        mode: ProcessMode,
+    ) -> Result<Self, String> {
         if !cfg!(target_os = "linux") {
             return Err("Linux shell isolation is unavailable on this platform".to_string());
         }
-        Self::with_isolation(tool_dir, allowed_hosts, Isolation::Linux)
+        Self::with_isolation(tool_dir, allowed_hosts, Isolation::Linux, mode)
     }
 
     #[cfg(debug_assertions)]
-    pub fn portable(tool_dir: PathBuf, allowed_hosts: Vec<String>) -> Result<Self, String> {
-        Self::with_isolation(tool_dir, allowed_hosts, Isolation::Portable)
+    pub(super) fn portable(
+        tool_dir: PathBuf,
+        allowed_hosts: Vec<String>,
+        mode: ProcessMode,
+    ) -> Result<Self, String> {
+        Self::with_isolation(tool_dir, allowed_hosts, Isolation::Portable, mode)
     }
 
     fn with_isolation(
         tool_dir: PathBuf,
         allowed_hosts: Vec<String>,
         isolation: Isolation,
+        mode: ProcessMode,
     ) -> Result<Self, String> {
-        std::fs::create_dir_all(tool_dir.join("tmp")).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(&tool_dir).map_err(|error| error.to_string())?;
+        let workspace = match mode {
+            ProcessMode::Install => tool_dir.clone(),
+            ProcessMode::Execute => tool_dir.join("workspace"),
+        };
+        if let ProcessMode::Execute = mode {
+            match std::fs::symlink_metadata(&workspace) {
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                    return Err("shell tool workspace must be a directory".to_string());
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    std::fs::create_dir(&workspace).map_err(|error| error.to_string())?;
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        std::fs::create_dir_all(workspace.join("tmp")).map_err(|error| error.to_string())?;
         let tool_dir = tool_dir
             .canonicalize()
             .map_err(|error| format!("failed to resolve tool directory: {error}"))?;
+        let workspace = workspace
+            .canonicalize()
+            .map_err(|error| format!("failed to resolve tool workspace: {error}"))?;
+        if !workspace.starts_with(&tool_dir) {
+            return Err("shell tool workspace escapes the tool directory".to_string());
+        }
         Ok(Self {
             tool_dir,
+            workspace,
             allowed_hosts,
             isolation,
+            mode,
         })
     }
 
@@ -101,6 +143,8 @@ impl ProcessRunner {
                     ConnectProxy::shell_unix(socket_path, self.allowed_hosts.clone()).await?;
                 let command = linux_command(
                     &self.tool_dir,
+                    &self.workspace,
+                    self.mode,
                     &executable,
                     &request.args,
                     proxy.socket_path(),
@@ -111,14 +155,17 @@ impl ProcessRunner {
         };
         configure_process(
             &mut command,
-            &self.tool_dir,
+            &self.workspace,
             &working_dir,
             proxy_url.as_deref(),
             &request.env,
             match self.isolation {
                 #[cfg(debug_assertions)]
                 Isolation::Portable => self.tool_dir.join("bin"),
-                Isolation::Linux => PathBuf::from("/workspace/bin"),
+                Isolation::Linux => match self.mode {
+                    ProcessMode::Install => PathBuf::from("/workspace/bin"),
+                    ProcessMode::Execute => PathBuf::from("/tool/bin"),
+                },
             },
         );
         let started = Instant::now();
@@ -171,7 +218,7 @@ impl ProcessRunner {
 
     fn resolve_working_dir(&self, relative: Option<&Path>) -> Result<PathBuf, String> {
         let Some(relative) = relative else {
-            return Ok(self.tool_dir.clone());
+            return Ok(self.workspace.clone());
         };
         if relative.is_absolute()
             || relative
@@ -181,12 +228,12 @@ impl ProcessRunner {
             return Err("shell working directory must be a safe relative path".to_string());
         }
         let working_dir = self
-            .tool_dir
+            .workspace
             .join(relative)
             .canonicalize()
             .map_err(|error| format!("failed to resolve shell working directory: {error}"))?;
-        if !working_dir.starts_with(&self.tool_dir) || !working_dir.is_dir() {
-            return Err("shell working directory escapes the tool directory".to_string());
+        if !working_dir.starts_with(&self.workspace) || !working_dir.is_dir() {
+            return Err("shell working directory escapes the tool workspace".to_string());
         }
         Ok(working_dir)
     }
@@ -201,6 +248,8 @@ fn direct_command(executable: &Path, args: &[String]) -> Command {
 
 fn linux_command(
     tool_dir: &Path,
+    workspace: &Path,
+    mode: ProcessMode,
     executable: &Path,
     args: &[String],
     proxy_socket: &Path,
@@ -218,20 +267,23 @@ fn linux_command(
         .map_err(|error| format!("failed to resolve Ironpaw executable: {error}"))?
         .canonicalize()
         .map_err(|error| format!("failed to resolve Ironpaw executable: {error}"))?;
-    let workspace_executable = executable
+    let tool_executable = executable
         .strip_prefix(tool_dir)
         .ok()
-        .map(|relative| Path::new("/workspace").join(relative));
+        .map(|relative| match mode {
+            ProcessMode::Install => Path::new("/workspace").join(relative),
+            ProcessMode::Execute => Path::new("/tool").join(relative),
+        });
     let system_executable = ["/usr", "/bin", "/lib", "/lib64"]
         .into_iter()
         .any(|root| executable.starts_with(root))
         .then(|| executable.to_path_buf());
-    let sandbox_executable = workspace_executable
+    let sandbox_executable = tool_executable
         .or(system_executable)
         .unwrap_or_else(|| PathBuf::from("/ironpaw/bin/command"));
     let relative_working_dir = working_dir
-        .strip_prefix(tool_dir)
-        .map_err(|_| "shell working directory escapes the tool directory".to_string())?;
+        .strip_prefix(workspace)
+        .map_err(|_| "shell working directory escapes the tool workspace".to_string())?;
     let sandbox_working_dir = Path::new("/workspace").join(relative_working_dir);
     let mut command = Command::new(bubblewrap);
     command.args([
@@ -244,11 +296,19 @@ fn linux_command(
         "/dev",
         "--tmpfs",
         "/tmp",
-        "--dir",
-        "/workspace",
-        "--bind",
     ]);
-    command.arg(tool_dir).arg("/workspace");
+    match mode {
+        ProcessMode::Install => {
+            command.args(["--dir", "/workspace", "--bind"]);
+            command.arg(tool_dir).arg("/workspace");
+        }
+        ProcessMode::Execute => {
+            command.args(["--dir", "/tool", "--ro-bind"]);
+            command.arg(tool_dir).arg("/tool");
+            command.args(["--dir", "/workspace", "--bind"]);
+            command.arg(workspace).arg("/workspace");
+        }
+    }
     for path in ["/usr", "/bin", "/lib", "/lib64"] {
         if Path::new(path).exists() {
             command.arg("--ro-bind").arg(path).arg(path);
@@ -282,7 +342,7 @@ fn linux_command(
         SAFE_PATH,
         "--",
         "/ironpaw/bin/proxy-bridge",
-        crate::shell_tools::proxy_bridge::ARGUMENT,
+        crate::network::proxy_bridge::ARGUMENT,
         "/ironpaw/run/proxy.sock",
     ]);
     command.arg(sandbox_executable);
@@ -292,7 +352,7 @@ fn linux_command(
 
 fn configure_process(
     command: &mut Command,
-    tool_dir: &Path,
+    workspace: &Path,
     working_dir: &Path,
     proxy_url: Option<&str>,
     env: &[(String, String)],
@@ -301,8 +361,8 @@ fn configure_process(
     command
         .current_dir(working_dir)
         .env_clear()
-        .env("HOME", tool_dir)
-        .env("TMPDIR", tool_dir.join("tmp"))
+        .env("HOME", workspace)
+        .env("TMPDIR", workspace.join("tmp"))
         .env("PATH", SAFE_PATH)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -360,7 +420,8 @@ mod tests {
     #[tokio::test]
     async fn portable_runner_uses_private_directory_and_scrubbed_environment() {
         let tool_dir = temp_dir();
-        let runner = ProcessRunner::portable(tool_dir.clone(), Vec::new()).unwrap();
+        let runner =
+            ProcessRunner::portable(tool_dir.clone(), Vec::new(), ProcessMode::Execute).unwrap();
         let output = runner
             .run(ProcessRequest {
                 executable: PathBuf::from("/bin/sh"),
@@ -376,7 +437,7 @@ mod tests {
             .await
             .unwrap();
 
-        let canonical = tool_dir.canonicalize().unwrap();
+        let canonical = tool_dir.join("workspace").canonicalize().unwrap();
         assert_eq!(
             output.stdout,
             format!("{}\n{}\nunset", canonical.display(), canonical.display())
@@ -392,7 +453,8 @@ mod tests {
     #[tokio::test]
     async fn portable_runner_enforces_timeout() {
         let tool_dir = temp_dir();
-        let runner = ProcessRunner::portable(tool_dir.clone(), Vec::new()).unwrap();
+        let runner =
+            ProcessRunner::portable(tool_dir.clone(), Vec::new(), ProcessMode::Execute).unwrap();
         let error = runner
             .run(ProcessRequest {
                 executable: PathBuf::from("/bin/sh"),
@@ -411,8 +473,9 @@ mod tests {
     #[tokio::test]
     async fn portable_runner_confines_relative_working_directory() {
         let tool_dir = temp_dir();
-        std::fs::create_dir_all(tool_dir.join("repo")).unwrap();
-        let runner = ProcessRunner::portable(tool_dir.clone(), Vec::new()).unwrap();
+        std::fs::create_dir_all(tool_dir.join("workspace/repo")).unwrap();
+        let runner =
+            ProcessRunner::portable(tool_dir.clone(), Vec::new(), ProcessMode::Execute).unwrap();
         let output = runner
             .run(ProcessRequest {
                 executable: PathBuf::from("/bin/pwd"),
@@ -426,7 +489,7 @@ mod tests {
         assert_eq!(
             output.stdout.trim(),
             tool_dir
-                .join("repo")
+                .join("workspace/repo")
                 .canonicalize()
                 .unwrap()
                 .to_string_lossy()
@@ -448,6 +511,25 @@ mod tests {
         std::fs::remove_dir_all(tool_dir).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn runner_rejects_a_workspace_symlink() {
+        let tool_dir = temp_dir();
+        let outside = temp_dir();
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, tool_dir.join("workspace")).unwrap();
+
+        let error = ProcessRunner::portable(tool_dir.clone(), Vec::new(), ProcessMode::Execute)
+            .err()
+            .unwrap();
+
+        assert_eq!(error, "shell tool workspace must be a directory");
+        assert!(!outside.join("tmp").exists());
+        std::fs::remove_dir_all(tool_dir).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
     #[test]
     fn linux_isolation_fails_closed_on_other_platforms() {
         if cfg!(target_os = "linux") {
@@ -455,6 +537,8 @@ mod tests {
         }
         let error = linux_command(
             Path::new("/tmp"),
+            Path::new("/tmp/workspace"),
+            ProcessMode::Execute,
             Path::new("/bin/sh"),
             &[],
             Path::new("/tmp/proxy.sock"),

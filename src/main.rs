@@ -30,10 +30,10 @@ async fn main() -> io::Result<()> {
     let _program = arguments.next();
     if arguments.next().as_deref()
         == Some(std::ffi::OsStr::new(
-            ironpaw::shell_tools::proxy_bridge::ARGUMENT,
+            ironpaw::network::proxy_bridge::ARGUMENT,
         ))
     {
-        let status = ironpaw::shell_tools::proxy_bridge::run(arguments.collect())
+        let status = ironpaw::network::proxy_bridge::run(arguments.collect())
             .await
             .map_err(io::Error::other)?;
         std::process::exit(status);

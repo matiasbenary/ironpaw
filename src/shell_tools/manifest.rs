@@ -49,15 +49,7 @@ pub struct ShellCommand {
     pub name: String,
     pub invocations: Vec<ShellInvocation>,
     #[serde(default)]
-    pub git_credential_helper: Option<ShellGitCredentialHelper>,
-}
-
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ShellGitCredentialHelper {
-    pub command: String,
-    #[serde(default)]
-    pub args: Vec<String>,
+    pub environment: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -93,6 +85,10 @@ pub struct ShellSecret {
 }
 
 impl ShellToolManifest {
+    pub fn secret_store_name(&self, secret_name: &str) -> String {
+        format!("shell/{}/{}", self.name, secret_name)
+    }
+
     pub fn discover(tools_dir: &Path) -> Result<Vec<Self>, String> {
         if !tools_dir.exists() {
             return Ok(Vec::new());
@@ -158,32 +154,6 @@ impl ShellToolManifest {
         validate_unique(self.commands.iter().map(|command| &command.name), "command")?;
         for command in &self.commands {
             command.validate(&self.secrets)?;
-            if let Some(helper) = &command.git_credential_helper {
-                if command.name != "git" {
-                    return Err("git_credential_helper is only valid for command 'git'".to_string());
-                }
-                helper.validate()?;
-                if !self
-                    .commands
-                    .iter()
-                    .any(|candidate| candidate.name == helper.command)
-                {
-                    return Err(format!(
-                        "git credential helper command '{}' is not exposed by the tool",
-                        helper.command
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl ShellGitCredentialHelper {
-    fn validate(&self) -> Result<(), String> {
-        validate_name(&self.command, "git credential helper command")?;
-        for arg in &self.args {
-            validate_name(arg, "git credential helper argument")?;
         }
         Ok(())
     }
@@ -230,6 +200,14 @@ impl InstallMethod {
 impl ShellCommand {
     fn validate(&self, declared_secrets: &[ShellSecret]) -> Result<(), String> {
         validate_name(&self.name, "command")?;
+        for (name, value) in &self.environment {
+            validate_env_name(name)?;
+            if value.contains('\0') {
+                return Err(format!(
+                    "command environment variable '{name}' contains a null byte"
+                ));
+            }
+        }
         if self.invocations.is_empty() {
             return Err(format!(
                 "command '{}' must allow at least one invocation",
@@ -400,10 +378,7 @@ mod tests {
                 },
                 {
                     "name": "git",
-                    "git_credential_helper": {
-                        "command": "gh",
-                        "args": ["auth", "git-credential"]
-                    },
+                    "environment": { "GIT_TERMINAL_PROMPT": "0" },
                     "invocations": [{
                         "args_prefix": ["status"]
                     }]
@@ -437,6 +412,23 @@ mod tests {
     }
 
     #[test]
+    fn secret_store_names_are_package_local() {
+        let mut github = valid_manifest();
+        github.name = "github".to_string();
+        let mut other = valid_manifest();
+        other.name = "other".to_string();
+
+        assert_eq!(
+            github.secret_store_name("GITHUB_TOKEN"),
+            "shell/github/GITHUB_TOKEN"
+        );
+        assert_ne!(
+            github.secret_store_name("GITHUB_TOKEN"),
+            other.secret_store_name("GITHUB_TOKEN")
+        );
+    }
+
+    #[test]
     fn rejects_unsafe_capabilities() {
         let mut manifest = valid_manifest();
         manifest.allowed_hosts = vec!["https://github.com".to_string()];
@@ -457,17 +449,6 @@ mod tests {
         assert_eq!(
             manifest.validate().unwrap_err(),
             "command 'gh' references undeclared secret 'OTHER_TOKEN'"
-        );
-
-        let mut manifest = valid_manifest();
-        manifest.commands[1]
-            .git_credential_helper
-            .as_mut()
-            .unwrap()
-            .command = "missing".to_string();
-        assert_eq!(
-            manifest.validate().unwrap_err(),
-            "git credential helper command 'missing' is not exposed by the tool"
         );
     }
 }

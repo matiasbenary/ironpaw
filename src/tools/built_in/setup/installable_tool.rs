@@ -102,7 +102,7 @@ impl InstallableTool {
     pub(super) fn secret_store_name(&self, name: &str) -> String {
         match self {
             Self::Wasm(_) => stored_secret_name(name),
-            Self::Shell(_) => name.to_string(),
+            Self::Shell(package) => package.manifest.secret_store_name(name),
         }
     }
 

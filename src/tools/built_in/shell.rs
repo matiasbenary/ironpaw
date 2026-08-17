@@ -200,7 +200,7 @@ mod tests {
             },
             commands: vec![ShellCommand {
                 name: "hello".to_string(),
-                git_credential_helper: None,
+                environment: std::collections::BTreeMap::new(),
                 invocations: vec![ShellInvocation {
                     args_prefix: Vec::new(),
                     secrets: Vec::new(),

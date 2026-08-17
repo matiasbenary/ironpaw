@@ -4,6 +4,7 @@ pub mod http;
 pub(crate) mod oauth;
 pub(crate) mod policy;
 pub(crate) mod proxy;
+pub mod proxy_bridge;
 pub(crate) mod public;
 pub(crate) mod server;
 

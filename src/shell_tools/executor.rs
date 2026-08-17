@@ -10,7 +10,7 @@ use crate::secrets::ToolSecrets;
 
 use super::{
     DEFAULT_COMMANDS, ShellCommand, ShellInvocation, ShellToolManifest,
-    process::{ProcessOutput, ProcessRequest, ProcessRunner},
+    process::{ProcessMode, ProcessOutput, ProcessRequest, ProcessRunner},
 };
 
 const QUEUE_CAPACITY: usize = 32;
@@ -176,13 +176,17 @@ async fn install(
     }
     std::fs::create_dir_all(&tool_dir).map_err(|error| error.to_string())?;
     let runner = match isolation {
-        Isolation::Production => {
-            ProcessRunner::new(tool_dir.clone(), manifest.allowed_hosts.clone())
-        }
+        Isolation::Production => ProcessRunner::new(
+            tool_dir.clone(),
+            manifest.allowed_hosts.clone(),
+            ProcessMode::Install,
+        ),
         #[cfg(debug_assertions)]
-        Isolation::Portable => {
-            ProcessRunner::portable(tool_dir.clone(), manifest.allowed_hosts.clone())
-        }
+        Isolation::Portable => ProcessRunner::portable(
+            tool_dir.clone(),
+            manifest.allowed_hosts.clone(),
+            ProcessMode::Install,
+        ),
     };
     let result = async {
         let runner = runner?;
@@ -213,24 +217,24 @@ async fn run(
         .find(|command| command.name == command_name)
     {
         let invocation = validate_args(command, &args)?;
-        let env = manifest
+        let secrets = manifest
             .secrets
             .iter()
             .filter(|secret| invocation.secrets.contains(&secret.name))
             .map(|secret| {
                 secrets
-                    .get(&secret.name)
+                    .get(&manifest.secret_store_name(&secret.name))
                     .filter(|value| !value.is_empty())
                     .map(|value| (secret.env.clone(), value))
                     .ok_or_else(|| format!("required secret '{}' is unavailable", secret.name))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut env = env;
-        if let Some(helper) = &command.git_credential_helper
-            && !invocation.secrets.is_empty()
-        {
-            env.extend(git_credential_environment(helper));
-        }
+        let mut env = command
+            .environment
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        env.extend(secrets);
         (tool_dir.join("bin").join(command_name), env)
     } else if DEFAULT_COMMANDS.contains(&command_name) {
         if args.iter().any(|arg| arg.contains('\0')) {
@@ -246,9 +250,17 @@ async fn run(
         ));
     };
     let runner = match isolation {
-        Isolation::Production => ProcessRunner::new(tool_dir, manifest.allowed_hosts.clone())?,
+        Isolation::Production => ProcessRunner::new(
+            tool_dir,
+            manifest.allowed_hosts.clone(),
+            ProcessMode::Execute,
+        )?,
         #[cfg(debug_assertions)]
-        Isolation::Portable => ProcessRunner::portable(tool_dir, manifest.allowed_hosts.clone())?,
+        Isolation::Portable => ProcessRunner::portable(
+            tool_dir,
+            manifest.allowed_hosts.clone(),
+            ProcessMode::Execute,
+        )?,
     };
     runner
         .run(ProcessRequest {
@@ -259,44 +271,6 @@ async fn run(
             timeout,
         })
         .await
-}
-
-fn git_credential_environment(helper: &super::ShellGitCredentialHelper) -> Vec<(String, String)> {
-    let helper = format!(
-        "!\"$IRONPAW_TOOL_BIN/{}\"{}",
-        helper.command,
-        helper
-            .args
-            .iter()
-            .map(|arg| format!(" {arg}"))
-            .collect::<String>()
-    );
-    vec![
-        ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
-        ("GIT_CONFIG_COUNT".to_string(), "5".to_string()),
-        (
-            "GIT_CONFIG_KEY_0".to_string(),
-            "credential.helper".to_string(),
-        ),
-        ("GIT_CONFIG_VALUE_0".to_string(), String::new()),
-        (
-            "GIT_CONFIG_KEY_1".to_string(),
-            "credential.helper".to_string(),
-        ),
-        ("GIT_CONFIG_VALUE_1".to_string(), helper),
-        ("GIT_CONFIG_KEY_2".to_string(), "core.hooksPath".to_string()),
-        ("GIT_CONFIG_VALUE_2".to_string(), "/dev/null".to_string()),
-        (
-            "GIT_CONFIG_KEY_3".to_string(),
-            "protocol.ext.allow".to_string(),
-        ),
-        ("GIT_CONFIG_VALUE_3".to_string(), "never".to_string()),
-        (
-            "GIT_CONFIG_KEY_4".to_string(),
-            "credential.interactive".to_string(),
-        ),
-        ("GIT_CONFIG_VALUE_4".to_string(), "false".to_string()),
-    ]
 }
 
 fn system_command(name: &str) -> Result<PathBuf, String> {
@@ -391,7 +365,7 @@ mod tests {
             },
             commands: vec![ShellCommand {
                 name: script_name.to_string(),
-                git_credential_helper: None,
+                environment: std::collections::BTreeMap::new(),
                 invocations: vec![ShellInvocation {
                     args_prefix: Vec::new(),
                     secrets: Vec::new(),
@@ -422,7 +396,7 @@ mod tests {
     fn validates_declared_command_interface() {
         let command = ShellCommand {
             name: "gh".to_string(),
-            git_credential_helper: None,
+            environment: std::collections::BTreeMap::new(),
             invocations: vec![ShellInvocation {
                 args_prefix: vec!["issue".to_string(), "list".to_string()],
                 secrets: Vec::new(),
@@ -454,24 +428,6 @@ mod tests {
         assert!(error.contains("--repo"));
     }
 
-    #[test]
-    fn configures_git_credential_helper_without_persisting_the_token() {
-        let env = git_credential_environment(&super::super::ShellGitCredentialHelper {
-            command: "gh".to_string(),
-            args: vec!["auth".to_string(), "git-credential".to_string()],
-        })
-        .into_iter()
-        .collect::<std::collections::HashMap<_, _>>();
-
-        assert_eq!(env["GIT_TERMINAL_PROMPT"], "0");
-        assert_eq!(env["GIT_CONFIG_VALUE_0"], "");
-        assert_eq!(
-            env["GIT_CONFIG_VALUE_1"],
-            "!\"$IRONPAW_TOOL_BIN/gh\" auth git-credential"
-        );
-        assert!(!env.values().any(|value| value.contains("secret")));
-    }
-
     #[tokio::test]
     async fn injects_only_declared_secrets() {
         let tools_dir =
@@ -479,11 +435,14 @@ mod tests {
         install_script(
             &tools_dir,
             "reveal",
-            "#!/bin/sh\nprintf '%s:%s' \"$TOKEN\" \"${UNDECLARED-unset}\"\n",
+            "#!/bin/sh\nprintf '%s:%s:%s' \"$TOKEN\" \"${UNDECLARED-unset}\" \"$STATIC\"\n",
         );
         let secrets = Secrets::for_tests();
-        secrets.set("stored-token", "secret").unwrap();
+        secrets.set("stored-token", "other-tool-secret").unwrap();
         let mut manifest = manifest("reveal");
+        manifest.commands[0]
+            .environment
+            .insert("STATIC".to_string(), "configured".to_string());
         manifest.secrets.push(ShellSecret {
             name: "stored-token".to_string(),
             env: "TOKEN".to_string(),
@@ -491,6 +450,9 @@ mod tests {
         manifest.commands[0].invocations[0]
             .secrets
             .push("stored-token".to_string());
+        secrets
+            .set(&manifest.secret_store_name("stored-token"), "secret")
+            .unwrap();
         let executor = ShellExecutor::portable(tools_dir.clone(), secrets.tools);
         let output = executor
             .execute(
@@ -502,7 +464,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(output.stdout, "secret:unset");
+        assert_eq!(output.stdout, "secret:unset:configured");
 
         manifest.commands[0].invocations[0].secrets.clear();
         let output = executor
@@ -515,7 +477,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(output.stdout, ":unset");
+        assert_eq!(output.stdout, ":unset:configured");
         fs::remove_dir_all(tools_dir).unwrap();
     }
 
@@ -566,6 +528,31 @@ mod tests {
             .await
             .unwrap();
         assert!(tools_dir.join("example/bin/sh").exists());
+        assert!(tools_dir.join("example/workspace").exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            for path in [
+                tools_dir.join("example"),
+                tools_dir.join("example/bin"),
+                tools_dir.join("example/shell.json"),
+                tools_dir.join("example/SKILL.md"),
+            ] {
+                assert_eq!(
+                    fs::symlink_metadata(path).unwrap().permissions().mode() & 0o222,
+                    0
+                );
+            }
+            assert_ne!(
+                fs::metadata(tools_dir.join("example/workspace"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o200,
+                0
+            );
+        }
         assert_eq!(
             fs::read_to_string(tools_dir.join("example/SKILL.md")).unwrap(),
             "Use sh carefully."
@@ -588,6 +575,14 @@ mod tests {
             .unwrap();
         assert_eq!(output.exit_code, Some(0));
 
+        #[cfg(unix)]
+        for path in [tools_dir.join("example"), tools_dir.join("example/bin")] {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_mode(permissions.mode() | 0o700);
+            fs::set_permissions(path, permissions).unwrap();
+        }
         fs::remove_dir_all(tools_dir).unwrap();
         fs::remove_dir_all(source_dir).unwrap();
     }
