@@ -75,7 +75,6 @@
             { "name": "--repo", "takes_value": true },
             { "name": "--title", "takes_value": true },
             { "name": "--body", "takes_value": true },
-            { "name": "--body-file", "takes_value": true },
             { "name": "--label", "takes_value": true, "repeatable": true },
             { "name": "--assignee", "takes_value": true, "repeatable": true },
             { "name": "--milestone", "takes_value": true },
@@ -89,7 +88,6 @@
           "options": [
             { "name": "--repo", "takes_value": true },
             { "name": "--body", "takes_value": true },
-            { "name": "--body-file", "takes_value": true },
             { "name": "--edit-last" },
             { "name": "--delete-last" }
           ],
@@ -134,7 +132,6 @@
             { "name": "--repo", "takes_value": true },
             { "name": "--title", "takes_value": true },
             { "name": "--body", "takes_value": true },
-            { "name": "--body-file", "takes_value": true },
             { "name": "--base", "takes_value": true },
             { "name": "--head", "takes_value": true },
             { "name": "--draft" },
@@ -155,7 +152,6 @@
           "options": [
             { "name": "--repo", "takes_value": true },
             { "name": "--body", "takes_value": true },
-            { "name": "--body-file", "takes_value": true },
             { "name": "--edit-last" },
             { "name": "--delete-last" }
           ],
@@ -198,9 +194,19 @@
     },
     {
       "name": "git",
-      "git_credential_helper": {
-        "command": "gh",
-        "args": ["auth", "git-credential"]
+      "environment": {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "5",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_KEY_1": "credential.helper",
+        "GIT_CONFIG_VALUE_1": "!\"$IRONPAW_TOOL_BIN/gh\" auth git-credential",
+        "GIT_CONFIG_KEY_2": "core.hooksPath",
+        "GIT_CONFIG_VALUE_2": "/dev/null",
+        "GIT_CONFIG_KEY_3": "protocol.ext.allow",
+        "GIT_CONFIG_VALUE_3": "never",
+        "GIT_CONFIG_KEY_4": "credential.interactive",
+        "GIT_CONFIG_VALUE_4": "false"
       },
       "invocations": [
         {
