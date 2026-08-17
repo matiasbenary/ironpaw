@@ -1,10 +1,15 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
-use crate::{bus::ConversationKey, message::Message, tools::ToolResult};
+use crate::{message::Message, tools::ToolResult};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionContext {
-    pub invoked_by: InvocationScope,
+    /// Host-owned path relative to the runtime files directory.
+    pub workspace: PathBuf,
+    tool_workspace: Option<PathBuf>,
     /// Every registered tool entered through the host runner, in call order.
     pub tool_stack: Vec<String>,
     /// Tool usage for this turn, shared by nested and asynchronous tools.
@@ -20,9 +25,10 @@ pub(crate) struct ToolBudget {
 }
 
 impl ExecutionContext {
-    pub fn new(invoked_by: InvocationScope) -> Self {
+    pub fn new(workspace: PathBuf) -> Self {
         Self {
-            invoked_by,
+            workspace,
+            tool_workspace: None,
             tool_stack: Vec::new(),
             tool_budget: Arc::new(Mutex::new(ToolBudget::default())),
             depth: 0,
@@ -33,18 +39,26 @@ impl ExecutionContext {
         let mut tool_stack = self.tool_stack.clone();
         tool_stack.push(tool_name);
         Self {
-            invoked_by: self.invoked_by.clone(),
+            workspace: self.workspace.clone(),
+            tool_workspace: self.tool_workspace.clone(),
             tool_stack,
             tool_budget: Arc::clone(&self.tool_budget),
             depth: self.depth,
         }
     }
 
-    pub fn conversation(&self) -> Option<&ConversationKey> {
-        match &self.invoked_by {
-            InvocationScope::Conversation(conversation) => Some(conversation),
-            InvocationScope::ScheduledAutomation { .. } => None,
+    pub(crate) fn with_tool_workspace(&self, workspace: PathBuf) -> Self {
+        Self {
+            workspace: self.workspace.clone(),
+            tool_workspace: Some(workspace),
+            tool_stack: self.tool_stack.clone(),
+            tool_budget: Arc::clone(&self.tool_budget),
+            depth: self.depth,
         }
+    }
+
+    pub(crate) fn files_workspace(&self) -> &std::path::Path {
+        self.tool_workspace.as_deref().unwrap_or(&self.workspace)
     }
 
     pub(crate) fn drain_tool_budget_messages(&self) -> Vec<Message> {
@@ -56,12 +70,6 @@ impl ExecutionContext {
                 .pending_warnings,
         )
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum InvocationScope {
-    Conversation(ConversationKey),
-    ScheduledAutomation { automation_id: String },
 }
 
 #[derive(Clone)]
@@ -88,5 +96,28 @@ impl ToolResponder {
         if sender.send(result).is_err() {
             eprintln!("tool response receiver was dropped");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_external_tools_are_siblings() {
+        let context = ExecutionContext::new(PathBuf::from("conversations/owner"));
+        let first =
+            context.with_tool_workspace(crate::message::external_tool_workspace(&context, "first"));
+        let second =
+            first.with_tool_workspace(crate::message::external_tool_workspace(&first, "second"));
+
+        assert_eq!(
+            first.files_workspace(),
+            std::path::Path::new("conversations/owner/tools/6669727374")
+        );
+        assert_eq!(
+            second.files_workspace(),
+            std::path::Path::new("conversations/owner/tools/7365636f6e64")
+        );
     }
 }

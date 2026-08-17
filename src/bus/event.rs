@@ -161,18 +161,19 @@ pub enum Event {
         conversation: ConversationKey,
     },
     ToolRequest {
+        request_id: String,
         context: ExecutionContext,
         tool_calls: Vec<ToolCall>,
         #[serde(default)]
         allowed_tool_names: Option<Vec<String>>,
     },
     ToolResponse {
-        context: ExecutionContext,
+        request_id: String,
         tool_call_ids: Vec<String>,
         result: Result<Vec<crate::tools::ToolCallResult>, String>,
     },
     ToolResult {
-        context: ExecutionContext,
+        request_id: String,
         tool_call_id: String,
         tool_name: String,
         result: crate::tools::ToolResult,

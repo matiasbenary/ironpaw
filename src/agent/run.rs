@@ -5,8 +5,8 @@ use crate::{
     history::{History, HistoryEntry, HistoryId, MessageMetadata},
     inference::{Inference, InferenceError, InferenceRequest},
     memory::Memory,
-    message::{Message, ToolCall, ToolDefinition},
-    tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolRegistry},
+    message::{Message, ToolCall, ToolDefinition, automation_workspace},
+    tools::{self, ExecutionContext, InternalTool, ToolRegistry},
 };
 
 use super::{logger, preamble::system_preamble};
@@ -115,9 +115,7 @@ impl Agent {
         )?;
         let run = AgentRun::new(
             history_id.clone(),
-            ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                automation_id: automation_id.clone(),
-            }),
+            ExecutionContext::new(automation_workspace(&automation_id)),
             tools,
             system_preamble(None),
         );
@@ -144,7 +142,7 @@ impl Agent {
             round += 1;
             run.transient_messages
                 .extend(run.context.drain_tool_budget_messages());
-            self.publish_action(&run.context, ChannelAction::Typing);
+            self.publish_action(&run.history_id, ChannelAction::Typing);
 
             let messages = self.model_messages(&run)?;
             debug_log(format!(
@@ -209,7 +207,7 @@ impl Agent {
             return;
         }
         self.publish_action(
-            &run.context,
+            &run.history_id,
             ChannelAction::Progress {
                 text: "compacting history...".to_string(),
             },
@@ -228,7 +226,7 @@ impl Agent {
         for tool_call in &tool_calls {
             logger::raw_tool_call_logged(tool_call);
             self.publish_action(
-                &run.context,
+                &run.history_id,
                 ChannelAction::Progress {
                     text: format!("calling {}", tool_call.name),
                 },
@@ -240,13 +238,14 @@ impl Agent {
             .iter()
             .map(|tool_call| tool_call.id.clone())
             .collect::<HashSet<_>>();
+        let request_id = uuid::Uuid::new_v4().to_string();
         self.bus.publish(Event::ToolRequest {
+            request_id: request_id.clone(),
             context: run.context.clone(),
             tool_calls,
             allowed_tool_names: Some(run.allowed_tool_names.clone()),
         });
-        let results =
-            wait_for_tool_response(&mut events, &run.context.invoked_by, &expected).await?;
+        let results = wait_for_tool_response(&mut events, &request_id, &expected).await?;
         let result_messages = results
             .iter()
             .map(|result| Message::ToolResult {
@@ -289,13 +288,14 @@ impl Agent {
         Ok(messages)
     }
 
-    fn publish_action(&self, context: &ExecutionContext, action: ChannelAction) {
-        if let Some(conversation) = context.conversation() {
-            self.bus.publish(Event::ChannelAction {
-                conversation: conversation.clone(),
-                action,
-            });
-        }
+    fn publish_action(&self, history_id: &HistoryId, action: ChannelAction) {
+        let HistoryId::Conversation(conversation) = history_id else {
+            return;
+        };
+        self.bus.publish(Event::ChannelAction {
+            conversation: conversation.clone(),
+            action,
+        });
     }
 
     fn latest_user_text(&self, history_id: &HistoryId) -> Result<Option<String>, String> {
@@ -445,16 +445,16 @@ fn strip_message_id_prefix(text: &str) -> &str {
 
 async fn wait_for_tool_response(
     events: &mut tokio::sync::broadcast::Receiver<Event>,
-    scope: &InvocationScope,
+    request_id: &str,
     expected: &HashSet<String>,
 ) -> Result<Vec<crate::tools::ToolCallResult>, String> {
     loop {
         match events.recv().await {
             Ok(Event::ToolResponse {
-                context,
+                request_id: response_id,
                 tool_call_ids,
                 result,
-            }) if &context.invoked_by == scope
+            }) if response_id == request_id
                 && tool_call_ids.iter().collect::<HashSet<_>>()
                     == expected.iter().collect::<HashSet<_>>() =>
             {

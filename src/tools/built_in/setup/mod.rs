@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     automations::Automations,
-    bus::MessageRef,
-    tools::{self, ExecutionContext, InternalTools, InvocationScope, ToolResponder},
+    bus::{ConversationKey, MessageRef},
+    tools::{self, ExecutionContext, InternalTools, ToolResponder},
 };
 
 pub use install_channel::{
@@ -51,12 +51,10 @@ fn stop_setup_automation(automations: &Arc<Automations>, name: &str) -> Result<(
 
 pub(super) async fn send(
     tools: &InternalTools,
+    conversation: &ConversationKey,
     content: &str,
     ctx: &ExecutionContext,
 ) -> Result<(), String> {
-    let InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
-        return Err("setup messages require a conversation".to_string());
-    };
     let result = tools::run_tool(
         tools,
         "send_message",
@@ -74,6 +72,7 @@ pub(super) async fn send(
 
 pub(super) async fn request_choice(
     tools: &InternalTools,
+    conversation: &ConversationKey,
     question: &str,
     options: &[(&str, &str)],
     ctx: &ExecutionContext,
@@ -82,6 +81,7 @@ pub(super) async fn request_choice(
         tools,
         "request_user_input",
         serde_json::json!({
+            "conversation": conversation,
             "question": question,
             "options": options
                 .iter()
@@ -96,6 +96,7 @@ pub(super) async fn request_choice(
 
 pub(super) async fn delete_current_message(
     tools: &InternalTools,
+    conversation: &ConversationKey,
     ctx: &ExecutionContext,
     message_id: Option<&str>,
     label: &str,
@@ -104,18 +105,21 @@ pub(super) async fn delete_current_message(
         eprintln!("{label} could not delete inbound setup message: missing message_id");
         return;
     };
-    if let InvocationScope::Conversation(conversation) = &ctx.invoked_by
-        && let Err(error) = tools.history.delete_external_message(&MessageRef {
-            conversation: conversation.clone(),
-            message_id: message_id.to_string(),
-        })
-    {
+    if let Err(error) = tools.history.delete_external_message(&MessageRef {
+        conversation: conversation.clone(),
+        message_id: message_id.to_string(),
+    }) {
         eprintln!("{label} could not delete inbound setup history: {error}");
     }
     let result = tools::run_tool(
         tools,
         "delete_message",
-        serde_json::json!({ "message_id": message_id }),
+        serde_json::json!({
+            "channel": conversation.channel,
+            "chat_id": conversation.chat_id,
+            "thread_id": conversation.thread_id,
+            "message_id": message_id,
+        }),
         ctx,
     )
     .await;

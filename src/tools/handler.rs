@@ -25,10 +25,13 @@ impl ToolHandler {
             loop {
                 match events.recv().await {
                     Ok(Event::ToolRequest {
+                        request_id,
                         context,
                         tool_calls,
                         allowed_tool_names,
-                    }) => this.spawn_tool_request(context, tool_calls, allowed_tool_names),
+                    }) => {
+                        this.spawn_tool_request(request_id, context, tool_calls, allowed_tool_names)
+                    }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -39,6 +42,7 @@ impl ToolHandler {
 
     fn spawn_tool_request(
         &self,
+        request_id: String,
         context: ExecutionContext,
         tool_calls: Vec<ToolCall>,
         allowed_tool_names: Option<Vec<String>>,
@@ -49,6 +53,7 @@ impl ToolHandler {
             let tool_call_ids = tool_calls.iter().map(|call| call.id.clone()).collect();
             let result = execute_tool_request(
                 &bus,
+                &request_id,
                 registry.as_ref(),
                 &context,
                 tool_calls,
@@ -56,7 +61,7 @@ impl ToolHandler {
             )
             .await;
             bus.publish(Event::ToolResponse {
-                context,
+                request_id,
                 tool_call_ids,
                 result,
             });
@@ -66,6 +71,7 @@ impl ToolHandler {
 
 async fn execute_tool_request(
     bus: &Bus,
+    request_id: &str,
     registry: &ToolRegistry,
     context: &ExecutionContext,
     tool_calls: Vec<ToolCall>,
@@ -83,7 +89,7 @@ async fn execute_tool_request(
             tool_name: tool_call.name.clone(),
             result: result.clone(),
         });
-        publish_tool_result(bus, context, tool_call, result);
+        publish_tool_result(bus, request_id, tool_call, result);
     }
     Ok(results)
 }
@@ -127,14 +133,9 @@ fn invalid_arguments(registry: &ToolRegistry, tool_name: &str, error: String) ->
     }
 }
 
-fn publish_tool_result(
-    bus: &Bus,
-    context: &ExecutionContext,
-    tool_call: &ToolCall,
-    result: ToolResult,
-) {
+fn publish_tool_result(bus: &Bus, request_id: &str, tool_call: &ToolCall, result: ToolResult) {
     bus.publish(Event::ToolResult {
-        context: context.clone(),
+        request_id: request_id.to_string(),
         tool_call_id: tool_call.id.clone(),
         tool_name: tool_call.name.clone(),
         result,

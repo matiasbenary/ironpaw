@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    message::ToolDefinition,
+    message::{ToolDefinition, external_tool_workspace},
     tools::{self, ExecutionContext, InternalTool, ToolRegistry, ToolResponder},
 };
 
@@ -301,10 +301,8 @@ impl InternalTool for DynamicTool {
         ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
-        let result = self
-            .scripts
-            .run(self.script.clone(), ctx.clone(), args)
-            .await;
+        let ctx = ctx.with_tool_workspace(external_tool_workspace(ctx, &self.name));
+        let result = self.scripts.run(self.script.clone(), ctx, args).await;
         responder.respond(result.map_err(crate::tools::ToolError::new));
     }
 }

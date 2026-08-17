@@ -32,27 +32,14 @@ pub async fn install(
     let json = serde_json::to_string_pretty(manifest).map_err(|error| error.to_string())?;
     std::fs::write(tool_dir.join(MANIFEST_FILENAME), format!("{json}\n"))
         .map_err(|error| error.to_string())?;
-    let workspace = tool_dir.join("workspace");
-    match std::fs::symlink_metadata(&workspace) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err("shell tool workspace must be a directory".to_string());
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir(&workspace).map_err(|error| error.to_string())?;
-        }
-        Err(error) => return Err(error.to_string()),
-    }
-    make_package_read_only(tool_dir, &workspace)
+    make_package_read_only(tool_dir)
 }
 
 #[cfg(unix)]
-fn make_package_read_only(tool_dir: &Path, workspace: &Path) -> Result<(), String> {
+fn make_package_read_only(tool_dir: &Path) -> Result<(), String> {
     for entry in std::fs::read_dir(tool_dir).map_err(|error| error.to_string())? {
         let path = entry.map_err(|error| error.to_string())?.path();
-        if path != workspace {
-            remove_write_permissions(&path)?;
-        }
+        remove_write_permissions(&path)?;
     }
     remove_own_write_permissions(tool_dir)
 }
@@ -83,7 +70,7 @@ fn remove_own_write_permissions(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(unix))]
-fn make_package_read_only(_tool_dir: &Path, _workspace: &Path) -> Result<(), String> {
+fn make_package_read_only(_tool_dir: &Path) -> Result<(), String> {
     Err("shell tools are supported only on Unix platforms".to_string())
 }
 

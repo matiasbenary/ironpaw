@@ -1,7 +1,4 @@
-use crate::tools::{
-    ExecutionContext,
-    setup::{request_choice, send},
-};
+use crate::tools::ExecutionContext;
 
 use super::{
     InstallSession, InstallStage, SetupMode, SetupToolTool,
@@ -116,8 +113,8 @@ impl SetupToolTool {
         .await?;
         let prompt = pending.prompt();
         session.stage = InstallStage::Autoconfigure(pending);
-        self.state.save(session);
-        send(&self.setup.tools, &prompt, ctx).await
+        self.state.save(session.clone());
+        session.send(&self.setup.tools, &prompt, ctx).await
     }
 
     pub(super) async fn start_account(
@@ -177,14 +174,15 @@ impl SetupToolTool {
         session.account_current = None;
         if matches!(session.mode, SetupMode::Install) {
             session.stage = InstallStage::AddAnother;
-            self.state.save(session);
-            request_choice(
-                &self.setup.tools,
-                "Add another account?",
-                &[("Add another", "yes"), ("Finish", "no")],
-                ctx,
-            )
-            .await
+            self.state.save(session.clone());
+            session
+                .request_choice(
+                    &self.setup.tools,
+                    "Add another account?",
+                    &[("Add another", "yes"), ("Finish", "no")],
+                    ctx,
+                )
+                .await
         } else {
             self.prompt_account_menu(session, ctx).await
         }
@@ -196,19 +194,20 @@ impl SetupToolTool {
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
         session.stage = InstallStage::AccountMenu;
-        self.state.save(session);
-        request_choice(
-            &self.setup.tools,
-            "Manage accounts",
-            &[
-                ("Add", "add"),
-                ("Reconfigure", "reconfigure"),
-                ("Remove", "remove"),
-                ("Finish", "finish"),
-            ],
-            ctx,
-        )
-        .await
+        self.state.save(session.clone());
+        session
+            .request_choice(
+                &self.setup.tools,
+                "Manage accounts",
+                &[
+                    ("Add", "add"),
+                    ("Reconfigure", "reconfigure"),
+                    ("Remove", "remove"),
+                    ("Finish", "finish"),
+                ],
+                ctx,
+            )
+            .await
     }
 
     pub(super) async fn prompt_account_choice(
@@ -222,12 +221,14 @@ impl SetupToolTool {
         }
         session.stage = InstallStage::AccountAction { remove };
         let names = session.accounts.keys().cloned().collect::<Vec<_>>();
-        self.state.save(session);
+        self.state.save(session.clone());
         let choices = names
             .iter()
             .map(|name| (name.as_str(), name.as_str()))
             .collect::<Vec<_>>();
-        request_choice(&self.setup.tools, "Which account?", &choices, ctx).await
+        session
+            .request_choice(&self.setup.tools, "Which account?", &choices, ctx)
+            .await
     }
 }
 

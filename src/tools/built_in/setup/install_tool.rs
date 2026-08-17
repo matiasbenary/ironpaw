@@ -24,8 +24,8 @@ use crate::{
     config::RuntimeLayout,
     secrets::Secrets,
     tools::{
-        self, ExecutionContext, InternalTool, InvocationScope, ToolResponder,
-        setup::{SessionState, SetupServices, request_choice},
+        self, ExecutionContext, InternalTool, InternalTools, ToolResponder,
+        setup::{SessionState, SetupServices},
     },
 };
 
@@ -37,12 +37,16 @@ use installable_tool::InstallableTool;
 pub struct InstallToolParams {
     /// Tool name to install, for example "web_search".
     pub name: String,
+    /// Conversation where the setup flow should continue.
+    pub conversation: ConversationKey,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct ConfigureToolParams {
     /// Installed tool name, for example "web_search".
     pub name: String,
+    /// Conversation where the setup flow should continue.
+    pub conversation: ConversationKey,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -61,6 +65,7 @@ pub struct ListToolsParams {}
 
 #[derive(Clone)]
 struct InstallSession {
+    conversation: ConversationKey,
     package: InstallableTool,
     mode: SetupMode,
     stage: InstallStage,
@@ -91,6 +96,37 @@ enum InstallStage {
 enum SetupMode {
     Install,
     Configure { current_config: serde_json::Value },
+}
+
+impl InstallSession {
+    async fn send(
+        &self,
+        tools: &InternalTools,
+        content: &str,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
+        super::send(tools, &self.conversation, content, ctx).await
+    }
+
+    async fn request_choice(
+        &self,
+        tools: &InternalTools,
+        question: &str,
+        options: &[(&str, &str)],
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
+        super::request_choice(tools, &self.conversation, question, options, ctx).await
+    }
+
+    async fn delete_current_message(
+        &self,
+        tools: &InternalTools,
+        ctx: &ExecutionContext,
+        message_id: Option<&str>,
+    ) {
+        super::delete_current_message(tools, &self.conversation, ctx, message_id, "install_tool")
+            .await;
+    }
 }
 
 pub struct InstallToolTool {
@@ -163,19 +199,20 @@ impl InstallToolTool {
         responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
         let name = normalize_tool_name(&params.name)?;
-        self.start(&name, ctx, responder).await
+        self.start(&name, params.conversation, ctx, responder).await
     }
 
     async fn start(
         &self,
         name: &str,
+        conversation: ConversationKey,
         ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
-        let conversation = conversation(ctx, "install_tool")?;
         let package = InstallableTool::locate(&self.setup.layout, name)?;
         let approval_prompt = package.approval_prompt();
-        self.state.save(InstallSession {
+        let session = InstallSession {
+            conversation: conversation.clone(),
             package,
             mode: SetupMode::Install,
             stage: InstallStage::ConfirmInstall,
@@ -186,17 +223,19 @@ impl InstallToolTool {
             account_current: None,
             removed_secrets: BTreeSet::new(),
             continuation: Some(responder),
-        });
+        };
+        self.state.save(session.clone());
         self.setup
             .automations
-            .add_runtime(Self::automation(name, conversation))?;
-        request_choice(
-            &self.setup.tools,
-            &approval_prompt,
-            &[("Install", "yes"), ("Cancel", "no")],
-            ctx,
-        )
-        .await?;
+            .add_runtime(Self::automation(name, &conversation))?;
+        session
+            .request_choice(
+                &self.setup.tools,
+                &approval_prompt,
+                &[("Install", "yes"), ("Cancel", "no")],
+                ctx,
+            )
+            .await?;
         Ok(serde_json::json!({
             "ok": true,
             "tool": name,
@@ -211,7 +250,7 @@ impl InstallToolTool {
         responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
         let name = normalize_tool_name(&params.name)?;
-        let conversation = conversation(ctx, "configure_tool")?;
+        let conversation = params.conversation;
         let package = InstallableTool::locate(&self.setup.layout, &name)?;
         let InstallableTool::Wasm(_) = &package else {
             return Err("shell tools do not have configurable non-secret settings".to_string());
@@ -239,6 +278,7 @@ impl InstallToolTool {
         let account_setup = package.accounts().is_some();
         let config_before_secrets = package.config_before_secrets();
         self.state.save(InstallSession {
+            conversation: conversation.clone(),
             package,
             mode: SetupMode::Configure { current_config },
             stage: if account_setup {
@@ -258,7 +298,7 @@ impl InstallToolTool {
         });
         self.setup
             .automations
-            .add_runtime(Self::automation(&name, conversation))?;
+            .add_runtime(Self::automation(&name, &conversation))?;
         let session = self.state.get().expect("configure session");
         if account_setup {
             self.setup_tool().prompt_account_menu(session, ctx).await?;
@@ -275,18 +315,6 @@ impl InstallToolTool {
             "tool": name,
             "message": "deterministic tool configuration prompt sent"
         }))
-    }
-}
-
-fn conversation<'a>(
-    ctx: &'a ExecutionContext,
-    operation: &str,
-) -> Result<&'a ConversationKey, String> {
-    match &ctx.invoked_by {
-        InvocationScope::Conversation(conversation) => Ok(conversation),
-        InvocationScope::ScheduledAutomation { automation_id } => Err(format!(
-            "{operation} cannot start from scheduled automation '{automation_id}'"
-        )),
     }
 }
 
@@ -319,8 +347,8 @@ impl InternalTool for InstallToolTool {
     tools::tool_metadata!(
         "install_tool",
         InstallToolParams,
-        "Install a local WASM or shell tool package. When called with only \
-             `name`, this starts a deterministic setup flow that asks the user \
+        "Install a local WASM or shell tool package for the supplied conversation. \
+             This starts a deterministic setup flow that asks the user \
              for confirmation, configuration, and required secrets without exposing those \
              secret replies to the LLM."
     );

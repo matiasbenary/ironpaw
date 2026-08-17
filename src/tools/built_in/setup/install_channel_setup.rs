@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     automations::Automations,
-    bus::SenderKind,
+    bus::{ConversationKey, SenderKind},
     config::RuntimeLayout,
     tools::{
         ExecutionContext, InternalTools,
@@ -31,6 +31,7 @@ impl SetupChannelTool {
         name: &str,
         channel: Option<&str>,
         channel_user_id: Option<&str>,
+        conversation: &ConversationKey,
         message: &str,
         message_id: Option<&str>,
         ctx: &ExecutionContext,
@@ -51,13 +52,14 @@ impl SetupChannelTool {
         match session.stage {
             InstallStage::Confirm => {
                 if !is_yes(message) {
-                    self.cancel(session, tools, automations, ctx).await?;
+                    self.cancel(session, tools, automations, conversation, ctx)
+                        .await?;
                     return Ok(serde_json::json!({ "ok": true, "cancelled": true }));
                 }
                 let mut session = session;
                 configure_generated_secrets(&mut session.secrets, &self.setup.secrets)?;
                 if session.secrets.is_empty() {
-                    self.prompt_config_or_finish(session, layout, tools, ctx)
+                    self.prompt_config_or_finish(session, layout, tools, conversation, ctx)
                         .await?;
                     return Ok(serde_json::json!({ "ok": true }));
                 }
@@ -65,6 +67,7 @@ impl SetupChannelTool {
                 self.state.save(session.clone());
                 send(
                     tools,
+                    conversation,
                     &secret_prompt(&session.package, &session.secrets[0]),
                     ctx,
                 )
@@ -77,15 +80,22 @@ impl SetupChannelTool {
                 self.setup
                     .secrets
                     .set(&stored_secret_name(&secret.name), &value)?;
-                delete_current_message(tools, ctx, message_id, "install_channel").await;
+                delete_current_message(tools, conversation, ctx, message_id, "install_channel")
+                    .await;
 
                 let next = index + 1;
                 if let Some(secret) = session.secrets.get(next) {
                     session.stage = InstallStage::Secret { index: next };
                     self.state.save(session.clone());
-                    send(tools, &secret_prompt(&session.package, secret), ctx).await?;
+                    send(
+                        tools,
+                        conversation,
+                        &secret_prompt(&session.package, secret),
+                        ctx,
+                    )
+                    .await?;
                 } else {
-                    self.prompt_config_or_finish(session, layout, tools, ctx)
+                    self.prompt_config_or_finish(session, layout, tools, conversation, ctx)
                         .await?;
                 }
             }
@@ -101,9 +111,10 @@ impl SetupChannelTool {
                 if let Some(config) = configs.get(next) {
                     session.stage = InstallStage::Config { index: next };
                     self.state.save(session.clone());
-                    send(tools, config_prompt(config), ctx).await?;
+                    send(tools, conversation, config_prompt(config), ctx).await?;
                 } else {
-                    self.complete(session, layout, tools, ctx).await?;
+                    self.complete(session, layout, tools, conversation, ctx)
+                        .await?;
                 }
             }
             InstallStage::Verify {
@@ -117,6 +128,7 @@ impl SetupChannelTool {
                     let Some(channel_user_id) = channel_user_id else {
                         send(
                             tools,
+                            conversation,
                             "I received the verification code, but this channel did not provide a stable user id. Continue setup from the original conversation.",
                             ctx,
                         )
@@ -125,27 +137,36 @@ impl SetupChannelTool {
                     };
                     set_channel_owner_id(layout, &session.package, channel_user_id)?;
                     self.activate_package(&session.package).await?;
-                    self.finish(session, tools, automations, ctx, true).await?;
+                    self.finish(session, tools, automations, conversation, ctx, true)
+                        .await?;
                     return Ok(serde_json::json!({ "ok": true, "verified": true }));
                 }
 
-                let is_setup_conversation = is_setup_conversation(&session, ctx);
+                let is_setup_conversation = is_setup_conversation(&session, conversation);
                 match message.trim().to_ascii_lowercase().as_str() {
                     _ if !is_setup_conversation
                         && channel == Some(session.package.name.as_str()) =>
                     {
-                        send(tools, "Please enter the verification code.", ctx).await?;
+                        send(
+                            tools,
+                            conversation,
+                            "Please enter the verification code.",
+                            ctx,
+                        )
+                        .await?;
                     }
                     _ if !is_setup_conversation => {}
                     "retry" => {
-                        self.retry(session, tools, ctx).await?;
+                        self.retry(session, tools, conversation, ctx).await?;
                     }
                     "continue" if activated => {
-                        self.finish(session, tools, automations, ctx, false).await?;
+                        self.finish(session, tools, automations, conversation, ctx, false)
+                            .await?;
                     }
                     "continue" => {
                         request_verification_choice(
                             tools,
+                            conversation,
                             "The channel has not started successfully yet.",
                             false,
                             ctx,
@@ -153,11 +174,13 @@ impl SetupChannelTool {
                         .await?;
                     }
                     "rollback" | "cancel" => {
-                        self.rollback(session, tools, automations, ctx).await?;
+                        self.rollback(session, tools, automations, conversation, ctx)
+                            .await?;
                     }
                     _ if activated => {
                         request_verification_choice(
                             tools,
+                            conversation,
                             &format!(
                                 "I am waiting for a message from the {} channel containing the verification code I sent above.",
                                 session.package.name
@@ -170,6 +193,7 @@ impl SetupChannelTool {
                     _ => {
                         request_verification_choice(
                             tools,
+                            conversation,
                             "The channel is not ready yet.",
                             false,
                             ctx,
@@ -188,15 +212,18 @@ impl SetupChannelTool {
         mut session: InstallSession,
         layout: &RuntimeLayout,
         tools: &InternalTools,
+        conversation: &ConversationKey,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
         let configs = required_config(&session.package);
         let Some(config) = configs.first() else {
-            return self.complete(session, layout, tools, ctx).await;
+            return self
+                .complete(session, layout, tools, conversation, ctx)
+                .await;
         };
         session.stage = InstallStage::Config { index: 0 };
         self.state.save(session);
-        send(tools, config_prompt(config), ctx).await
+        send(tools, conversation, config_prompt(config), ctx).await
     }
 
     async fn complete(
@@ -204,6 +231,7 @@ impl SetupChannelTool {
         session: InstallSession,
         layout: &RuntimeLayout,
         tools: &InternalTools,
+        conversation: &ConversationKey,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
         write_package(layout, &session.package, &session.config_values)?;
@@ -225,6 +253,7 @@ impl SetupChannelTool {
                     ))?;
                 send(
                     tools,
+                    conversation,
                     &format!(
                         "The {} channel is installed and started. Send me this code from that channel to confirm it works: {}.",
                         session.package.name,
@@ -233,8 +262,14 @@ impl SetupChannelTool {
                     ctx,
                 )
                 .await?;
-                request_verification_choice(tools, "Or choose how to continue setup.", true, ctx)
-                    .await
+                request_verification_choice(
+                    tools,
+                    conversation,
+                    "Or choose how to continue setup.",
+                    true,
+                    ctx,
+                )
+                .await
             }
             Err(err) => {
                 let mut session = session;
@@ -245,6 +280,7 @@ impl SetupChannelTool {
                 self.state.save(session);
                 request_verification_choice(
                     tools,
+                    conversation,
                     &format!("I installed the channel files, but the channel did not start: {err}"),
                     false,
                     ctx,
@@ -258,6 +294,7 @@ impl SetupChannelTool {
         &self,
         mut session: InstallSession,
         tools: &InternalTools,
+        conversation: &ConversationKey,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
         remove_guest_setup_automation(&self.setup.automations, &session.package.name)?;
@@ -267,14 +304,17 @@ impl SetupChannelTool {
             if let Some(config) = configs.first() {
                 session.stage = InstallStage::Config { index: 0 };
                 self.state.save(session);
-                return send(tools, config_prompt(config), ctx).await;
+                return send(tools, conversation, config_prompt(config), ctx).await;
             }
-            return self.complete(session, &self.setup.layout, tools, ctx).await;
+            return self
+                .complete(session, &self.setup.layout, tools, conversation, ctx)
+                .await;
         }
         session.stage = InstallStage::Secret { index: 0 };
         self.state.save(session.clone());
         send(
             tools,
+            conversation,
             &secret_prompt(&session.package, &session.secrets[0]),
             ctx,
         )
@@ -286,6 +326,7 @@ impl SetupChannelTool {
         session: InstallSession,
         tools: &InternalTools,
         automations: &Arc<Automations>,
+        conversation: &ConversationKey,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
         let continuation = session.continuation.clone();
@@ -298,6 +339,7 @@ impl SetupChannelTool {
         stop_setup_automations(automations, &session.package.name)?;
         send(
             tools,
+            conversation,
             &format!(
                 "I rolled back the {} channel setup. I will answer normally again.",
                 session.package.name
@@ -317,6 +359,7 @@ impl SetupChannelTool {
         session: InstallSession,
         tools: &InternalTools,
         automations: &Arc<Automations>,
+        conversation: &ConversationKey,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
         let name = session.package.name.clone();
@@ -325,6 +368,7 @@ impl SetupChannelTool {
         stop_setup_automations(automations, &name)?;
         send(
             tools,
+            conversation,
             "Channel installation cancelled. I will answer normally again.",
             ctx,
         )
@@ -341,6 +385,7 @@ impl SetupChannelTool {
         session: InstallSession,
         tools: &InternalTools,
         automations: &Arc<Automations>,
+        conversation: &ConversationKey,
         ctx: &ExecutionContext,
         verified: bool,
     ) -> Result<(), String> {
@@ -350,6 +395,7 @@ impl SetupChannelTool {
         stop_setup_automations(automations, &name)?;
         send(
             tools,
+            conversation,
             &format!("The {name} channel is installed, configured, and ready to use."),
             ctx,
         )
@@ -378,6 +424,7 @@ impl SetupChannelTool {
 
 async fn request_verification_choice(
     tools: &InternalTools,
+    conversation: &ConversationKey,
     question: &str,
     activated: bool,
     ctx: &ExecutionContext,
@@ -391,7 +438,7 @@ async fn request_verification_choice(
     } else {
         &[("Retry setup", "retry"), ("Rollback", "rollback")][..]
     };
-    request_choice(tools, question, options, ctx).await
+    request_choice(tools, conversation, question, options, ctx).await
 }
 
 fn stop_setup_automations(automations: &Arc<Automations>, name: &str) -> Result<(), String> {

@@ -13,7 +13,7 @@ use futures::StreamExt;
 use crate::{
     automations::{Automation, AutomationEffect, Schedule, ToolEffect},
     config::RuntimeLayout,
-    tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
 mod install;
@@ -112,12 +112,7 @@ impl BrowserTool {
         params: BrowserParams,
         ctx: &ExecutionContext,
     ) -> Result<BrowserOutput, String> {
-        let key = match &ctx.invoked_by {
-            InvocationScope::Conversation(key) => format!("conversation:{}", key.storage_key()),
-            InvocationScope::ScheduledAutomation { automation_id } => {
-                format!("automation:{automation_id}")
-            }
-        };
+        let key = ctx.files_workspace().to_string_lossy().into_owned();
         let mut sessions = self.sessions.lock().await;
         if !sessions.contains_key(&key) {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();

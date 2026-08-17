@@ -35,7 +35,7 @@ pub use built_in::{
     automation, browser, download_file, image_generation, inference, inspect_file, messages,
     request_user_input, search_history, setup, shell, todo, unlock, web,
 };
-pub use context::{ExecutionContext, InvocationScope, ToolResponder};
+pub use context::{ExecutionContext, ToolResponder};
 pub use handler::ToolHandler;
 pub use runner::{run_internal_tool, run_registered_tool, run_tool};
 
@@ -662,9 +662,7 @@ mod tests {
             .add(Arc::new(FakeTool("fake")), ToolVisibility::Internal)
             .expect("add");
 
-        let mut deep = ExecutionContext::new(InvocationScope::ScheduledAutomation {
-            automation_id: "test".to_string(),
-        });
+        let mut deep = ExecutionContext::new(std::path::PathBuf::from("test"));
         deep.depth = runner::MAX_TOOL_DEPTH;
         let result = run_tool(&tools, "fake", serde_json::json!({}), &deep).await;
         assert!(result.is_err());
@@ -673,9 +671,7 @@ mod tests {
             &tools,
             "fake",
             serde_json::json!({}),
-            &ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                automation_id: "test".to_string(),
-            }),
+            &ExecutionContext::new(std::path::PathBuf::from("test")),
         )
         .await;
         assert_eq!(ok.unwrap()["depth"], 1);
@@ -688,9 +684,7 @@ mod tests {
             .registry
             .add(Arc::new(FakeTool("fake")), ToolVisibility::Internal)
             .expect("add");
-        let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
-            automation_id: "test".to_string(),
-        });
+        let ctx = ExecutionContext::new(std::path::PathBuf::from("test"));
         ctx.tool_budget.lock().unwrap().used = runner::MAX_TOOL_CALLS;
 
         let result = run_tool(&tools, "fake", serde_json::json!({}), &ctx).await;
@@ -719,9 +713,8 @@ mod tests {
         let mut events = bus.subscribe();
 
         bus.publish(Event::ToolRequest {
-            context: ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                automation_id: "serial".to_string(),
-            }),
+            request_id: "serial-request".to_string(),
+            context: ExecutionContext::new(std::path::PathBuf::from("serial")),
             tool_calls: ["first", "second"]
                 .into_iter()
                 .enumerate()
@@ -771,9 +764,8 @@ mod tests {
         let mut events = bus.subscribe();
 
         bus.publish(Event::ToolRequest {
-            context: ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                automation_id: "invalid-args".to_string(),
-            }),
+            request_id: "invalid-args-request".to_string(),
+            context: ExecutionContext::new(std::path::PathBuf::from("invalid-args")),
             tool_calls: vec![ToolCall {
                 id: "call-1".to_string(),
                 name: "schema_tool".to_string(),

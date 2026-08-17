@@ -5,7 +5,7 @@ use rand::seq::SliceRandom;
 
 use crate::{
     automations::{Automation, ToolEffect, UserMessageEffect},
-    bus::{Bus, Event},
+    bus::{Bus, ConversationKey, Event},
     config::RuntimeLayout,
     message::ToolDefinition,
     secrets::{EncryptedSecretStore, Secrets, generate_phrase, phrase_is_valid, phrase_words},
@@ -18,6 +18,7 @@ pub const AUTOMATION_NAME: &str = "unlock-secrets";
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct UnlockSecretsParams {
+    pub conversation: ConversationKey,
     /// The latest user message.
     pub message: String,
     /// Provider message id for the latest user message, when available.
@@ -56,6 +57,7 @@ impl UnlockSecretsTool {
             effect: UserMessageEffect::Tool(ToolEffect {
                 tool: "unlock_secrets".to_string(),
                 args: serde_json::json!({
+                    "conversation": "{{event.conversation}}",
                     "message": "{{event.text}}",
                     "message_id": "{{event.message_id}}",
                 }),
@@ -75,6 +77,7 @@ impl UnlockSecretsTool {
         if step.delete_current_message {
             delete_current_message(
                 &self.tools,
+                &params.conversation,
                 ctx,
                 params.message_id.as_deref(),
                 "unlock_secrets",
@@ -82,13 +85,13 @@ impl UnlockSecretsTool {
             .await;
         }
         if let Some(message_id) = &step.delete_outbound_message_id {
-            delete_outbound_message(&self.tools, ctx, message_id).await?;
+            delete_outbound_message(&self.tools, &params.conversation, ctx, message_id).await?;
         }
         for message in &step.messages {
-            send_unlock_message(&self.tools, message, ctx).await?;
+            send_unlock_message(&self.tools, &params.conversation, message, ctx).await?;
         }
         if step.ask_written_down {
-            request_written_down_confirmation(&self.tools, ctx).await?;
+            request_written_down_confirmation(&self.tools, &params.conversation, ctx).await?;
         }
         if let Some(store) = step.unlocked {
             self.secrets.unlock(store);
@@ -348,12 +351,14 @@ impl UnlockStep {
 
 async fn request_written_down_confirmation(
     tools: &InternalTools,
+    conversation: &ConversationKey,
     ctx: &ExecutionContext,
 ) -> Result<(), String> {
     let result = tools::run_tool(
         tools,
         "request_user_input",
         serde_json::json!({
+            "conversation": conversation,
             "question": "Did you write it down?",
             "options": [{ "label": "Yes", "value": "yes" }],
         }),
@@ -365,14 +370,12 @@ async fn request_written_down_confirmation(
 
 async fn send_unlock_message(
     tools: &InternalTools,
+    conversation: &ConversationKey,
     message: &UnlockMessage,
     ctx: &ExecutionContext,
 ) -> Result<(), String> {
     let Some(message_id) = &message.message_id else {
-        return send(tools, &message.content, ctx).await;
-    };
-    let crate::tools::InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
-        return Err("unlock messages require a conversation".to_string());
+        return send(tools, conversation, &message.content, ctx).await;
     };
     let result = tools::run_tool(
         tools,
@@ -392,13 +395,19 @@ async fn send_unlock_message(
 
 async fn delete_outbound_message(
     tools: &InternalTools,
+    conversation: &ConversationKey,
     ctx: &ExecutionContext,
     message_id: &str,
 ) -> Result<(), String> {
     let result = tools::run_tool(
         tools,
         "delete_message",
-        serde_json::json!({ "message_id": message_id }),
+        serde_json::json!({
+            "channel": conversation.channel,
+            "chat_id": conversation.chat_id,
+            "thread_id": conversation.thread_id,
+            "message_id": message_id,
+        }),
         ctx,
     )
     .await;

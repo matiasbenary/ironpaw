@@ -33,6 +33,7 @@ pub struct ShellExecutor {
 enum Operation {
     Execute {
         manifest: Arc<ShellToolManifest>,
+        workspace: PathBuf,
         command: String,
         args: Vec<String>,
         working_dir: Option<String>,
@@ -68,6 +69,7 @@ impl ShellExecutor {
     pub async fn execute(
         &self,
         manifest: Arc<ShellToolManifest>,
+        workspace: PathBuf,
         command: String,
         args: Vec<String>,
         working_dir: Option<String>,
@@ -78,6 +80,7 @@ impl ShellExecutor {
         sender
             .send(Operation::Execute {
                 manifest,
+                workspace,
                 command,
                 args,
                 working_dir,
@@ -125,6 +128,7 @@ impl ShellExecutor {
                 match operation {
                     Operation::Execute {
                         manifest,
+                        workspace,
                         command,
                         args,
                         working_dir,
@@ -133,6 +137,7 @@ impl ShellExecutor {
                     } => {
                         let result = run(
                             manifest,
+                            workspace,
                             &command,
                             args,
                             working_dir,
@@ -178,11 +183,13 @@ async fn install(
     let runner = match isolation {
         Isolation::Production => ProcessRunner::new(
             tool_dir.clone(),
+            tool_dir.clone(),
             manifest.allowed_hosts.clone(),
             ProcessMode::Install,
         ),
         #[cfg(debug_assertions)]
         Isolation::Portable => ProcessRunner::portable(
+            tool_dir.clone(),
             tool_dir.clone(),
             manifest.allowed_hosts.clone(),
             ProcessMode::Install,
@@ -201,6 +208,7 @@ async fn install(
 
 async fn run(
     manifest: Arc<ShellToolManifest>,
+    workspace: PathBuf,
     command_name: &str,
     args: Vec<String>,
     working_dir: Option<String>,
@@ -252,12 +260,14 @@ async fn run(
     let runner = match isolation {
         Isolation::Production => ProcessRunner::new(
             tool_dir,
+            workspace,
             manifest.allowed_hosts.clone(),
             ProcessMode::Execute,
         )?,
         #[cfg(debug_assertions)]
         Isolation::Portable => ProcessRunner::portable(
             tool_dir,
+            workspace,
             manifest.allowed_hosts.clone(),
             ProcessMode::Execute,
         )?,
@@ -457,6 +467,7 @@ mod tests {
         let output = executor
             .execute(
                 Arc::new(manifest.clone()),
+                tools_dir.join("workspace"),
                 "reveal".to_string(),
                 Vec::new(),
                 None,
@@ -470,6 +481,7 @@ mod tests {
         let output = executor
             .execute(
                 Arc::new(manifest),
+                tools_dir.join("workspace"),
                 "reveal".to_string(),
                 Vec::new(),
                 None,
@@ -491,6 +503,7 @@ mod tests {
         let started = Instant::now();
         let first = executor.execute(
             Arc::clone(&manifest),
+            tools_dir.join("workspace"),
             "pause".to_string(),
             Vec::new(),
             None,
@@ -498,6 +511,7 @@ mod tests {
         );
         let second = executor.execute(
             manifest,
+            tools_dir.join("workspace"),
             "pause".to_string(),
             Vec::new(),
             None,
@@ -528,7 +542,6 @@ mod tests {
             .await
             .unwrap();
         assert!(tools_dir.join("example/bin/sh").exists());
-        assert!(tools_dir.join("example/workspace").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -544,14 +557,6 @@ mod tests {
                     0
                 );
             }
-            assert_ne!(
-                fs::metadata(tools_dir.join("example/workspace"))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o200,
-                0
-            );
         }
         assert_eq!(
             fs::read_to_string(tools_dir.join("example/SKILL.md")).unwrap(),
@@ -566,6 +571,7 @@ mod tests {
         let output = executor
             .execute(
                 manifest,
+                tools_dir.join("workspace"),
                 "sh".to_string(),
                 Vec::new(),
                 None,

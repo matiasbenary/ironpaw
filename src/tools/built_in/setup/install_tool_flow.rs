@@ -3,9 +3,8 @@ use std::sync::Arc;
 use crate::tools::{
     self, ExecutionContext,
     setup::{
-        delete_current_message,
         install_common::{config_value, is_yes, secret_value},
-        publish_tool_result, request_choice, send, stop_setup_automation,
+        publish_tool_result, stop_setup_automation,
     },
     wasm::WasmTool,
 };
@@ -56,8 +55,8 @@ impl SetupToolTool {
                         secret_prompt(&session.package, &session.package.required_secrets()[index]);
                     let mut session = session;
                     session.stage = InstallStage::Secret { index };
-                    self.state.save(session);
-                    send(&self.setup.tools, &prompt, ctx).await?;
+                    self.state.save(session.clone());
+                    session.send(&self.setup.tools, &prompt, ctx).await?;
                 } else {
                     self.prompt_secret_or_finish(session, index + 1, ctx)
                         .await?;
@@ -68,7 +67,9 @@ impl SetupToolTool {
                 let secret = &session.package.required_secrets()[index];
                 let value = secret_value(secret, message)?;
                 session.secret_values.insert(secret.name.clone(), value);
-                delete_current_message(&self.setup.tools, ctx, message_id, "install_tool").await;
+                session
+                    .delete_current_message(&self.setup.tools, ctx, message_id)
+                    .await;
                 self.prompt_secret_or_finish(session, index + 1, ctx)
                     .await?;
             }
@@ -100,8 +101,8 @@ impl SetupToolTool {
                     let mut session = session;
                     let prompt = pending.waiting_prompt();
                     session.stage = InstallStage::Autoconfigure(pending);
-                    self.state.save(session);
-                    send(&self.setup.tools, prompt, ctx).await?;
+                    self.state.save(session.clone());
+                    session.send(&self.setup.tools, prompt, ctx).await?;
                     return Ok(serde_json::json!({ "ok": true }));
                 };
                 let mut session = session;
@@ -133,14 +134,15 @@ impl SetupToolTool {
                     session.stage = InstallStage::ConfirmRemove {
                         account: account.clone(),
                     };
-                    self.state.save(session);
-                    request_choice(
-                        &self.setup.tools,
-                        &format!("Remove {account} and its saved credentials?"),
-                        &[("Remove", "yes"), ("Cancel", "no")],
-                        ctx,
-                    )
-                    .await?;
+                    self.state.save(session.clone());
+                    session
+                        .request_choice(
+                            &self.setup.tools,
+                            &format!("Remove {account} and its saved credentials?"),
+                            &[("Remove", "yes"), ("Cancel", "no")],
+                            ctx,
+                        )
+                        .await?;
                 } else {
                     let current = session.accounts[&account].clone();
                     self.start_account(session, Some(current), ctx).await?;
@@ -245,16 +247,17 @@ impl SetupToolTool {
         let continuation = session.continuation.clone();
         self.state.take();
         stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
-        send(
-            &self.setup.tools,
-            if matches!(session.mode, SetupMode::Install) {
-                "Tool installation cancelled. I will answer normally again."
-            } else {
-                "Tool configuration cancelled. I will answer normally again."
-            },
-            ctx,
-        )
-        .await?;
+        session
+            .send(
+                &self.setup.tools,
+                if matches!(session.mode, SetupMode::Install) {
+                    "Tool installation cancelled. I will answer normally again."
+                } else {
+                    "Tool configuration cancelled. I will answer normally again."
+                },
+                ctx,
+            )
+            .await?;
         publish_tool_result(
             continuation.as_ref(),
             Ok(serde_json::json!({ "tool": name, "cancelled": true })),
@@ -268,20 +271,22 @@ impl SetupToolTool {
         error: &str,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
-        let session = self.state.take();
+        let session = self
+            .state
+            .take()
+            .ok_or_else(|| "tool setup is not active".to_string())?;
         stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
         publish_tool_result(
-            session
-                .as_ref()
-                .and_then(|session| session.continuation.as_ref()),
+            session.continuation.as_ref(),
             Err(tools::ToolError::new(error)),
         );
-        send(
-            &self.setup.tools,
-            &format!("The {name} tool could not be configured: {error}"),
-            ctx,
-        )
-        .await
+        session
+            .send(
+                &self.setup.tools,
+                &format!("The {name} tool could not be configured: {error}"),
+                ctx,
+            )
+            .await
     }
 
     async fn finish(&self, session: InstallSession, ctx: &ExecutionContext) -> Result<(), String> {
@@ -290,19 +295,20 @@ impl SetupToolTool {
         let continuation = session.continuation.clone();
         self.state.take();
         stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
-        send(
-            &self.setup.tools,
-            &format!(
-                "The {name} tool is {}.",
-                if configured {
-                    "configured"
-                } else {
-                    "installed"
-                }
-            ),
-            ctx,
-        )
-        .await?;
+        session
+            .send(
+                &self.setup.tools,
+                &format!(
+                    "The {name} tool is {}.",
+                    if configured {
+                        "configured"
+                    } else {
+                        "installed"
+                    }
+                ),
+                ctx,
+            )
+            .await?;
         let result = if configured {
             serde_json::json!({ "tool": name, "configured": true })
         } else {

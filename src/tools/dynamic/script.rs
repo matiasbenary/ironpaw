@@ -293,7 +293,7 @@ mod tests {
         history::SqliteHistory,
         inference::Inference,
         message::Message,
-        tools::{InternalTools, InvocationScope, messages::SendMessageTool},
+        tools::{InternalTools, messages::SendMessageTool},
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
@@ -338,9 +338,7 @@ mod tests {
                 if (!r.ok) { throw new Error("send failed"); }
                 "#
                 .to_string(),
-                ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                    automation_id: "script-test".to_string(),
-                }),
+                ExecutionContext::new(std::path::PathBuf::from("script-test")),
                 serde_json::json!({}),
             )
             .await
@@ -387,9 +385,7 @@ mod tests {
                     return {{ first: r[0], third: r[2] }};
 	                "#
                 ),
-                ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                    automation_id: "script-test".to_string(),
-                }),
+                ExecutionContext::new(std::path::PathBuf::from("script-test")),
                 serde_json::json!({}),
             )
             .await
@@ -413,9 +409,7 @@ mod tests {
     async fn require_explains_unavailable_modules() {
         let bus = Bus::new(16);
         let runtime = test_runtime(&bus);
-        let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
-            automation_id: "script-test".to_string(),
-        });
+        let ctx = ExecutionContext::new(std::path::PathBuf::from("script-test"));
 
         let fs_error = runtime
             .run(

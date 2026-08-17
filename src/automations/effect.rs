@@ -1,5 +1,5 @@
 use crate::{
-    bus::{AgentRequest, Bus, Event},
+    bus::{AgentRequest, Bus, ConversationKey, Event},
     message::ToolCall,
     tools::ExecutionContext,
 };
@@ -57,6 +57,7 @@ impl UserMessageEffect {
         bus: &Bus,
         execution_id: &str,
         automation_id: &str,
+        conversation: &ConversationKey,
         context: &ExecutionContext,
         trigger: &serde_json::Value,
     ) {
@@ -64,9 +65,6 @@ impl UserMessageEffect {
             Self::Tool(effect) => effect.dispatch(bus, execution_id, context, trigger),
             Self::AgentTask(effect) => effect.dispatch(bus, execution_id, automation_id, trigger),
             Self::ContinueConversation => {
-                let conversation = context
-                    .conversation()
-                    .expect("message automation has conversation context");
                 bus.publish(Event::AgentRequest {
                     execution_id: execution_id.to_string(),
                     request: AgentRequest::ContinueConversation {
@@ -89,6 +87,7 @@ impl ToolEffect {
     ) {
         let args = render_args(&self.args, trigger);
         bus.publish(Event::ToolRequest {
+            request_id: execution_id.to_string(),
             context: context.clone(),
             tool_calls: vec![ToolCall {
                 id: execution_id.to_string(),

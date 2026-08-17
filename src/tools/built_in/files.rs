@@ -5,7 +5,7 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    message::{ToolDefinition, execution_files_dir, scope_component},
+    message::{ToolDefinition, execution_files_dir},
     tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
@@ -37,19 +37,7 @@ impl ScopedFiles {
             return Err("path must not be empty".to_string());
         }
 
-        let caller_stack = ctx
-            .tool_stack
-            .split_last()
-            .map_or(&[][..], |(_, stack)| stack);
-        let root = if caller_stack.is_empty() {
-            execution_files_dir(&self.files_dir, ctx)
-        } else {
-            caller_stack
-                .iter()
-                .fold(self.files_dir.join("tools"), |root, name| {
-                    root.join(scope_component(name))
-                })
-        };
+        let root = execution_files_dir(&self.files_dir, ctx);
         fs::create_dir_all(&root)
             .await
             .map_err(|err| err.to_string())?;
@@ -255,14 +243,10 @@ file_tool!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::InvocationScope;
-
     #[tokio::test]
     async fn paths_cannot_escape_the_scope() {
         let files = ScopedFiles::new(std::env::temp_dir());
-        let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
-            automation_id: "morning".to_string(),
-        });
+        let ctx = ExecutionContext::new(crate::message::automation_workspace("morning"));
         assert!(files.path(&ctx, "../secrets").await.is_err());
         assert!(files.path(&ctx, "/etc/passwd").await.is_err());
     }
@@ -273,9 +257,7 @@ mod tests {
             std::env::temp_dir().join(format!("ironpaw-file-tool-test-{}", uuid::Uuid::new_v4()));
         let create = CreateFileTool::new(root.clone());
         let update = UpdateFileTool::new(root.clone());
-        let ctx = ExecutionContext::new(InvocationScope::ScheduledAutomation {
-            automation_id: "morning".to_string(),
-        });
+        let ctx = ExecutionContext::new(crate::message::automation_workspace("morning"));
 
         let (responder, _) = ToolResponder::pending();
         create

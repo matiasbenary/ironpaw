@@ -2,7 +2,8 @@ use std::sync::{Arc, RwLock};
 
 use crate::{
     bus::{AutomationAction, Bus, ConversationKey, Event, MessageIn, SenderKind},
-    tools::{ExecutionContext, InvocationScope, ToolRegistry},
+    message::{automation_workspace, conversation_workspace},
+    tools::{ExecutionContext, ToolRegistry},
 };
 
 mod effect;
@@ -269,9 +270,7 @@ impl Automations {
             .collect::<Vec<_>>();
         if matching.is_empty() {
             if message.sender.kind() == SenderKind::User {
-                let context = crate::tools::ExecutionContext::new(
-                    crate::tools::InvocationScope::Conversation(message.conversation.clone()),
-                );
+                let context = ExecutionContext::new(conversation_workspace(&message.conversation));
                 self.bus.publish(Event::AgentRequest {
                     execution_id: uuid::Uuid::new_v4().to_string(),
                     request: crate::bus::AgentRequest::ContinueConversation {
@@ -282,12 +281,15 @@ impl Automations {
             }
             return;
         }
-        let context = crate::tools::ExecutionContext::new(
-            crate::tools::InvocationScope::Conversation(message.conversation.clone()),
-        );
+        let context = ExecutionContext::new(conversation_workspace(&message.conversation));
         let event = serde_json::to_value(message).expect("serialize inbound message");
         for automation in matching {
-            self.invoke(automation.name(), context.clone(), event.clone());
+            self.invoke_message(
+                automation.as_ref(),
+                &message.conversation,
+                context.clone(),
+                event.clone(),
+            );
         }
     }
 
@@ -384,12 +386,38 @@ impl Automations {
         });
     }
 
-    fn invoke(
+    fn invoke_message(
         &self,
-        automation_id: &str,
+        automation: &Automation,
+        conversation: &ConversationKey,
         context: crate::tools::ExecutionContext,
         trigger: serde_json::Value,
     ) -> String {
+        let execution_id = uuid::Uuid::new_v4().to_string();
+        match automation {
+            Automation::OnUserMessageIn { effect, .. } => effect.dispatch(
+                &self.bus,
+                &execution_id,
+                automation.name(),
+                conversation,
+                &context,
+                &trigger,
+            ),
+            Automation::OnGuestMessageIn { effect, .. } => effect.dispatch(
+                &self.bus,
+                &execution_id,
+                automation.name(),
+                &context,
+                &trigger,
+            ),
+            Automation::Scheduled { .. } => {
+                unreachable!("message invocation has message automation")
+            }
+        }
+        execution_id
+    }
+
+    fn invoke_scheduled(&self, automation_id: &str, kind: &str) -> String {
         let execution_id = uuid::Uuid::new_v4().to_string();
         let automation = self
             .automations
@@ -402,41 +430,29 @@ impl Automations {
             eprintln!("automation '{automation_id}' disappeared before execution");
             return execution_id;
         };
-        match &*automation {
-            Automation::OnUserMessageIn { effect, .. } => {
-                effect.dispatch(&self.bus, &execution_id, automation_id, &context, &trigger)
-            }
-            Automation::OnGuestMessageIn { effect, .. } => {
-                effect.dispatch(&self.bus, &execution_id, automation_id, &context, &trigger)
-            }
-            Automation::Scheduled { effect, .. } => {
-                effect.dispatch(&self.bus, &execution_id, automation_id, &context, &trigger)
-            }
-        }
-        if matches!(
-            &*automation,
-            Automation::Scheduled {
-                schedule: Schedule::At { .. },
-                ..
-            }
-        ) && let Err(err) = self.delete(automation_id)
+        let Automation::Scheduled {
+            schedule, effect, ..
+        } = automation.as_ref()
+        else {
+            unreachable!("scheduled invocation has scheduled automation");
+        };
+        let context = ExecutionContext::new(automation_workspace(automation_id));
+        effect.dispatch(
+            &self.bus,
+            &execution_id,
+            automation_id,
+            &context,
+            &serde_json::json!({
+                "kind": kind,
+                "automation": automation_id,
+            }),
+        );
+        if matches!(schedule, Schedule::At { .. })
+            && let Err(err) = self.delete(automation_id)
         {
             eprintln!("failed to delete one-shot automation '{automation_id}': {err}");
         }
         execution_id
-    }
-
-    fn invoke_scheduled(&self, automation_id: &str, kind: &str) -> String {
-        self.invoke(
-            automation_id,
-            ExecutionContext::new(InvocationScope::ScheduledAutomation {
-                automation_id: automation_id.to_string(),
-            }),
-            serde_json::json!({
-                "kind": kind,
-                "automation": automation_id,
-            }),
-        )
     }
 }
 
@@ -447,7 +463,7 @@ mod tests {
         bus::ConversationKey,
         history::SqliteHistory,
         inference::Inference,
-        tools::{ExecutionContext, InternalTools, InvocationScope, messages::SendMessageTool},
+        tools::{ExecutionContext, InternalTools, messages::SendMessageTool},
     };
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
@@ -590,11 +606,7 @@ mod tests {
             Arc::clone(&store),
         ));
         let task = automations.start();
-        let context = ExecutionContext::new(InvocationScope::Conversation(ConversationKey {
-            channel: "tui".to_string(),
-            chat_id: "c1".to_string(),
-            thread_id: None,
-        }));
+        let context = ExecutionContext::new(std::path::PathBuf::from("conversation"));
 
         crate::tools::run_tool(
             &tools,
@@ -666,7 +678,7 @@ mod tests {
             chat_id: "c1".to_string(),
             thread_id: None,
         };
-        let context = ExecutionContext::new(InvocationScope::Conversation(conversation.clone()));
+        let context = ExecutionContext::new(conversation_workspace(&conversation));
 
         crate::tools::run_tool(
             &tools,
@@ -721,11 +733,8 @@ mod tests {
             .unwrap();
         let task = automations.start();
         let mut events = bus.subscribe();
-        let context = ExecutionContext::new(InvocationScope::ScheduledAutomation {
-            automation_id: "serial".to_string(),
-        });
-        let first = automations.invoke("serial", context.clone(), serde_json::json!({}));
-        let second = automations.invoke("serial", context, serde_json::json!({}));
+        let first = automations.invoke_scheduled("serial", "test");
+        let second = automations.invoke_scheduled("serial", "test");
 
         let requests = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             let mut requests = Vec::new();

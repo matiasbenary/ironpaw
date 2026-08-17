@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::tools::{ExecutionContext, InvocationScope};
+use crate::{bus::ConversationKey, tools::ExecutionContext};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Message {
@@ -146,14 +146,19 @@ pub fn available_filename(
 }
 
 pub fn execution_files_dir(files_dir: &Path, ctx: &ExecutionContext) -> PathBuf {
-    match &ctx.invoked_by {
-        InvocationScope::Conversation(conversation) => files_dir
-            .join("conversations")
-            .join(scope_component(&conversation.storage_key())),
-        InvocationScope::ScheduledAutomation { automation_id } => files_dir
-            .join("automations")
-            .join(scope_component(automation_id)),
-    }
+    files_dir.join(ctx.files_workspace())
+}
+
+pub fn conversation_workspace(conversation: &ConversationKey) -> PathBuf {
+    PathBuf::from("conversations").join(scope_component(&conversation.storage_key()))
+}
+
+pub fn automation_workspace(automation_id: &str) -> PathBuf {
+    PathBuf::from("automations").join(scope_component(automation_id))
+}
+
+pub fn external_tool_workspace(ctx: &ExecutionContext, tool_name: &str) -> PathBuf {
+    ctx.workspace.join("tools").join(scope_component(tool_name))
 }
 
 pub(crate) fn scope_component(name: &str) -> String {

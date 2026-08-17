@@ -4,10 +4,7 @@ use crate::{
     secrets::Secrets,
     tools::{
         ExecutionContext,
-        setup::{
-            install_common::{SetupCondition, SetupConfig, SetupSecret, config_prompt},
-            request_choice, send,
-        },
+        setup::install_common::{SetupCondition, SetupConfig, SetupSecret, config_prompt},
     },
 };
 
@@ -78,22 +75,23 @@ impl SetupToolTool {
                 .exists(&session.package.secret_store_name(&secret.name))
         {
             session.stage = super::InstallStage::ConfirmSecret { index };
-            self.state.save(session);
-            return request_choice(
-                &self.setup.tools,
-                &format!(
-                    "{}: a value is already saved for {}. Do you want to change it?",
-                    secret.name, secret.name
-                ),
-                &[("Change", "yes"), ("Keep", "no")],
-                ctx,
-            )
-            .await;
+            self.state.save(session.clone());
+            return session
+                .request_choice(
+                    &self.setup.tools,
+                    &format!(
+                        "{}: a value is already saved for {}. Do you want to change it?",
+                        secret.name, secret.name
+                    ),
+                    &[("Change", "yes"), ("Keep", "no")],
+                    ctx,
+                )
+                .await;
         }
         let prompt = secret_prompt(&session.package, &secret);
         session.stage = super::InstallStage::Secret { index };
-        self.state.save(session);
-        send(&self.setup.tools, &prompt, ctx).await
+        self.state.save(session.clone());
+        session.send(&self.setup.tools, &prompt, ctx).await
     }
 
     pub(super) async fn prompt_config_or_finish(
@@ -135,14 +133,15 @@ impl SetupToolTool {
                 display_config_value(value)
             );
             session.stage = super::InstallStage::ConfirmConfig { index };
-            self.state.save(session);
-            return request_choice(
-                &self.setup.tools,
-                &prompt,
-                &[("Change", "yes"), ("Keep", "no")],
-                ctx,
-            )
-            .await;
+            self.state.save(session.clone());
+            return session
+                .request_choice(
+                    &self.setup.tools,
+                    &prompt,
+                    &[("Change", "yes"), ("Keep", "no")],
+                    ctx,
+                )
+                .await;
         }
         self.prompt_config_value(session, index, ctx).await
     }
@@ -155,16 +154,20 @@ impl SetupToolTool {
     ) -> Result<(), String> {
         let config = session.package.required_config()[index].clone();
         session.stage = super::InstallStage::Config { index };
-        self.state.save(session);
+        self.state.save(session.clone());
         if config.choices.is_empty() {
-            send(&self.setup.tools, config_prompt(&config), ctx).await
+            session
+                .send(&self.setup.tools, config_prompt(&config), ctx)
+                .await
         } else {
             let choices = config
                 .choices
                 .iter()
                 .map(|choice| (choice.label.as_str(), choice.value.as_str()))
                 .collect::<Vec<_>>();
-            request_choice(&self.setup.tools, config_prompt(&config), &choices, ctx).await
+            session
+                .request_choice(&self.setup.tools, config_prompt(&config), &choices, ctx)
+                .await
         }
     }
 }

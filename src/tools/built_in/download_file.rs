@@ -198,9 +198,7 @@ mod tests {
         let downloaded = DownloadFileTool::new(dir.clone())
             .download(
                 DownloadFileParams { url },
-                &ExecutionContext::new(crate::tools::InvocationScope::ScheduledAutomation {
-                    automation_id: "download-test".to_string(),
-                }),
+                &ExecutionContext::new(crate::message::automation_workspace("download-test")),
             )
             .await
             .unwrap();

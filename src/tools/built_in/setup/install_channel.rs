@@ -13,7 +13,7 @@ use crate::{
     config::RuntimeLayout,
     secrets::Secrets,
     tools::{
-        self, ExecutionContext, InternalTool, InvocationScope, ToolResponder,
+        self, ExecutionContext, InternalTool, ToolResponder,
         setup::{SessionState, SetupServices, install_common::SetupSecret, send},
     },
 };
@@ -28,12 +28,14 @@ use install_channel_package::{
 pub struct InstallChannelParams {
     /// Channel name to install, for example "telegram".
     pub name: String,
+    pub conversation: ConversationKey,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct SetupChannelParams {
     /// Channel name being configured, for example "telegram".
     pub name: String,
+    pub conversation: ConversationKey,
     /// Channel that produced this setup reply.
     #[serde(default)]
     pub channel: Option<String>,
@@ -54,6 +56,7 @@ pub struct ListChannelsParams {}
 pub struct RemoveChannelParams {
     /// Channel name to remove, for example "telegram".
     pub name: String,
+    pub conversation: ConversationKey,
 }
 
 #[derive(Clone)]
@@ -62,7 +65,7 @@ struct InstallSession {
     secrets: Vec<SetupSecret>,
     stage: InstallStage,
     config_values: BTreeMap<String, serde_json::Value>,
-    setup_conversation: Option<ConversationKey>,
+    setup_conversation: ConversationKey,
     continuation: Option<ToolResponder>,
 }
 
@@ -123,6 +126,7 @@ impl InstallChannelTool {
             tool: "setup_channel".to_string(),
             args: serde_json::json!({
                 "name": channel_name,
+                "conversation": "{{event.conversation}}",
                 "channel": "{{event.conversation.channel}}",
                 "channel_user_id": "{{event.sender.channel_user_id}}",
                 "message": "{{event.text}}",
@@ -151,12 +155,13 @@ impl InstallChannelTool {
         responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
         let name = normalize_channel_name(&params.name)?;
-        self.start(&name, ctx, responder).await
+        self.start(&name, params.conversation, ctx, responder).await
     }
 
     async fn start(
         &self,
         name: &str,
+        conversation: ConversationKey,
         ctx: &ExecutionContext,
         responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
@@ -167,6 +172,7 @@ impl InstallChannelTool {
         if installed_package_exists(layout, &package) {
             send(
                 tools,
+                &conversation,
                 &format!(
                     "The {name} channel is already installed. Ask me to remove it first if you want to reinstall it."
                 ),
@@ -180,22 +186,22 @@ impl InstallChannelTool {
             }));
         }
         let secrets = required_secrets(&package, &self.setup.secrets);
-        let user_conversation = setup_conversation(ctx)?.clone();
         self.state.save(InstallSession {
             package,
             secrets,
             stage: InstallStage::Confirm,
             config_values: BTreeMap::new(),
-            setup_conversation: Some(user_conversation.clone()),
+            setup_conversation: conversation.clone(),
             continuation: Some(responder),
         });
         automations.add_runtime(Self::automation(
             name,
             SenderKind::User,
-            Some(user_conversation),
+            Some(conversation.clone()),
         ))?;
         super::request_choice(
             tools,
+            &conversation,
             &format!("Install the {name} channel?"),
             &[("Install", "yes"), ("Cancel", "no")],
             ctx,
@@ -209,24 +215,8 @@ impl InstallChannelTool {
     }
 }
 
-fn setup_conversation(ctx: &ExecutionContext) -> Result<&ConversationKey, String> {
-    match &ctx.invoked_by {
-        InvocationScope::Conversation(conversation) => Ok(conversation),
-        InvocationScope::ScheduledAutomation { automation_id } => Err(format!(
-            "install_channel cannot start from scheduled automation '{automation_id}'"
-        )),
-    }
-}
-
-fn is_setup_conversation(session: &InstallSession, ctx: &ExecutionContext) -> bool {
-    let Some(expected) = &session.setup_conversation else {
-        return true;
-    };
-    let conversation = match &ctx.invoked_by {
-        InvocationScope::Conversation(conversation) => conversation,
-        InvocationScope::ScheduledAutomation { .. } => return false,
-    };
-    expected == conversation
+fn is_setup_conversation(session: &InstallSession, conversation: &ConversationKey) -> bool {
+    session.setup_conversation == *conversation
 }
 
 impl RemoveChannelTool {
@@ -240,6 +230,7 @@ impl RemoveChannelTool {
         ctx: &ExecutionContext,
     ) -> Result<serde_json::Value, String> {
         let name = normalize_channel_name(&params.name)?;
+        let conversation = params.conversation;
         if BUILTIN_CHANNELS.contains(&name.as_str()) {
             return Err(format!(
                 "the {name} channel is built in and cannot be removed"
@@ -251,6 +242,7 @@ impl RemoveChannelTool {
         if !removed_files && !removed_runtime {
             send(
                 &self.setup.tools,
+                &conversation,
                 &format!("The {name} channel is not installed."),
                 ctx,
             )
@@ -264,6 +256,7 @@ impl RemoveChannelTool {
 
         send(
             &self.setup.tools,
+            &conversation,
             &format!(
                 "The {name} channel has been removed. You can install it again whenever you want."
             ),
@@ -331,8 +324,8 @@ impl InternalTool for InstallChannelTool {
     tools::tool_metadata!(
         "install_channel",
         InstallChannelParams,
-        "Install a local channel package. When called with only `name`, \
-             this starts a deterministic setup flow that asks the user for \
+        "Install a local channel package for the supplied conversation. \
+             This starts a deterministic setup flow that asks the user for \
              confirmation and required secrets without exposing those secret \
              replies to the LLM."
     );
@@ -379,6 +372,7 @@ impl InternalTool for SetupChannelTool {
                 &name,
                 params.channel.as_deref(),
                 params.channel_user_id.as_deref(),
+                &params.conversation,
                 &params.message,
                 params.message_id.as_deref(),
                 ctx,

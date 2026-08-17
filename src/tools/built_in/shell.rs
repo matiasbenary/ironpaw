@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::{
     config::RuntimeLayout,
-    message::ToolDefinition,
+    message::{ToolDefinition, external_tool_workspace},
     shell_tools::{DEFAULT_COMMANDS, ShellExecutor, ShellToolManifest},
     tools::{self, ExecutionContext, InternalTool, ToolResponder, state::EnabledTools},
 };
@@ -30,6 +30,7 @@ pub struct ListShellCommandsParams {}
 
 pub struct ShellTool {
     tools_dir: std::path::PathBuf,
+    files_dir: std::path::PathBuf,
     enabled: EnabledTools,
     executor: ShellExecutor,
 }
@@ -69,6 +70,7 @@ impl ShellTool {
     pub fn new(layout: RuntimeLayout, executor: ShellExecutor) -> Self {
         Self {
             tools_dir: layout.tools_dir(),
+            files_dir: layout.files_dir(),
             enabled: EnabledTools::new(layout.tools_state_path()),
             executor,
         }
@@ -77,6 +79,7 @@ impl ShellTool {
     async fn run(
         &self,
         params: ShellParams,
+        ctx: &ExecutionContext,
     ) -> Result<crate::shell_tools::process::ProcessOutput, String> {
         if !self.enabled.is_enabled(&params.tool)? {
             return Err(format!(
@@ -91,6 +94,8 @@ impl ShellTool {
         self.executor
             .execute(
                 manifest,
+                self.files_dir
+                    .join(external_tool_workspace(ctx, &params.tool)),
                 params.command,
                 params.args,
                 params.cwd,
@@ -144,10 +149,10 @@ impl InternalTool for ShellTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &ExecutionContext,
+        ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
-        responder.respond(tools::execute_typed(args, |params| self.run(params)).await);
+        responder.respond(tools::execute_typed(args, |params| self.run(params, ctx)).await);
     }
 }
 
@@ -230,16 +235,20 @@ mod tests {
         let executor = ShellExecutor::portable(layout.tools_dir(), secrets.tools);
         let tool = ShellTool::new(layout.clone(), executor);
         let commands = ListShellCommandsTool::new(layout.clone());
+        let context = ExecutionContext::new(std::path::PathBuf::from("conversation"));
 
         assert_eq!(commands.list().unwrap()["packages"], serde_json::json!([]));
 
         let error = tool
-            .run(ShellParams {
-                tool: "example".to_string(),
-                command: "hello".to_string(),
-                args: Vec::new(),
-                cwd: None,
-            })
+            .run(
+                ShellParams {
+                    tool: "example".to_string(),
+                    command: "hello".to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                },
+                &context,
+            )
             .await
             .unwrap_err();
         assert!(error.contains("not installed and enabled"));
@@ -257,12 +266,15 @@ mod tests {
                 .contains(&serde_json::json!("cat"))
         );
         let output = tool
-            .run(ShellParams {
-                tool: "example".to_string(),
-                command: "hello".to_string(),
-                args: Vec::new(),
-                cwd: None,
-            })
+            .run(
+                ShellParams {
+                    tool: "example".to_string(),
+                    command: "hello".to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                },
+                &context,
+            )
             .await
             .unwrap();
         assert_eq!(output.stdout, "hello");

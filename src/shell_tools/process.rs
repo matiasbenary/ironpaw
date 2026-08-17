@@ -56,35 +56,40 @@ pub struct ProcessRunner {
 impl ProcessRunner {
     pub(super) fn new(
         tool_dir: PathBuf,
+        workspace: PathBuf,
         allowed_hosts: Vec<String>,
         mode: ProcessMode,
     ) -> Result<Self, String> {
         if !cfg!(target_os = "linux") {
             return Err("Linux shell isolation is unavailable on this platform".to_string());
         }
-        Self::with_isolation(tool_dir, allowed_hosts, Isolation::Linux, mode)
+        Self::with_isolation(tool_dir, workspace, allowed_hosts, Isolation::Linux, mode)
     }
 
     #[cfg(debug_assertions)]
     pub(super) fn portable(
         tool_dir: PathBuf,
+        workspace: PathBuf,
         allowed_hosts: Vec<String>,
         mode: ProcessMode,
     ) -> Result<Self, String> {
-        Self::with_isolation(tool_dir, allowed_hosts, Isolation::Portable, mode)
+        Self::with_isolation(
+            tool_dir,
+            workspace,
+            allowed_hosts,
+            Isolation::Portable,
+            mode,
+        )
     }
 
     fn with_isolation(
         tool_dir: PathBuf,
+        workspace: PathBuf,
         allowed_hosts: Vec<String>,
         isolation: Isolation,
         mode: ProcessMode,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(&tool_dir).map_err(|error| error.to_string())?;
-        let workspace = match mode {
-            ProcessMode::Install => tool_dir.clone(),
-            ProcessMode::Execute => tool_dir.join("workspace"),
-        };
         if let ProcessMode::Execute = mode {
             match std::fs::symlink_metadata(&workspace) {
                 Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
@@ -92,7 +97,7 @@ impl ProcessRunner {
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    std::fs::create_dir(&workspace).map_err(|error| error.to_string())?;
+                    std::fs::create_dir_all(&workspace).map_err(|error| error.to_string())?;
                 }
                 Err(error) => return Err(error.to_string()),
             }
@@ -104,9 +109,6 @@ impl ProcessRunner {
         let workspace = workspace
             .canonicalize()
             .map_err(|error| format!("failed to resolve tool workspace: {error}"))?;
-        if !workspace.starts_with(&tool_dir) {
-            return Err("shell tool workspace escapes the tool directory".to_string());
-        }
         Ok(Self {
             tool_dir,
             workspace,
@@ -420,8 +422,14 @@ mod tests {
     #[tokio::test]
     async fn portable_runner_uses_private_directory_and_scrubbed_environment() {
         let tool_dir = temp_dir();
-        let runner =
-            ProcessRunner::portable(tool_dir.clone(), Vec::new(), ProcessMode::Execute).unwrap();
+        let workspace = tool_dir.join("workspace");
+        let runner = ProcessRunner::portable(
+            tool_dir.clone(),
+            workspace,
+            Vec::new(),
+            ProcessMode::Execute,
+        )
+        .unwrap();
         let output = runner
             .run(ProcessRequest {
                 executable: PathBuf::from("/bin/sh"),
@@ -453,8 +461,14 @@ mod tests {
     #[tokio::test]
     async fn portable_runner_enforces_timeout() {
         let tool_dir = temp_dir();
-        let runner =
-            ProcessRunner::portable(tool_dir.clone(), Vec::new(), ProcessMode::Execute).unwrap();
+        let workspace = tool_dir.join("workspace");
+        let runner = ProcessRunner::portable(
+            tool_dir.clone(),
+            workspace,
+            Vec::new(),
+            ProcessMode::Execute,
+        )
+        .unwrap();
         let error = runner
             .run(ProcessRequest {
                 executable: PathBuf::from("/bin/sh"),
@@ -474,8 +488,13 @@ mod tests {
     async fn portable_runner_confines_relative_working_directory() {
         let tool_dir = temp_dir();
         std::fs::create_dir_all(tool_dir.join("workspace/repo")).unwrap();
-        let runner =
-            ProcessRunner::portable(tool_dir.clone(), Vec::new(), ProcessMode::Execute).unwrap();
+        let runner = ProcessRunner::portable(
+            tool_dir.clone(),
+            tool_dir.join("workspace"),
+            Vec::new(),
+            ProcessMode::Execute,
+        )
+        .unwrap();
         let output = runner
             .run(ProcessRequest {
                 executable: PathBuf::from("/bin/pwd"),
@@ -520,9 +539,14 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, tool_dir.join("workspace")).unwrap();
 
-        let error = ProcessRunner::portable(tool_dir.clone(), Vec::new(), ProcessMode::Execute)
-            .err()
-            .unwrap();
+        let error = ProcessRunner::portable(
+            tool_dir.clone(),
+            tool_dir.join("workspace"),
+            Vec::new(),
+            ProcessMode::Execute,
+        )
+        .err()
+        .unwrap();
 
         assert_eq!(error, "shell tool workspace must be a directory");
         assert!(!outside.join("tmp").exists());

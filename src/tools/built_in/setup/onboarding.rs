@@ -4,16 +4,17 @@ use async_trait::async_trait;
 
 use crate::{
     automations::{Automation, ToolEffect, UserMessageEffect},
-    bus::Event,
-    message::ToolDefinition,
+    bus::{ConversationKey, Event},
+    message::{ToolDefinition, conversation_workspace},
     tools::{
-        self, ExecutionContext, InternalTool, InvocationScope, ToolResponder,
+        self, ExecutionContext, InternalTool, ToolResponder,
         setup::{SetupServices, delete_current_message, send},
     },
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct OnboardingParams {
+    pub conversation: ConversationKey,
     /// The latest user message.
     #[serde(default)]
     pub message: String,
@@ -56,6 +57,7 @@ impl OnboardingTool {
             effect: UserMessageEffect::Tool(ToolEffect {
                 tool: "onboarding".to_string(),
                 args: serde_json::json!({
+                    "conversation": "{{event.conversation}}",
                     "message": "{{event.text}}",
                     "message_id": "{{event.message_id}}",
                 }),
@@ -73,8 +75,10 @@ impl OnboardingTool {
                         let this = Arc::clone(&this);
                         tokio::spawn(async move {
                             let context =
-                                ExecutionContext::new(InvocationScope::Conversation(conversation));
-                            if let Err(error) = this.start_api_key_change(&context).await {
+                                ExecutionContext::new(conversation_workspace(&conversation));
+                            if let Err(error) =
+                                this.start_api_key_change(&conversation, &context).await
+                            {
                                 eprintln!("could not start API-key change: {error}");
                             }
                         });
@@ -99,6 +103,7 @@ impl OnboardingTool {
                 });
                 send(
                     &self.setup.tools,
+                    &params.conversation,
                     "Welcome to Ironpaw. Let's set up the API key I need. Paste your NEAR API key.",
                     ctx,
                 )
@@ -109,6 +114,7 @@ impl OnboardingTool {
                 let previous_key = self.setup.secrets.get("NEAR_API_KEY");
                 send(
                     &self.setup.tools,
+                    &params.conversation,
                     "Thanks, let me redact that for you.",
                     ctx,
                 )
@@ -116,6 +122,7 @@ impl OnboardingTool {
                 self.setup.secrets.set("NEAR_API_KEY", &key)?;
                 delete_current_message(
                     &self.setup.tools,
+                    &params.conversation,
                     ctx,
                     params.message_id.as_deref(),
                     "onboarding",
@@ -123,6 +130,7 @@ impl OnboardingTool {
                 .await;
                 send(
                     &self.setup.tools,
+                    &params.conversation,
                     "Thanks, let me test the key to make sure it works.",
                     ctx,
                 )
@@ -136,6 +144,7 @@ impl OnboardingTool {
                     }
                     send(
                         &self.setup.tools,
+                        &params.conversation,
                         &format!(
                             "The NEAR API key did not pass a basic inference test: {err}. Paste your NEAR API key again."
                         ),
@@ -144,7 +153,7 @@ impl OnboardingTool {
                     .await?;
                     return Ok(serde_json::json!({ "verified": false, "error": err }));
                 }
-                self.finish(ctx, flow).await?;
+                self.finish(&params.conversation, ctx, flow).await?;
             }
         }
         Ok(serde_json::json!({ "ok": true }))
@@ -168,6 +177,7 @@ impl OnboardingTool {
 
     async fn start_api_key_change(
         &self,
+        conversation: &ConversationKey,
         ctx: &ExecutionContext,
     ) -> Result<serde_json::Value, String> {
         if !matches!(
@@ -176,9 +186,6 @@ impl OnboardingTool {
         ) {
             return Ok(serde_json::json!({ "waiting_for_key": true }));
         }
-        let InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
-            return Err("API-key change requires a conversation".to_string());
-        };
         self.setup
             .automations
             .add_runtime(Automation::OnUserMessageIn {
@@ -187,6 +194,7 @@ impl OnboardingTool {
                 effect: UserMessageEffect::Tool(ToolEffect {
                     tool: "onboarding".to_string(),
                     args: serde_json::json!({
+                        "conversation": "{{event.conversation}}",
                         "message": "{{event.text}}",
                         "message_id": "{{event.message_id}}",
                     }),
@@ -195,11 +203,22 @@ impl OnboardingTool {
         self.set_stage(Stage::NearKey {
             flow: KeyFlow::Change,
         });
-        send(&self.setup.tools, "Paste a new NEAR API key.", ctx).await?;
+        send(
+            &self.setup.tools,
+            conversation,
+            "Paste a new NEAR API key.",
+            ctx,
+        )
+        .await?;
         Ok(serde_json::json!({ "waiting_for_key": true }))
     }
 
-    async fn finish(&self, ctx: &ExecutionContext, flow: KeyFlow) -> Result<(), String> {
+    async fn finish(
+        &self,
+        conversation: &ConversationKey,
+        ctx: &ExecutionContext,
+        flow: KeyFlow,
+    ) -> Result<(), String> {
         let message = match flow {
             KeyFlow::FirstRun => {
                 self.setup.automations.remove_runtime("onboarding");
@@ -212,7 +231,7 @@ impl OnboardingTool {
                 "API key changed."
             }
         };
-        send(&self.setup.tools, message, ctx).await?;
+        send(&self.setup.tools, conversation, message, ctx).await?;
         self.set_stage(Stage::Hello);
         Ok(())
     }

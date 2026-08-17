@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 
 use crate::{
-    bus::{Bus, Event, UserInputOption, UserInputRequest},
-    tools::{self, ExecutionContext, InternalTool, InvocationScope, ToolResponder},
+    bus::{Bus, ConversationKey, Event, UserInputOption, UserInputRequest},
+    tools::{self, ExecutionContext, InternalTool, ToolResponder},
 };
 
 pub struct RequestUserInputTool {
@@ -20,24 +20,21 @@ impl InternalTool for RequestUserInputTool {
     tools::tool_metadata!(
         "request_user_input",
         RequestUserInputParams,
-        "Ask the user a question with specific possible answers. Use this only when the answer is required to continue. After calling this tool, do not continue the task, make assumptions, or repeat the question; end your response and wait for the user's next message."
+        "Ask the user in an explicit conversation a question with specific possible answers. Use this only when the answer is required to continue. After calling this tool, do not continue the task, make assumptions, or repeat the question; end your response and wait for the user's next message."
     );
 
     async fn execute(
         &self,
         args: serde_json::Value,
-        ctx: &ExecutionContext,
+        _ctx: &ExecutionContext,
         responder: ToolResponder,
     ) {
         let result = (|| {
             let input: RequestUserInputParams =
                 serde_json::from_value(args).map_err(|err| err.to_string())?;
-            let InvocationScope::Conversation(conversation) = &ctx.invoked_by else {
-                return Err("request_user_input requires an active conversation".to_string());
-            };
             validate(&input)?;
             self.bus.publish(Event::UserInputRequested {
-                conversation: conversation.clone(),
+                conversation: input.conversation,
                 request: UserInputRequest {
                     question: input.question,
                     options: input
@@ -50,7 +47,7 @@ impl InternalTool for RequestUserInputTool {
                         .collect(),
                 },
             });
-            Ok(serde_json::json!({ "status": "question_sent" }))
+            Ok::<_, String>(serde_json::json!({ "status": "question_sent" }))
         })()
         .map_err(crate::tools::ToolError::new);
         responder.respond(result);
@@ -60,6 +57,7 @@ impl InternalTool for RequestUserInputTool {
 #[derive(Debug, schemars::JsonSchema, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestUserInputParams {
+    conversation: ConversationKey,
     /// The question displayed to the user.
     question: String,
     /// Answers the user may choose from.
@@ -96,25 +94,23 @@ fn validate(input: &RequestUserInputParams) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        bus::ConversationKey,
-        tools::{InvocationScope, run_internal_tool},
-    };
+    use crate::tools::run_internal_tool;
     use std::sync::Arc;
 
     #[tokio::test]
     async fn publishes_request_to_current_conversation() {
         let bus = Bus::new(4);
         let mut events = bus.subscribe();
-        let context = ExecutionContext::new(InvocationScope::Conversation(ConversationKey {
-            channel: "telegram".to_string(),
-            chat_id: "42".to_string(),
-            thread_id: None,
-        }));
+        let context = ExecutionContext::new(std::path::PathBuf::from("conversation"));
 
         let result = run_internal_tool(
             Arc::new(RequestUserInputTool::new(bus)),
             serde_json::json!({
+                "conversation": {
+                    "channel": "telegram",
+                    "chat_id": "42",
+                    "thread_id": null
+                },
                 "question": "Choose a database",
                 "options": [
                     { "label": "PostgreSQL", "value": "postgres" },
@@ -141,6 +137,11 @@ mod tests {
     #[test]
     fn rejects_callback_values_over_telegram_limit() {
         let input = RequestUserInputParams {
+            conversation: ConversationKey {
+                channel: "telegram".to_string(),
+                chat_id: "42".to_string(),
+                thread_id: None,
+            },
             question: "Choose".to_string(),
             options: vec![RequestUserInputOption {
                 label: "Long".to_string(),
