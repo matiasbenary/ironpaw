@@ -2,15 +2,13 @@ use std::{ffi::OsString, process::Stdio};
 
 use tokio::{
     io,
-    net::{TcpListener, TcpStream, UnixStream},
+    net::{TcpListener, UnixStream},
     process::Command,
     task::JoinSet,
 };
 
 pub const ARGUMENT: &str = "__ironpaw_shell_proxy_bridge";
-pub const BROWSER_ARGUMENT: &str = "__ironpaw_browser_proxy_bridge";
 const ADDRESS: &str = "127.0.0.1:17831";
-const DEVTOOLS_ADDRESS: &str = "127.0.0.1:17832";
 
 pub async fn run(args: Vec<OsString>) -> Result<i32, String> {
     if args.len() < 2 {
@@ -53,62 +51,6 @@ pub async fn run(args: Vec<OsString>) -> Result<i32, String> {
                 let socket = socket.clone();
                 connections.spawn(async move {
                     let Ok(upstream) = UnixStream::connect(socket).await else {
-                        return;
-                    };
-                    relay(client, upstream).await;
-                });
-            }
-            Some(_) = connections.join_next(), if !connections.is_empty() => {}
-        }
-    }
-}
-
-pub async fn run_browser(args: Vec<OsString>) -> Result<i32, String> {
-    if args.len() < 3 {
-        return Err("browser proxy bridge requires two sockets and a command".to_string());
-    }
-    let outbound_socket = args[0].clone();
-    let devtools_socket = &args[1];
-    let devtools = tokio::net::UnixListener::bind(devtools_socket)
-        .map_err(|error| format!("failed to start browser DevTools bridge: {error}"))?;
-    let outbound = TcpListener::bind(ADDRESS)
-        .await
-        .map_err(|error| format!("failed to start browser network bridge: {error}"))?;
-    let mut child = Command::new(&args[2]);
-    child
-        .args(&args[3..])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true);
-    let mut child = child
-        .spawn()
-        .map_err(|error| format!("failed to start browser: {error}"))?;
-    let mut connections = JoinSet::new();
-
-    loop {
-        tokio::select! {
-            status = child.wait() => {
-                return status
-                    .map_err(|error| format!("failed to wait for browser: {error}"))
-                    .map(|status| status.code().unwrap_or(1));
-            }
-            accepted = outbound.accept() => {
-                let (client, _) = accepted
-                    .map_err(|error| format!("browser network bridge failed: {error}"))?;
-                let socket = outbound_socket.clone();
-                connections.spawn(async move {
-                    let Ok(upstream) = UnixStream::connect(socket).await else {
-                        return;
-                    };
-                    relay(client, upstream).await;
-                });
-            }
-            accepted = devtools.accept() => {
-                let (client, _) = accepted
-                    .map_err(|error| format!("browser DevTools bridge failed: {error}"))?;
-                connections.spawn(async move {
-                    let Ok(upstream) = TcpStream::connect(DEVTOOLS_ADDRESS).await else {
                         return;
                     };
                     relay(client, upstream).await;

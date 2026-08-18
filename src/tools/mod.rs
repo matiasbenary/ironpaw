@@ -55,7 +55,6 @@ use self::built_in::{
     web::WebFetchTool,
 };
 use self::dynamic::{DynamicToolKind, DynamicToolTool, JavaScriptRuntime};
-use crate::browser::{BrowserTool, BrowserUpdateTool};
 use crate::setup::{ListChannelsTool, ListToolsTool};
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -348,19 +347,12 @@ impl InternalTools {
             Arc::clone(&edit_tool) as Arc<dyn InternalTool>,
             Arc::clone(&delete_tool) as Arc<dyn InternalTool>,
             tool(SearchHistoryTool::new(Arc::clone(&history))),
-            tool(BrowserTool::new(layout.clone())),
             tool(WebFetchTool::new()),
         ] {
             registry
                 .add(tool, ToolVisibility::Agent)
                 .expect("unique built-in tool name");
         }
-        registry
-            .add(
-                tool(BrowserUpdateTool::new(layout.clone())),
-                ToolVisibility::Internal,
-            )
-            .expect("unique built-in tool name");
         Self {
             inference,
             scripts,

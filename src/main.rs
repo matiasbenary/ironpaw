@@ -3,7 +3,6 @@ use std::{io, sync::Arc};
 use ironpaw::{
     agent::Agent,
     automations::{Automations, FileAutomations},
-    browser::{BrowserUpdateTool, UPDATE_AUTOMATION_NAME},
     bus::{Bus, Event},
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
@@ -33,15 +32,6 @@ async fn main() -> io::Result<()> {
             if argument == std::ffi::OsStr::new(ironpaw::network::proxy_bridge::ARGUMENT) =>
         {
             let status = ironpaw::network::proxy_bridge::run(arguments.collect())
-                .await
-                .map_err(io::Error::other)?;
-            std::process::exit(status);
-        }
-        Some(argument)
-            if argument
-                == std::ffi::OsStr::new(ironpaw::network::proxy_bridge::BROWSER_ARGUMENT) =>
-        {
-            let status = ironpaw::network::proxy_bridge::run_browser(arguments.collect())
                 .await
                 .map_err(io::Error::other)?;
             std::process::exit(status);
@@ -234,15 +224,6 @@ async fn main() -> io::Result<()> {
         )
         .map_err(std::io::Error::other)?;
     automations.load_stored().map_err(std::io::Error::other)?;
-    if !automations
-        .list()
-        .iter()
-        .any(|automation| automation.name() == UPDATE_AUTOMATION_NAME)
-    {
-        automations
-            .add_runtime(BrowserUpdateTool::automation())
-            .map_err(std::io::Error::other)?;
-    }
     if !secrets.exists("NEAR_API_KEY") {
         automations
             .add_runtime(OnboardingTool::automation())

@@ -1,6 +1,5 @@
 pub mod agent;
 pub mod automations;
-pub mod browser;
 pub mod bus;
 pub mod channels;
 pub mod config;
