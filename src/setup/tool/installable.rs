@@ -6,8 +6,8 @@ use crate::{
 };
 
 use crate::setup::{
-    install_common::{SetupConfig, SetupSecret, stored_secret_name},
-    install_tool::install_tool_package::{
+    common::{SetupConfig, SetupSecret, stored_secret_name},
+    tool::package::{
         SetupAccounts, ToolPackage, locate_tool_package, required_config, required_secrets,
     },
 };

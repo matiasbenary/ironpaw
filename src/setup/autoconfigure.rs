@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     network::oauth::{self, OauthFlow, ProviderSettings},
-    setup::install_common::SetupOAuth,
+    setup::common::SetupOAuth,
 };
 
 #[derive(Clone)]

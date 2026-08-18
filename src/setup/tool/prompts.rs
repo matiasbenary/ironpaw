@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{secrets::Secrets, tools::ExecutionContext};
 
-use crate::setup::install_common::{SetupCondition, SetupConfig, SetupSecret, config_prompt};
+use crate::setup::common::{SetupCondition, SetupConfig, SetupSecret, config_prompt};
 
-use super::{InstallSession, SetupMode, SetupToolTool, installable_tool::InstallableTool};
+use super::{InstallSession, SetupMode, SetupToolTool, installable::InstallableTool};
 
 impl SetupToolTool {
     pub(super) async fn apply_config_value(
@@ -26,7 +26,7 @@ impl SetupToolTool {
                     setup_action.action
                 )
             })?;
-            let values = crate::setup::package_support::run_setup_action(
+            let values = crate::setup::autoconfigure::run_setup_action(
                 handler,
                 &setup_action.action,
                 &value,

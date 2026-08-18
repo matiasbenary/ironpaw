@@ -3,17 +3,15 @@ use std::sync::Arc;
 use crate::tools::{ExecutionContext, wasm::WasmTool};
 
 use crate::setup::{
-    install_common::{config_value, is_yes, secret_value},
+    common::{config_value, is_yes, secret_value},
     stop_setup_automation,
 };
 
 use super::{
     InstallSession, InstallStage, SetupMode, SetupToolTool,
-    install_tool_artifacts::{install_package, reconfigure_package, write_account_package},
-    install_tool_prompts::{
-        collect_account_secrets, rerun_autoconfigure_on_keep, save_secrets, secret_prompt,
-    },
-    installable_tool::InstallableTool,
+    artifacts::{install_package, reconfigure_package, write_account_package},
+    installable::InstallableTool,
+    prompts::{collect_account_secrets, rerun_autoconfigure_on_keep, save_secrets, secret_prompt},
 };
 
 impl SetupToolTool {

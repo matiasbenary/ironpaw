@@ -2,10 +2,10 @@ use crate::tools::ExecutionContext;
 
 use super::{
     InstallSession, InstallStage, SetupMode, SetupToolTool,
-    install_tool_artifacts::build_account,
-    install_tool_package::{account_identity, scoped_secret},
-    install_tool_prompts::collect_account_secrets,
-    installable_tool::InstallableTool,
+    artifacts::build_account,
+    installable::InstallableTool,
+    package::{account_identity, scoped_secret},
+    prompts::collect_account_secrets,
 };
 
 impl SetupToolTool {
@@ -34,7 +34,7 @@ impl SetupToolTool {
             .required_config()
             .into_iter()
             .filter_map(|config| {
-                if !super::install_tool_prompts::condition_matches(
+                if !super::prompts::condition_matches(
                     config.when.as_ref(),
                     &session.config_values,
                     session.account_current.as_ref(),
@@ -105,12 +105,9 @@ impl SetupToolTool {
                 })
             })
             .transpose()?;
-        let pending = crate::setup::package_support::start_oauth(
-            &oauth,
-            &session.config_values,
-            client_secret,
-        )
-        .await?;
+        let pending =
+            crate::setup::autoconfigure::start_oauth(&oauth, &session.config_values, client_secret)
+                .await?;
         let prompt = pending.prompt();
         session.stage = InstallStage::Autoconfigure(pending);
         self.state.save(session.clone());
@@ -232,7 +229,7 @@ impl SetupToolTool {
     }
 }
 
-fn wasm_package(package: &InstallableTool) -> &super::install_tool_package::ToolPackage {
+fn wasm_package(package: &InstallableTool) -> &super::package::ToolPackage {
     match package {
         InstallableTool::Wasm(package) => package,
         InstallableTool::Shell(_) => unreachable!("shell tools cannot have accounts"),

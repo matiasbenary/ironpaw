@@ -1,9 +1,9 @@
-pub mod install_channel;
-pub mod install_common;
-pub mod install_tool;
+mod autoconfigure;
+pub mod channel;
+pub mod common;
 pub mod onboarding;
-mod package_support;
 mod services;
+pub mod tool;
 
 use std::sync::{Arc, Mutex};
 
@@ -13,12 +13,10 @@ use crate::{
     tools::{self, ExecutionContext, InternalTools},
 };
 
-pub use install_channel::{
-    InstallChannelTool, ListChannelsTool, RemoveChannelTool, SetupChannelTool,
-};
-pub use install_tool::{ConfigureToolTool, InstallToolTool, ListToolsTool};
+pub use channel::{InstallChannelTool, ListChannelsTool, RemoveChannelTool, SetupChannelTool};
 pub use onboarding::OnboardingTool;
 pub use services::SetupServices;
+pub use tool::{ConfigureToolTool, InstallToolTool, ListToolsTool};
 
 pub(super) struct SessionState<T>(Mutex<Option<T>>);
 

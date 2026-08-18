@@ -6,8 +6,8 @@ use std::{
 use crate::{channels, config::RuntimeLayout, secrets::Secrets};
 
 use crate::setup::{
-    install_channel::{ListChannelsTool, NGROK_SECRET},
-    install_common::{
+    channel::{ListChannelsTool, NGROK_SECRET},
+    common::{
         SetupConfig, SetupSecret, config_statuses, discover_package_dir_names, generate_secret,
         locate_config_template, secret_statuses, stored_secret_name, write_package_artifacts,
     },
@@ -329,7 +329,7 @@ pub(super) fn remove_channel_files(layout: &RuntimeLayout, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setup::install_common::AutoGenerate;
+    use crate::setup::common::AutoGenerate;
 
     #[test]
     fn generated_secrets_are_configured_without_prompting() {

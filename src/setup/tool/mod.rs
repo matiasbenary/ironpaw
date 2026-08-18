@@ -5,18 +5,12 @@ use std::{
 
 use async_trait::async_trait;
 
-#[path = "install_tool_accounts.rs"]
-mod install_tool_accounts;
-#[path = "install_tool_artifacts.rs"]
-mod install_tool_artifacts;
-#[path = "install_tool_flow.rs"]
-mod install_tool_flow;
-#[path = "install_tool_package.rs"]
-mod install_tool_package;
-#[path = "install_tool_prompts.rs"]
-mod install_tool_prompts;
-#[path = "installable_tool.rs"]
-mod installable_tool;
+mod accounts;
+mod artifacts;
+mod flow;
+mod installable;
+mod package;
+mod prompts;
 
 use crate::{
     automations::{Automation, ToolEffect, UserMessageEffect},
@@ -28,9 +22,9 @@ use crate::{
 
 use super::{SessionState, SetupServices};
 
-pub use install_tool_package::install_packaged_tool;
-use install_tool_package::{installed_tool_manifest, normalize_tool_name};
-use installable_tool::InstallableTool;
+use installable::InstallableTool;
+pub use package::install_packaged_tool;
+use package::{installed_tool_manifest, normalize_tool_name};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct InstallToolParams {
@@ -83,7 +77,7 @@ enum InstallStage {
     Secret { index: usize },
     ConfirmConfig { index: usize },
     Config { index: usize },
-    Autoconfigure(crate::setup::package_support::PendingSetup),
+    Autoconfigure(crate::setup::autoconfigure::PendingSetup),
     AccountMenu,
     AccountAction { remove: bool },
     ConfirmRemove { account: String },

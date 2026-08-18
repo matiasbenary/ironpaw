@@ -2,10 +2,8 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 
-#[path = "install_channel_package.rs"]
-mod install_channel_package;
-#[path = "install_channel_setup.rs"]
-mod install_channel_setup;
+mod flow;
+mod package;
 
 use crate::{
     automations::{Automation, AutomationEffect, ToolEffect, UserMessageEffect},
@@ -15,10 +13,10 @@ use crate::{
     tools::{self, ExecutionContext, InternalTool, ToolResult},
 };
 
-use super::{SessionState, SetupServices, install_common::SetupSecret, send};
+use super::{SessionState, SetupServices, common::SetupSecret, send};
 
 pub(super) const NGROK_SECRET: &str = "IRONPAW_NGROK_TOKEN";
-use install_channel_package::{
+use package::{
     BUILTIN_CHANNELS, ChannelPackage, installed_package_exists, locate_channel_package,
     normalize_channel_name, remove_channel_files, required_secrets,
 };

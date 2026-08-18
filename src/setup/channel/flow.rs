@@ -8,18 +8,16 @@ use crate::{
 };
 
 use crate::setup::{
-    delete_current_message,
-    install_common::{config_prompt, config_value, is_yes, secret_value, stored_secret_name},
-    request_choice, send, stop_setup_automation,
+    common::{config_prompt, config_value, is_yes, secret_value, stored_secret_name},
+    delete_current_message, request_choice, send, stop_setup_automation,
 };
 
 use super::{
-    ChannelPackage, InstallSession, InstallStage, SetupChannelTool,
-    install_channel_package::{
+    ChannelPackage, InstallSession, InstallStage, SetupChannelTool, is_setup_conversation,
+    package::{
         configure_generated_secrets, remove_installed_package, required_config, secret_prompt,
         set_channel_owner_id, verification_code, write_package,
     },
-    is_setup_conversation,
 };
 
 impl SetupChannelTool {
