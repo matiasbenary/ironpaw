@@ -6,7 +6,7 @@ use crate::{
     config::RuntimeLayout,
     message::{ToolDefinition, external_tool_workspace},
     shell_tools::{DEFAULT_COMMANDS, ShellExecutor, ShellToolManifest},
-    tools::{self, ExecutionContext, InternalTool, ToolResponder, state::EnabledTools},
+    tools::{self, ExecutionContext, InternalTool, ToolResult, state::EnabledTools},
 };
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
@@ -146,13 +146,8 @@ impl InternalTool for ShellTool {
         tools::tool_definition::<ShellParams>(self.name(), &self.description())
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        responder.respond(tools::execute_typed(args, |params| self.run(params, ctx)).await);
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
+        tools::execute_typed(args, |params| self.run(params, ctx)).await
     }
 }
 
@@ -165,13 +160,8 @@ impl InternalTool for ListShellCommandsTool {
          Default commands work in every listed package."
     );
 
-    async fn execute(
-        &self,
-        _args: serde_json::Value,
-        _ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        responder.respond(self.list().map_err(crate::tools::ToolError::new));
+    async fn execute(&self, _args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
+        self.list().map_err(crate::tools::ToolError::new)
     }
 }
 

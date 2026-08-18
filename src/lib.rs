@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod automations;
+pub mod browser;
 pub mod bus;
 pub mod channels;
 pub mod config;
@@ -9,5 +10,6 @@ pub mod memory;
 pub mod message;
 pub mod network;
 pub mod secrets;
+pub mod setup;
 pub mod shell_tools;
 pub mod tools;

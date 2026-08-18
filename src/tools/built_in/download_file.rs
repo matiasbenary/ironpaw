@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::{
     message::{available_filename, execution_files_dir},
     network::public::PublicHttp,
-    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolResult},
 };
 
 const MAX_DOWNLOAD_BYTES: usize = 10 * 1024 * 1024;
@@ -92,13 +92,8 @@ impl InternalTool for DownloadFileTool {
         "Download a public URL into Ironpaw's managed download directory and return its filename. Public Google Sheets, Docs, and Slides editor links are exported as CSV, text, and PDF. Use inspect_file with the filename to query contents without putting the whole download into conversation history."
     );
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        responder.respond(tools::execute_typed(args, |params| self.download(params, ctx)).await);
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
+        tools::execute_typed(args, |params| self.download(params, ctx)).await
     }
 }
 

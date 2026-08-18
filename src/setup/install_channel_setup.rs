@@ -4,16 +4,13 @@ use crate::{
     automations::Automations,
     bus::{ConversationKey, SenderKind},
     config::RuntimeLayout,
-    tools::{
-        ExecutionContext, InternalTools,
-        setup::{
-            delete_current_message,
-            install_common::{
-                config_prompt, config_value, is_yes, secret_value, stored_secret_name,
-            },
-            publish_tool_result, request_choice, send, stop_setup_automation,
-        },
-    },
+    tools::{ExecutionContext, InternalTools},
+};
+
+use crate::setup::{
+    delete_current_message,
+    install_common::{config_prompt, config_value, is_yes, secret_value, stored_secret_name},
+    request_choice, send, stop_setup_automation,
 };
 
 use super::{
@@ -329,7 +326,6 @@ impl SetupChannelTool {
         conversation: &ConversationKey,
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
-        let continuation = session.continuation.clone();
         self.setup
             .channel_runtime()?
             .remove_channel(&session.package.name)
@@ -347,10 +343,6 @@ impl SetupChannelTool {
             ctx,
         )
         .await?;
-        publish_tool_result(
-            continuation.as_ref(),
-            Ok(serde_json::json!({ "channel": session.package.name, "rolled_back": true })),
-        );
         Ok(())
     }
 
@@ -363,7 +355,6 @@ impl SetupChannelTool {
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
         let name = session.package.name.clone();
-        let continuation = session.continuation.clone();
         self.state.take();
         stop_setup_automations(automations, &name)?;
         send(
@@ -373,10 +364,6 @@ impl SetupChannelTool {
             ctx,
         )
         .await?;
-        publish_tool_result(
-            continuation.as_ref(),
-            Ok(serde_json::json!({ "channel": name, "cancelled": true })),
-        );
         Ok(())
     }
 
@@ -387,10 +374,9 @@ impl SetupChannelTool {
         automations: &Arc<Automations>,
         conversation: &ConversationKey,
         ctx: &ExecutionContext,
-        verified: bool,
+        _verified: bool,
     ) -> Result<(), String> {
         let name = session.package.name.clone();
-        let continuation = session.continuation.clone();
         self.state.take();
         stop_setup_automations(automations, &name)?;
         send(
@@ -400,17 +386,6 @@ impl SetupChannelTool {
             ctx,
         )
         .await?;
-        publish_tool_result(
-            continuation.as_ref(),
-            Ok(serde_json::json!({
-                "channel": name,
-                "installed": true,
-                "configured": true,
-                "verification": if verified { "confirmed" } else { "skipped" },
-                "status": "ready",
-                "message": format!("The {name} channel is installed, configured, and ready to use.")
-            })),
-        );
         Ok(())
     }
 

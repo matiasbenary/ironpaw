@@ -1,12 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{
-    secrets::Secrets,
-    tools::{
-        ExecutionContext,
-        setup::install_common::{SetupCondition, SetupConfig, SetupSecret, config_prompt},
-    },
-};
+use crate::{secrets::Secrets, tools::ExecutionContext};
+
+use crate::setup::install_common::{SetupCondition, SetupConfig, SetupSecret, config_prompt};
 
 use super::{InstallSession, SetupMode, SetupToolTool, installable_tool::InstallableTool};
 
@@ -30,7 +26,7 @@ impl SetupToolTool {
                     setup_action.action
                 )
             })?;
-            let values = crate::tools::package_support::run_setup_action(
+            let values = crate::setup::package_support::run_setup_action(
                 handler,
                 &setup_action.action,
                 &value,

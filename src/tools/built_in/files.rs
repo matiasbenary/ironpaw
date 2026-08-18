@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{
     message::{ToolDefinition, execution_files_dir},
-    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolResult},
 };
 
 /// File tools are the only filesystem surface exposed to the agent. Their
@@ -164,15 +164,8 @@ macro_rules! file_tool {
                 tools::tool_definition::<$params>(self.name(), $description)
             }
 
-            async fn execute(
-                &self,
-                args: serde_json::Value,
-                ctx: &ExecutionContext,
-                responder: ToolResponder,
-            ) {
-                responder.respond(
-                    tools::execute_typed(args, |params: $params| self.0.$method(params, ctx)).await,
-                );
+            async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
+                tools::execute_typed(args, |params: $params| self.0.$method(params, ctx)).await
             }
         }
     };
@@ -259,15 +252,13 @@ mod tests {
         let update = UpdateFileTool::new(root.clone());
         let ctx = ExecutionContext::new(crate::message::automation_workspace("morning"));
 
-        let (responder, _) = ToolResponder::pending();
         create
             .execute(
                 serde_json::json!({ "path": "state/today.txt", "content": "first" }),
                 &ctx,
-                responder,
             )
-            .await;
-        let (responder, _) = ToolResponder::pending();
+            .await
+            .unwrap();
         update
             .execute(
                 serde_json::json!({
@@ -276,9 +267,9 @@ mod tests {
                     "new_content": "second",
                 }),
                 &ctx,
-                responder,
             )
-            .await;
+            .await
+            .unwrap();
 
         assert_eq!(
             fs::read_to_string(root.join("automations/6d6f726e696e67/state/today.txt"))

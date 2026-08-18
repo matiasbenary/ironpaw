@@ -12,11 +12,10 @@ use crate::{
     bus::{ConversationKey, SenderKind},
     config::RuntimeLayout,
     secrets::Secrets,
-    tools::{
-        self, ExecutionContext, InternalTool, ToolResponder,
-        setup::{SessionState, SetupServices, install_common::SetupSecret, send},
-    },
+    tools::{self, ExecutionContext, InternalTool, ToolResult},
 };
+
+use super::{SessionState, SetupServices, install_common::SetupSecret, send};
 
 pub(super) const NGROK_SECRET: &str = "IRONPAW_NGROK_TOKEN";
 use install_channel_package::{
@@ -66,7 +65,6 @@ struct InstallSession {
     stage: InstallStage,
     config_values: BTreeMap<String, serde_json::Value>,
     setup_conversation: ConversationKey,
-    continuation: Option<ToolResponder>,
 }
 
 #[derive(Clone)]
@@ -152,10 +150,9 @@ impl InstallChannelTool {
         &self,
         params: InstallChannelParams,
         ctx: &ExecutionContext,
-        responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
         let name = normalize_channel_name(&params.name)?;
-        self.start(&name, params.conversation, ctx, responder).await
+        self.start(&name, params.conversation, ctx).await
     }
 
     async fn start(
@@ -163,7 +160,6 @@ impl InstallChannelTool {
         name: &str,
         conversation: ConversationKey,
         ctx: &ExecutionContext,
-        responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
         let tools = Arc::as_ref(&self.setup.tools);
         let automations = &self.setup.automations;
@@ -192,7 +188,6 @@ impl InstallChannelTool {
             stage: InstallStage::Confirm,
             config_values: BTreeMap::new(),
             setup_conversation: conversation.clone(),
-            continuation: Some(responder),
         });
         automations.add_runtime(Self::automation(
             name,
@@ -281,17 +276,10 @@ impl InternalTool for ListChannelsTool {
              when the user asks what channels are available."
     );
 
-    async fn execute(
-        &self,
-        _args: serde_json::Value,
-        _ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        responder.respond(
-            ListChannelsTool::execute(self)
-                .await
-                .map_err(crate::tools::ToolError::new),
-        );
+    async fn execute(&self, _args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
+        ListChannelsTool::execute(self)
+            .await
+            .map_err(crate::tools::ToolError::new)
     }
 }
 
@@ -304,18 +292,11 @@ impl InternalTool for RemoveChannelTool {
          Use this when the user asks to uninstall, remove, reset, or reinstall a channel."
     );
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        responder.respond(
-            tools::execute_typed(args, |params| async {
-                RemoveChannelTool::execute(self, params, ctx).await
-            })
-            .await,
-        );
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
+        tools::execute_typed(args, |params| async {
+            RemoveChannelTool::execute(self, params, ctx).await
+        })
+        .await
     }
 }
 
@@ -330,21 +311,23 @@ impl InternalTool for InstallChannelTool {
              replies to the LLM."
     );
 
-    async fn execute(
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
+        let params = serde_json::from_value(args)
+            .map_err(|error| crate::tools::ToolError::new(error.to_string()))?;
+        InstallChannelTool::execute(self, params, ctx)
+            .await
+            .map_err(crate::tools::ToolError::new)
+    }
+
+    async fn outcome(
         &self,
         args: serde_json::Value,
         ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result = async {
-            let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
-            InstallChannelTool::execute(self, params, ctx, responder.clone()).await
-        }
-        .await;
-        match result {
-            Ok(result) if result["ok"] == true && result["already_installed"] != true => {}
-            Ok(result) => responder.respond(Ok(result)),
-            Err(error) => responder.respond(Err(crate::tools::ToolError::new(error))),
+    ) -> tools::ToolOutcome<ToolResult> {
+        let result = InternalTool::execute(self, args, ctx).await;
+        match &result {
+            Ok(value) if value["already_installed"] != true => tools::ToolOutcome::EndTurn(result),
+            _ => tools::ToolOutcome::Result(result),
         }
     }
 }
@@ -358,12 +341,7 @@ impl InternalTool for SetupChannelTool {
          This is called by temporary setup automations with inbound user replies."
     );
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
         let result = async {
             let params: SetupChannelParams =
                 serde_json::from_value(args).map_err(|err| err.to_string())?;
@@ -380,6 +358,6 @@ impl InternalTool for SetupChannelTool {
             .await
         }
         .await;
-        responder.respond(result.map_err(crate::tools::ToolError::new));
+        result.map_err(crate::tools::ToolError::new)
     }
 }

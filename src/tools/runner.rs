@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::tools::{
-    ExecutionContext, InternalTool, ToolError, ToolRegistry, ToolResponder, ToolResult,
+    ExecutionContext, InternalTool, ToolError, ToolOutcome, ToolRegistry, ToolResult,
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can
@@ -37,35 +37,53 @@ pub async fn execute_tool(
     args: serde_json::Value,
     ctx: &ExecutionContext,
 ) -> ToolResult {
+    execute_tool_outcome(registry, name, args, ctx)
+        .await
+        .into_result()
+}
+
+pub(crate) async fn execute_tool_outcome(
+    registry: &ToolRegistry,
+    name: &str,
+    args: serde_json::Value,
+    ctx: &ExecutionContext,
+) -> ToolOutcome<ToolResult> {
     let tool = registry
         .all()
         .iter()
         .find(|tool| tool.name() == name)
         .cloned();
     let Some(tool) = tool else {
-        return Err(ToolError::new(format!("unknown tool: {name}")));
+        return ToolOutcome::Result(Err(ToolError::new(format!("unknown tool: {name}"))));
     };
-    execute_resolved_tool(tool, args, ctx).await
+    execute_resolved_tool_outcome(tool, args, ctx).await
 }
 
+#[cfg(test)]
 pub(crate) async fn execute_resolved_tool(
     tool: Arc<dyn InternalTool>,
     args: serde_json::Value,
     ctx: &ExecutionContext,
 ) -> ToolResult {
+    execute_resolved_tool_outcome(tool, args, ctx)
+        .await
+        .into_result()
+}
+
+async fn execute_resolved_tool_outcome(
+    tool: Arc<dyn InternalTool>,
+    args: serde_json::Value,
+    ctx: &ExecutionContext,
+) -> ToolOutcome<ToolResult> {
     if let Err(error) = reserve_tool_call(ctx) {
-        return Err(ToolError::new(error));
+        return ToolOutcome::Result(Err(ToolError::new(error)));
     }
     if ctx.depth >= MAX_TOOL_DEPTH {
-        return Err(ToolError::new(format!(
+        return ToolOutcome::Result(Err(ToolError::new(format!(
             "tool call chain exceeded max depth ({MAX_TOOL_DEPTH})"
-        )));
+        ))));
     }
-    let (responder, response) = ToolResponder::pending();
     let mut ctx = ctx.with_tool(tool.name().to_string());
     ctx.depth += 1;
-    tool.execute(args, &ctx, responder).await;
-    response
-        .await
-        .unwrap_or_else(|_| Err(ToolError::new("tool finished without responding")))
+    tool.outcome(args, &ctx).await
 }

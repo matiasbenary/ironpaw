@@ -1,5 +1,4 @@
 pub mod automation;
-pub mod browser;
 pub mod download_file;
 pub mod files;
 pub mod image_generation;
@@ -8,7 +7,6 @@ pub mod inspect_file;
 pub mod messages;
 pub mod request_user_input;
 pub mod search_history;
-pub mod setup;
 pub mod shell;
 pub mod todo;
 pub mod unlock;

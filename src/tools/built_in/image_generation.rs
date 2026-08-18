@@ -95,8 +95,7 @@ impl InternalTool for ImageGenerationTool {
         &self,
         args: serde_json::Value,
         ctx: &crate::tools::ExecutionContext,
-        responder: crate::tools::ToolResponder,
-    ) {
+    ) -> crate::tools::ToolResult {
         let result = async {
             let params: ImageGenerationParams =
                 serde_json::from_value(args).map_err(|err| ToolError::new(err.to_string()))?;
@@ -116,7 +115,7 @@ impl InternalTool for ImageGenerationTool {
             }))
         }
         .await;
-        responder.respond(result);
+        result
     }
 }
 

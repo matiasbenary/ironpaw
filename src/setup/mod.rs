@@ -2,6 +2,7 @@ pub mod install_channel;
 pub mod install_common;
 pub mod install_tool;
 pub mod onboarding;
+mod package_support;
 mod services;
 
 use std::sync::{Arc, Mutex};
@@ -9,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     automations::Automations,
     bus::{ConversationKey, MessageRef},
-    tools::{self, ExecutionContext, InternalTools, ToolResponder},
+    tools::{self, ExecutionContext, InternalTools},
 };
 
 pub use install_channel::{
@@ -129,11 +130,4 @@ pub(super) async fn delete_current_message(
             error.message
         );
     }
-}
-
-fn publish_tool_result(continuation: Option<&ToolResponder>, result: crate::tools::ToolResult) {
-    let Some(continuation) = continuation else {
-        return;
-    };
-    continuation.respond(result);
 }

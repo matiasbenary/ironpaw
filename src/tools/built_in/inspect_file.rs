@@ -45,8 +45,7 @@ impl InternalTool for InspectFileTool {
         &self,
         args: serde_json::Value,
         ctx: &crate::tools::ExecutionContext,
-        responder: crate::tools::ToolResponder,
-    ) {
+    ) -> crate::tools::ToolResult {
         let result: Result<serde_json::Value, String> = async {
             let params: InspectFileParams =
                 serde_json::from_value(args).map_err(|e| e.to_string())?;
@@ -85,7 +84,7 @@ impl InternalTool for InspectFileTool {
             Ok(serde_json::Value::String(answer))
         }
         .await;
-        responder.respond(result.map_err(crate::tools::ToolError::new));
+        result.map_err(crate::tools::ToolError::new)
     }
 }
 

@@ -6,19 +6,18 @@ use std::{
 use crate::{
     config::RuntimeLayout,
     shell_tools::ShellToolManifest,
-    tools::{
-        setup::{
-            install_common::{
-                SetupConfig, SetupSecret, config_statuses, discover_package_dir_names,
-                locate_config_template, secret_statuses,
-            },
-            install_tool::ListToolsTool,
-        },
-        wasm::{WasmToolConfig, WasmToolManifest},
-    },
+    tools::wasm::{WasmToolConfig, WasmToolManifest},
 };
 
-use super::{install_tool_artifacts::install_package, installable_tool::discover_shell_packages};
+use crate::setup::install_common::{
+    SetupConfig, SetupSecret, config_statuses, discover_package_dir_names, locate_config_template,
+    secret_statuses,
+};
+
+use super::{
+    ListToolsTool, install_tool_artifacts::install_package,
+    installable_tool::discover_shell_packages,
+};
 
 #[derive(Clone)]
 pub(super) struct ToolPackage {
@@ -290,7 +289,7 @@ fn validate_oauth(manifest: &ToolInstallManifest) -> Result<(), String> {
                 return Err(format!("OAuth {kind} endpoint must be absolute HTTPS"));
             }
         }
-        if let crate::tools::setup::install_common::SetupOAuthClientId::Config { config } =
+        if let crate::setup::install_common::SetupOAuthClientId::Config { config } =
             &oauth.client_id
             && !config_paths.contains(config.as_str())
         {

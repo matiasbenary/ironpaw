@@ -23,11 +23,10 @@ use crate::{
     bus::ConversationKey,
     config::RuntimeLayout,
     secrets::Secrets,
-    tools::{
-        self, ExecutionContext, InternalTool, InternalTools, ToolResponder,
-        setup::{SessionState, SetupServices},
-    },
+    tools::{self, ExecutionContext, InternalTool, InternalTools, ToolResult},
 };
+
+use super::{SessionState, SetupServices};
 
 pub use install_tool_package::install_packaged_tool;
 use install_tool_package::{installed_tool_manifest, normalize_tool_name};
@@ -75,7 +74,6 @@ struct InstallSession {
     grants: Vec<crate::network::http::NetworkGrantConfig>,
     account_current: Option<serde_json::Value>,
     removed_secrets: BTreeSet<String>,
-    continuation: Option<ToolResponder>,
 }
 
 #[derive(Clone)]
@@ -85,7 +83,7 @@ enum InstallStage {
     Secret { index: usize },
     ConfirmConfig { index: usize },
     Config { index: usize },
-    Autoconfigure(crate::tools::package_support::PendingSetup),
+    Autoconfigure(crate::setup::package_support::PendingSetup),
     AccountMenu,
     AccountAction { remove: bool },
     ConfirmRemove { account: String },
@@ -196,10 +194,9 @@ impl InstallToolTool {
         &self,
         params: InstallToolParams,
         ctx: &ExecutionContext,
-        responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
         let name = normalize_tool_name(&params.name)?;
-        self.start(&name, params.conversation, ctx, responder).await
+        self.start(&name, params.conversation, ctx).await
     }
 
     async fn start(
@@ -207,7 +204,6 @@ impl InstallToolTool {
         name: &str,
         conversation: ConversationKey,
         ctx: &ExecutionContext,
-        responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
         let package = InstallableTool::locate(&self.setup.layout, name)?;
         let approval_prompt = package.approval_prompt();
@@ -222,7 +218,6 @@ impl InstallToolTool {
             grants: Vec::new(),
             account_current: None,
             removed_secrets: BTreeSet::new(),
-            continuation: Some(responder),
         };
         self.state.save(session.clone());
         self.setup
@@ -247,7 +242,6 @@ impl InstallToolTool {
         &self,
         params: ConfigureToolParams,
         ctx: &ExecutionContext,
-        responder: ToolResponder,
     ) -> Result<serde_json::Value, String> {
         let name = normalize_tool_name(&params.name)?;
         let conversation = params.conversation;
@@ -294,7 +288,6 @@ impl InstallToolTool {
             grants,
             account_current: None,
             removed_secrets: BTreeSet::new(),
-            continuation: Some(responder),
         });
         self.setup
             .automations
@@ -328,17 +321,10 @@ impl InternalTool for ListToolsTool {
              that is not already provided by a callable tool."
     );
 
-    async fn execute(
-        &self,
-        _args: serde_json::Value,
-        _ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        responder.respond(
-            ListToolsTool::execute(self)
-                .await
-                .map_err(crate::tools::ToolError::new),
-        );
+    async fn execute(&self, _args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
+        ListToolsTool::execute(self)
+            .await
+            .map_err(crate::tools::ToolError::new)
     }
 }
 
@@ -353,21 +339,23 @@ impl InternalTool for InstallToolTool {
              secret replies to the LLM."
     );
 
-    async fn execute(
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
+        let params = serde_json::from_value(args)
+            .map_err(|error| crate::tools::ToolError::new(error.to_string()))?;
+        InstallToolTool::execute(self, params, ctx)
+            .await
+            .map_err(crate::tools::ToolError::new)
+    }
+
+    async fn outcome(
         &self,
         args: serde_json::Value,
         ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result = async {
-            let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
-            InstallToolTool::execute(self, params, ctx, responder.clone()).await
-        }
-        .await;
-        match result {
-            Ok(result) if result["ok"] == true => {}
-            Ok(result) => responder.respond(Ok(result)),
-            Err(error) => responder.respond(Err(crate::tools::ToolError::new(error))),
+    ) -> tools::ToolOutcome<ToolResult> {
+        let result = InternalTool::execute(self, args, ctx).await;
+        match &result {
+            Ok(value) if value["ok"] == true => tools::ToolOutcome::EndTurn(result),
+            _ => tools::ToolOutcome::Result(result),
         }
     }
 }
@@ -381,24 +369,26 @@ impl InternalTool for ConfigureToolTool {
          that asks before replacing each saved secret or non-secret configuration value."
     );
 
-    async fn execute(
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
+        let params = serde_json::from_value(args)
+            .map_err(|error| crate::tools::ToolError::new(error.to_string()))?;
+        InstallToolTool {
+            setup: Arc::clone(&self.setup),
+            state: Arc::clone(&self.state),
+        }
+        .configure(params, ctx)
+        .await
+        .map_err(crate::tools::ToolError::new)
+    }
+
+    async fn outcome(
         &self,
         args: serde_json::Value,
         ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result = async {
-            let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
-            InstallToolTool {
-                setup: Arc::clone(&self.setup),
-                state: Arc::clone(&self.state),
-            }
-            .configure(params, ctx, responder.clone())
-            .await
-        }
-        .await;
-        if let Err(error) = result {
-            responder.respond(Err(crate::tools::ToolError::new(error)));
+    ) -> tools::ToolOutcome<ToolResult> {
+        match InternalTool::execute(self, args, ctx).await {
+            result @ Ok(_) => tools::ToolOutcome::EndTurn(result),
+            result @ Err(_) => tools::ToolOutcome::Result(result),
         }
     }
 }
@@ -412,12 +402,7 @@ impl InternalTool for SetupToolTool {
          This is called by temporary setup automations with inbound user replies."
     );
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
         let result: Result<serde_json::Value, String> = async {
             let params: SetupToolParams =
                 serde_json::from_value(args).map_err(|err| err.to_string())?;
@@ -436,6 +421,6 @@ impl InternalTool for SetupToolTool {
             )
         }
         .await;
-        responder.respond(result.map_err(crate::tools::ToolError::new));
+        result.map_err(crate::tools::ToolError::new)
     }
 }

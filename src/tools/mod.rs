@@ -14,7 +14,6 @@ mod built_in;
 mod context;
 pub mod dynamic;
 mod handler;
-mod package_support;
 mod runner;
 pub mod state;
 pub mod wasm;
@@ -32,10 +31,10 @@ use crate::{
 };
 
 pub use built_in::{
-    automation, browser, download_file, image_generation, inference, inspect_file, messages,
-    request_user_input, search_history, setup, shell, todo, unlock, web,
+    automation, download_file, image_generation, inference, inspect_file, messages,
+    request_user_input, search_history, shell, todo, unlock, web,
 };
-pub use context::{ExecutionContext, ToolResponder};
+pub use context::ExecutionContext;
 pub use handler::ToolHandler;
 #[cfg(test)]
 pub(crate) use runner::execute_resolved_tool;
@@ -43,7 +42,6 @@ pub use runner::execute_tool;
 
 use self::built_in::{
     automation::{AutomationTool, AutomationToolKind},
-    browser::{BrowserTool, BrowserUpdateTool},
     download_file::DownloadFileTool,
     files::{CreateFileTool, ListFilesTool, ReadFileTool, UpdateFileTool},
     image_generation::ImageGenerationTool,
@@ -52,12 +50,13 @@ use self::built_in::{
     messages::{DeleteMessageTool, SendMessageTool},
     request_user_input::RequestUserInputTool,
     search_history::SearchHistoryTool,
-    setup::{ListChannelsTool, ListToolsTool},
     shell::{ListShellCommandsTool, ShellTool},
     todo::TodoTool,
     web::WebFetchTool,
 };
 use self::dynamic::{DynamicToolKind, DynamicToolTool, JavaScriptRuntime};
+use crate::browser::{BrowserTool, BrowserUpdateTool};
+use crate::setup::{ListChannelsTool, ListToolsTool};
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ToolError {
@@ -79,6 +78,27 @@ impl From<String> for ToolError {
 }
 
 pub type ToolResult = Result<serde_json::Value, ToolError>;
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub enum ToolOutcome<T> {
+    Result(T),
+    EndTurn(T),
+}
+
+impl<T> ToolOutcome<T> {
+    fn into_result(self) -> T {
+        match self {
+            Self::Result(result) | Self::EndTurn(result) => result,
+        }
+    }
+
+    pub(crate) fn map<U>(self, map: impl FnOnce(T) -> U) -> ToolOutcome<U> {
+        match self {
+            Self::Result(result) => ToolOutcome::Result(map(result)),
+            Self::EndTurn(result) => ToolOutcome::EndTurn(map(result)),
+        }
+    }
+}
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ToolCallResult {
@@ -357,12 +377,15 @@ pub trait InternalTool: Send + Sync {
 
     fn tool_definition(&self) -> ToolDefinition;
 
-    async fn execute(
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult;
+
+    async fn outcome(
         &self,
         args: serde_json::Value,
         ctx: &ExecutionContext,
-        responder: ToolResponder,
-    );
+    ) -> ToolOutcome<ToolResult> {
+        ToolOutcome::Result(self.execute(args, ctx).await)
+    }
 }
 
 pub async fn execute_typed<P, O, F>(
@@ -531,11 +554,6 @@ mod tests {
 
     struct SchemaTool;
 
-    struct DeferredTool {
-        name: &'static str,
-        order: Arc<std::sync::Mutex<Vec<String>>>,
-    }
-
     #[async_trait]
     impl InternalTool for FakeTool {
         fn name(&self) -> &str {
@@ -550,13 +568,8 @@ mod tests {
             }
         }
 
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            ctx: &ExecutionContext,
-            responder: ToolResponder,
-        ) {
-            responder.respond(Ok(serde_json::json!({ "depth": ctx.depth })));
+        async fn execute(&self, _args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
+            Ok(serde_json::json!({ "depth": ctx.depth }))
         }
     }
 
@@ -581,53 +594,8 @@ mod tests {
             }
         }
 
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            _ctx: &ExecutionContext,
-            responder: ToolResponder,
-        ) {
-            responder.respond(Ok(serde_json::json!({})));
-        }
-    }
-
-    #[async_trait]
-    impl InternalTool for DeferredTool {
-        fn name(&self) -> &str {
-            self.name
-        }
-
-        fn tool_definition(&self) -> ToolDefinition {
-            ToolDefinition {
-                name: self.name.to_string(),
-                description: String::new(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "additionalProperties": false
-                }),
-            }
-        }
-
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            _ctx: &ExecutionContext,
-            responder: ToolResponder,
-        ) {
-            self.order
-                .lock()
-                .expect("order lock")
-                .push(format!("start-{}", self.name));
-            let name = self.name;
-            let order = Arc::clone(&self.order);
-            tokio::spawn(async move {
-                tokio::task::yield_now().await;
-                order
-                    .lock()
-                    .expect("order lock")
-                    .push(format!("finish-{name}"));
-                responder.respond(Ok(serde_json::json!({ "tool": name })));
-            });
+        async fn execute(&self, _args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
+            Ok(serde_json::json!({}))
         }
     }
 
@@ -695,66 +663,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tool_handler_waits_for_deferred_tools_and_runs_them_in_order() {
-        let bus = Bus::new(16);
-        let registry = Arc::new(ToolRegistry::new());
-        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
-        for name in ["first", "second"] {
-            registry
-                .add(
-                    Arc::new(DeferredTool {
-                        name,
-                        order: Arc::clone(&order),
-                    }),
-                    ToolVisibility::Internal,
-                )
-                .expect("add");
-        }
-        let handler = Arc::new(ToolHandler::new(bus.clone(), registry));
-        let task = handler.start();
-        let mut events = bus.subscribe();
-
-        bus.publish(Event::ToolRequest {
-            request_id: "serial-request".to_string(),
-            context: ExecutionContext::new(std::path::PathBuf::from("serial")),
-            tool_calls: ["first", "second"]
-                .into_iter()
-                .enumerate()
-                .map(|(index, name)| ToolCall {
-                    id: format!("call-{index}"),
-                    name: name.to_string(),
-                    arguments: "{}".to_string(),
-                })
-                .collect(),
-            allowed_tool_names: None,
-        });
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if matches!(
-                    events.recv().await.expect("event"),
-                    Event::ToolResponse { .. }
-                ) {
-                    break;
-                }
-            }
-        })
-        .await
-        .expect("tool response");
-        task.abort();
-
-        assert_eq!(
-            *order.lock().expect("order lock"),
-            [
-                "start-first",
-                "finish-first",
-                "start-second",
-                "finish-second"
-            ]
-        );
-    }
-
-    #[tokio::test]
     async fn tool_handler_returns_the_interface_for_invalid_arguments() {
         let bus = Bus::new(16);
         let registry = Arc::new(ToolRegistry::new());
@@ -778,8 +686,8 @@ mod tests {
 
         let results = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
-                if let Event::ToolResponse { results, .. } = events.recv().await.expect("event") {
-                    break results;
+                if let Event::ToolResponse { outcome, .. } = events.recv().await.expect("event") {
+                    break outcome.into_result();
                 }
             }
         })

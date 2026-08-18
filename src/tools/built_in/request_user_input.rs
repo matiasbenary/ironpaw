@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::{
     bus::{Bus, ConversationKey, Event, UserInputOption, UserInputRequest},
-    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolResult},
 };
 
 pub struct RequestUserInputTool {
@@ -23,13 +23,8 @@ impl InternalTool for RequestUserInputTool {
         "Ask the user in an explicit conversation a question with specific possible answers. Use this only when the answer is required to continue. After calling this tool, do not continue the task, make assumptions, or repeat the question; end your response and wait for the user's next message."
     );
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result = (|| {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
+        (|| {
             let input: RequestUserInputParams =
                 serde_json::from_value(args).map_err(|err| err.to_string())?;
             validate(&input)?;
@@ -49,8 +44,7 @@ impl InternalTool for RequestUserInputTool {
             });
             Ok::<_, String>(serde_json::json!({ "status": "question_sent" }))
         })()
-        .map_err(crate::tools::ToolError::new);
-        responder.respond(result);
+        .map_err(crate::tools::ToolError::new)
     }
 }
 

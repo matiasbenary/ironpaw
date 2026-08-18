@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::{
     history::History,
-    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolResult},
 };
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -43,16 +43,10 @@ impl InternalTool for SearchHistoryTool {
         "Search Ironpaw's stored history across all conversations."
     );
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result = serde_json::from_value(args)
+    async fn execute(&self, args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
+        serde_json::from_value(args)
             .map_err(|err| err.to_string())
             .and_then(|params| SearchHistoryTool::execute(self, params))
-            .map_err(crate::tools::ToolError::new);
-        responder.respond(result);
+            .map_err(crate::tools::ToolError::new)
     }
 }

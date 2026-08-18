@@ -2,10 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::{
     config::RuntimeLayout,
-    tools::{
-        setup::install_common::{apply_config_values, set_json_pointer, write_package_artifacts},
-        wasm::{WasmToolConfig, WasmToolManifest},
-    },
+    setup::install_common::{apply_config_values, set_json_pointer, write_package_artifacts},
+    tools::wasm::{WasmToolConfig, WasmToolManifest},
 };
 
 use super::install_tool_package::{
@@ -234,14 +232,13 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::tools::built_in::setup::install_tool::install_tool_package::ToolInstallManifest;
+    use crate::setup::install_tool::install_tool_package::ToolInstallManifest;
 
     #[test]
     fn selected_oauth_recipe_becomes_the_only_runtime_grant() {
-        let manifest: ToolInstallManifest = serde_json::from_str(include_str!(
-            "../../../../wasm-tools/email/email.install.json"
-        ))
-        .unwrap();
+        let manifest: ToolInstallManifest =
+            serde_json::from_str(include_str!("../../wasm-tools/email/email.install.json"))
+                .unwrap();
         let package = ToolPackage {
             name: "email".to_string(),
             display_name: "Email".to_string(),

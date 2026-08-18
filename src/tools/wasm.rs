@@ -17,7 +17,7 @@ use crate::{
     network::email::protocol,
     network::http::NetworkGate,
     secrets::ToolSecrets,
-    tools::{ExecutionContext, InternalTool, ToolError, ToolResponder},
+    tools::{ExecutionContext, InternalTool, ToolError, ToolResult},
 };
 
 pub use crate::network::http::NetworkGrantConfig;
@@ -81,12 +81,7 @@ impl InternalTool for WasmTool {
         }
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
         let result: Result<serde_json::Value, String> = async {
             let args_json = serde_json::to_string(&args).map_err(|err| err.to_string())?;
             let wasm_path = self.wasm_path.clone();
@@ -102,7 +97,7 @@ impl InternalTool for WasmTool {
             Ok(output)
         }
         .await;
-        responder.respond(result.map_err(ToolError::new));
+        result.map_err(ToolError::new)
     }
 }
 

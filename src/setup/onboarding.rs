@@ -6,11 +6,10 @@ use crate::{
     automations::{Automation, ToolEffect, UserMessageEffect},
     bus::{ConversationKey, Event},
     message::{ToolDefinition, conversation_workspace},
-    tools::{
-        self, ExecutionContext, InternalTool, ToolResponder,
-        setup::{SetupServices, delete_current_message, send},
-    },
+    tools::{self, ExecutionContext, InternalTool, ToolResult},
 };
+
+use super::{SetupServices, delete_current_message, send};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct OnboardingParams {
@@ -263,17 +262,10 @@ impl InternalTool for OnboardingTool {
         )
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        responder.respond(
-            tools::execute_typed(args, |params: OnboardingParams| async {
-                OnboardingTool::execute(self, params, ctx).await
-            })
-            .await,
-        );
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
+        tools::execute_typed(args, |params: OnboardingParams| async {
+            OnboardingTool::execute(self, params, ctx).await
+        })
+        .await
     }
 }

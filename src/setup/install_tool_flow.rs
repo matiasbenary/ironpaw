@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
-use crate::tools::{
-    self, ExecutionContext,
-    setup::{
-        install_common::{config_value, is_yes, secret_value},
-        publish_tool_result, stop_setup_automation,
-    },
-    wasm::WasmTool,
+use crate::tools::{ExecutionContext, wasm::WasmTool};
+
+use crate::setup::{
+    install_common::{config_value, is_yes, secret_value},
+    stop_setup_automation,
 };
 
 use super::{
@@ -244,7 +242,6 @@ impl SetupToolTool {
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
         let name = session.package.name().to_string();
-        let continuation = session.continuation.clone();
         self.state.take();
         stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
         session
@@ -258,10 +255,6 @@ impl SetupToolTool {
                 ctx,
             )
             .await?;
-        publish_tool_result(
-            continuation.as_ref(),
-            Ok(serde_json::json!({ "tool": name, "cancelled": true })),
-        );
         Ok(())
     }
 
@@ -276,10 +269,6 @@ impl SetupToolTool {
             .take()
             .ok_or_else(|| "tool setup is not active".to_string())?;
         stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
-        publish_tool_result(
-            session.continuation.as_ref(),
-            Err(tools::ToolError::new(error)),
-        );
         session
             .send(
                 &self.setup.tools,
@@ -292,7 +281,6 @@ impl SetupToolTool {
     async fn finish(&self, session: InstallSession, ctx: &ExecutionContext) -> Result<(), String> {
         let name = session.package.name().to_string();
         let configured = matches!(session.mode, SetupMode::Configure { .. });
-        let continuation = session.continuation.clone();
         self.state.take();
         stop_setup_automation(&self.setup.automations, &format!("tool_auth:{name}"))?;
         session
@@ -309,12 +297,6 @@ impl SetupToolTool {
                 ctx,
             )
             .await?;
-        let result = if configured {
-            serde_json::json!({ "tool": name, "configured": true })
-        } else {
-            serde_json::json!({ "tool": name, "installed": true })
-        };
-        publish_tool_result(continuation.as_ref(), Ok(result));
         Ok(())
     }
 }

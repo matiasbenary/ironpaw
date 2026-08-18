@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::{
     inference::{Inference, InferenceRequest},
-    tools::{self, InternalTool, ToolError, ToolResponder},
+    tools::{self, InternalTool, ToolError, ToolResult},
 };
 
 /// LLM-callable wrapper around one model completion with raw messages and
@@ -28,12 +28,7 @@ impl InternalTool for RawInferenceTool {
              specific model (e.g. a vision or audio model)."
     );
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &tools::ExecutionContext,
-        responder: ToolResponder,
-    ) {
+    async fn execute(&self, args: serde_json::Value, _ctx: &tools::ExecutionContext) -> ToolResult {
         let result = async {
             let request =
                 serde_json::from_value(args).map_err(|error| ToolError::new(error.to_string()))?;
@@ -45,6 +40,6 @@ impl InternalTool for RawInferenceTool {
             serde_json::to_value(output).map_err(|error| ToolError::new(error.to_string()))
         }
         .await;
-        responder.respond(result);
+        result
     }
 }

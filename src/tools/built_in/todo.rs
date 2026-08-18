@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::tools::{self, ExecutionContext, InternalTool, ToolResponder};
+use crate::tools::{self, ExecutionContext, InternalTool, ToolResult};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -65,13 +65,8 @@ impl InternalTool for TodoTool {
             Do not stop until every task is completed."
     );
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result = (|| {
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
+        (|| {
             let input: TodoInput = serde_json::from_value(args).map_err(|e| e.to_string())?;
             let key = ctx.files_workspace().to_string_lossy().into_owned();
             let all_done = input
@@ -117,8 +112,7 @@ impl InternalTool for TodoTool {
                 "result": lines.join("\n")
             }))
         })()
-        .map_err(crate::tools::ToolError::new);
-        responder.respond(result);
+        .map_err(crate::tools::ToolError::new)
     }
 }
 

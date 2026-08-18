@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::{
     network::public::PublicHttp,
-    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolResult},
 };
 
 /// Responses are truncated to keep tool results model-sized.
@@ -61,18 +61,11 @@ impl InternalTool for WebFetchTool {
              execute JavaScript or interact with the page."
     );
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        responder.respond(
-            tools::execute_typed(args, |params: WebFetchParams| async {
-                WebFetchTool::execute(self, params).await
-            })
-            .await,
-        );
+    async fn execute(&self, args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
+        tools::execute_typed(args, |params: WebFetchParams| async {
+            WebFetchTool::execute(self, params).await
+        })
+        .await
     }
 }
 

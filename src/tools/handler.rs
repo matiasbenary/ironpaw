@@ -3,7 +3,10 @@ use std::sync::Arc;
 use crate::{
     bus::{Bus, Event},
     message::ToolCall,
-    tools::{ExecutionContext, ToolCallResult, ToolError, ToolRegistry, ToolResult, execute_tool},
+    tools::{
+        ExecutionContext, ToolCallResult, ToolError, ToolOutcome, ToolRegistry, ToolResult,
+        runner::execute_tool_outcome,
+    },
 };
 
 pub struct ToolHandler {
@@ -48,7 +51,7 @@ impl ToolHandler {
         let bus = self.bus.clone();
         let registry = Arc::clone(&self.registry);
         tokio::spawn(async move {
-            let results = execute_tool_request(
+            let outcome = execute_tool_request(
                 registry.as_ref(),
                 &context,
                 tool_calls,
@@ -57,7 +60,7 @@ impl ToolHandler {
             .await;
             bus.publish(Event::ToolResponse {
                 request_id,
-                results,
+                outcome,
             });
         });
     }
@@ -68,17 +71,25 @@ async fn execute_tool_request(
     context: &ExecutionContext,
     tool_calls: Vec<ToolCall>,
     allowed_tool_names: Option<&[String]>,
-) -> Vec<ToolCallResult> {
+) -> ToolOutcome<Vec<ToolCallResult>> {
     let mut results = Vec::with_capacity(tool_calls.len());
+    let mut outcome = ToolOutcome::Result(());
     for tool_call in &tool_calls {
-        let result = execute_tool_call(registry, context, tool_call, allowed_tool_names).await;
+        let result = match execute_tool_call(registry, context, tool_call, allowed_tool_names).await
+        {
+            ToolOutcome::Result(result) => result,
+            ToolOutcome::EndTurn(result) => {
+                outcome = ToolOutcome::EndTurn(());
+                result
+            }
+        };
         results.push(ToolCallResult {
             tool_call_id: tool_call.id.clone(),
             tool_name: tool_call.name.clone(),
             result,
         });
     }
-    results
+    outcome.map(|()| results)
 }
 
 async fn execute_tool_call(
@@ -86,24 +97,24 @@ async fn execute_tool_call(
     context: &ExecutionContext,
     tool_call: &ToolCall,
     allowed_tool_names: Option<&[String]>,
-) -> ToolResult {
+) -> ToolOutcome<ToolResult> {
     if allowed_tool_names.is_some_and(|names| !names.iter().any(|name| name == &tool_call.name)) {
-        return Err(ToolError::new("tool is not allowed in this agent run"));
+        return ToolOutcome::Result(Err(ToolError::new("tool is not allowed in this agent run")));
     }
     let args = match serde_json::from_str(&tool_call.arguments) {
         Ok(args) => args,
         Err(error) => {
-            return Err(invalid_arguments(
+            return ToolOutcome::Result(Err(invalid_arguments(
                 registry,
                 &tool_call.name,
                 error.to_string(),
-            ));
+            )));
         }
     };
     if let Err(error) = registry.validate_args_for_tool(&tool_call.name, &args) {
-        return Err(invalid_arguments(registry, &tool_call.name, error));
+        return ToolOutcome::Result(Err(invalid_arguments(registry, &tool_call.name, error)));
     }
-    execute_tool(registry, &tool_call.name, args, context).await
+    execute_tool_outcome(registry, &tool_call.name, args, context).await
 }
 
 fn invalid_arguments(registry: &ToolRegistry, tool_name: &str, error: String) -> ToolError {

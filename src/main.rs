@@ -3,6 +3,7 @@ use std::{io, sync::Arc};
 use ironpaw::{
     agent::Agent,
     automations::{Automations, FileAutomations},
+    browser::{BrowserUpdateTool, UPDATE_AUTOMATION_NAME},
     bus::{Bus, Event},
     channels::{self, DEFAULT_ADDR},
     config::RuntimeLayout,
@@ -10,14 +11,13 @@ use ironpaw::{
     inference::Inference,
     memory::Memory,
     message::Attachment,
+    setup::{
+        InstallChannelTool, InstallToolTool, OnboardingTool, RemoveChannelTool, SetupServices,
+    },
     tools::{
         InternalTool, InternalTools, ToolHandler, ToolVisibility,
-        browser::BrowserUpdateTool,
         dynamic::DynamicTool,
         messages::{DeleteMessageTool, SendMessageTool},
-        setup::{
-            InstallChannelTool, InstallToolTool, OnboardingTool, RemoveChannelTool, SetupServices,
-        },
         state::EnabledTools,
         unlock::{AUTOMATION_NAME as UNLOCK_AUTOMATION, UnlockSecretsTool},
         wasm::WasmTool,
@@ -28,15 +28,25 @@ use ironpaw::{
 async fn main() -> io::Result<()> {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
-    if arguments.next().as_deref()
-        == Some(std::ffi::OsStr::new(
-            ironpaw::network::proxy_bridge::ARGUMENT,
-        ))
-    {
-        let status = ironpaw::network::proxy_bridge::run(arguments.collect())
-            .await
-            .map_err(io::Error::other)?;
-        std::process::exit(status);
+    match arguments.next().as_deref() {
+        Some(argument)
+            if argument == std::ffi::OsStr::new(ironpaw::network::proxy_bridge::ARGUMENT) =>
+        {
+            let status = ironpaw::network::proxy_bridge::run(arguments.collect())
+                .await
+                .map_err(io::Error::other)?;
+            std::process::exit(status);
+        }
+        Some(argument)
+            if argument
+                == std::ffi::OsStr::new(ironpaw::network::proxy_bridge::BROWSER_ARGUMENT) =>
+        {
+            let status = ironpaw::network::proxy_bridge::run_browser(arguments.collect())
+                .await
+                .map_err(io::Error::other)?;
+            std::process::exit(status);
+        }
+        _ => {}
     }
 
     let layout = RuntimeLayout::discover();
@@ -227,7 +237,7 @@ async fn main() -> io::Result<()> {
     if !automations
         .list()
         .iter()
-        .any(|automation| automation.name() == ironpaw::tools::browser::UPDATE_AUTOMATION_NAME)
+        .any(|automation| automation.name() == UPDATE_AUTOMATION_NAME)
     {
         automations
             .add_runtime(BrowserUpdateTool::automation())

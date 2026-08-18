@@ -7,17 +7,17 @@ use std::{
 };
 
 use async_trait::async_trait;
-use chromiumoxide::{Browser, BrowserConfig, Page};
+use chromiumoxide::{Browser, Page};
 use futures::StreamExt;
 
 use crate::{
     automations::{Automation, AutomationEffect, Schedule, ToolEffect},
     config::RuntimeLayout,
-    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolResult},
 };
 
 mod install;
-use crate::network::proxy::ConnectProxy;
+mod sandbox;
 use install::ensure_chrome;
 
 pub const UPDATE_AUTOMATION_NAME: &str = "browser-update";
@@ -77,7 +77,7 @@ struct BrowserOption {
 
 struct Session {
     _browser: Browser,
-    _proxy: ConnectProxy,
+    _sandbox: sandbox::BrowserSandbox,
     page: Page,
     handler: tokio::task::JoinHandle<()>,
     log_path: PathBuf,
@@ -185,24 +185,10 @@ impl BrowserUpdateTool {
 }
 
 async fn launch_session(layout: &RuntimeLayout, profile: PathBuf) -> Result<Session, String> {
+    sandbox::ensure_supported()?;
     let chrome = ensure_chrome(layout.clone()).await?;
-    let proxy = ConnectProxy::public_tcp().await?;
     let log_path = profile.join("chrome.log");
-    let config = BrowserConfig::builder()
-        .chrome_executable(chrome)
-        .user_data_dir(profile)
-        .arg(format!("--proxy-server=http://{}", proxy.tcp_address()))
-        .arg("--proxy-bypass-list=<-loopback>")
-        .arg("--disable-quic")
-        .arg("--dns-prefetch-disable")
-        .arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
-        .arg("--enable-logging")
-        .arg(format!("--log-file={}", log_path.display()))
-        .build()
-        .map_err(|err| err.to_string())?;
-    let (browser, mut handler) = Browser::launch(config)
-        .await
-        .map_err(|err| format!("failed to launch managed Headless Shell: {err}"))?;
+    let (browser, mut handler, sandbox) = sandbox::launch(&chrome, &profile).await?;
     let handler = tokio::spawn(async move { while handler.next().await.is_some() {} });
     let page = browser
         .new_page("about:blank")
@@ -210,7 +196,7 @@ async fn launch_session(layout: &RuntimeLayout, profile: PathBuf) -> Result<Sess
         .map_err(|err| err.to_string())?;
     Ok(Session {
         _browser: browser,
-        _proxy: proxy,
+        _sandbox: sandbox,
         page,
         handler,
         log_path,
@@ -394,19 +380,14 @@ impl InternalTool for BrowserTool {
              to open a page, snapshot to inspect it, then act with refs returned \
              by the latest snapshot."
     );
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
         let result = async {
             let params = serde_json::from_value(args).map_err(|err| err.to_string())?;
             let output = self.execute(params, ctx).await?;
             serde_json::to_value(output).map_err(|err| err.to_string())
         }
         .await;
-        responder.respond(result.map_err(crate::tools::ToolError::new));
+        result.map_err(crate::tools::ToolError::new)
     }
 }
 
@@ -418,16 +399,10 @@ impl InternalTool for BrowserUpdateTool {
         "Internal maintenance tool that updates Ironpaw's managed Chrome runtime."
     );
 
-    async fn execute(
-        &self,
-        _args: serde_json::Value,
-        _ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result = ensure_chrome(self.layout.clone())
+    async fn execute(&self, _args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
+        ensure_chrome(self.layout.clone())
             .await
             .map(|path| serde_json::json!({ "path": path }))
-            .map_err(crate::tools::ToolError::new);
-        responder.respond(result);
+            .map_err(crate::tools::ToolError::new)
     }
 }

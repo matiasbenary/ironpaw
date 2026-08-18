@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use crate::{
     bus::{Bus, ConversationKey, Event, MessageRef},
     message::{Attachment, Message},
-    tools::{self, ExecutionContext, InternalTool, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolResult},
 };
 
 type AttachmentResolver =
@@ -78,17 +78,11 @@ impl InternalTool for SendMessageTool {
              delivered to the current conversation automatically."
     );
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result = serde_json::from_value(args)
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
+        serde_json::from_value(args)
             .map_err(|err| err.to_string())
             .and_then(|input| SendMessageTool::execute(self, input, ctx))
-            .map_err(crate::tools::ToolError::new);
-        responder.respond(result);
+            .map_err(crate::tools::ToolError::new)
     }
 }
 
@@ -161,17 +155,11 @@ impl InternalTool for DeleteMessageTool {
              The channel, chat id, and provider message id are required."
     );
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
-        let result = serde_json::from_value(args)
+    async fn execute(&self, args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
+        serde_json::from_value(args)
             .map_err(|err| err.to_string())
             .and_then(|input: DeleteMessageToolInput| DeleteMessageTool::execute(self, input))
-            .map_err(crate::tools::ToolError::new);
-        responder.respond(result);
+            .map_err(crate::tools::ToolError::new)
     }
 }
 

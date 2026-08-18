@@ -3,11 +3,12 @@ use std::path::{Path, PathBuf};
 use crate::{
     config::RuntimeLayout,
     shell_tools::{MANIFEST_FILENAME, ShellToolManifest},
-    tools::setup::{
-        install_common::{SetupConfig, SetupSecret, stored_secret_name},
-        install_tool::install_tool_package::{
-            SetupAccounts, ToolPackage, locate_tool_package, required_config, required_secrets,
-        },
+};
+
+use crate::setup::{
+    install_common::{SetupConfig, SetupSecret, stored_secret_name},
+    install_tool::install_tool_package::{
+        SetupAccounts, ToolPackage, locate_tool_package, required_config, required_secrets,
     },
 };
 

@@ -24,9 +24,61 @@ pub(crate) struct ConnectProxy {
     task: JoinHandle<()>,
 }
 
+pub(crate) struct TcpToUnixRelay {
+    address: SocketAddr,
+    task: JoinHandle<()>,
+}
+
+impl TcpToUnixRelay {
+    pub(crate) async fn start(socket_path: PathBuf) -> Result<Self, String> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|error| format!("failed to start TCP relay: {error}"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|error| format!("failed to read TCP relay address: {error}"))?;
+        let task = tokio::spawn(async move {
+            let mut connections = JoinSet::new();
+            loop {
+                tokio::select! {
+                    accepted = listener.accept() => {
+                        let Ok((mut client, _)) = accepted else {
+                            break;
+                        };
+                        let socket_path = socket_path.clone();
+                        connections.spawn(async move {
+                            let Ok(mut upstream) = tokio::net::UnixStream::connect(socket_path).await else {
+                                return;
+                            };
+                            let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                        });
+                    }
+                    Some(_) = connections.join_next(), if !connections.is_empty() => {}
+                }
+            }
+        });
+        Ok(Self { address, task })
+    }
+
+    pub(crate) fn address(&self) -> SocketAddr {
+        self.address
+    }
+}
+
+impl Drop for TcpToUnixRelay {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 impl ConnectProxy {
+    #[cfg(test)]
     pub(crate) async fn public_tcp() -> Result<Self, String> {
         Self::restricted_tcp(Vec::new(), false).await
+    }
+
+    pub(crate) async fn public_unix(socket_path: PathBuf) -> Result<Self, String> {
+        Self::restricted_unix(socket_path, Vec::new(), false).await
     }
 
     #[cfg(debug_assertions)]
@@ -59,9 +111,20 @@ impl ConnectProxy {
         socket_path: PathBuf,
         allowed_hosts: Vec<String>,
     ) -> Result<Self, String> {
+        Self::restricted_unix(socket_path, allowed_hosts, true).await
+    }
+
+    async fn restricted_unix(
+        socket_path: PathBuf,
+        allowed_hosts: Vec<String>,
+        enforce_allowlist: bool,
+    ) -> Result<Self, String> {
         let listener = UnixListener::bind(&socket_path)
             .map_err(|error| format!("failed to start network proxy: {error}"))?;
-        let task = tokio::spawn(run_unix(listener, HostPolicy::new(allowed_hosts, true)));
+        let task = tokio::spawn(run_unix(
+            listener,
+            HostPolicy::new(allowed_hosts, enforce_allowlist),
+        ));
         Ok(Self {
             tcp_address: None,
             socket_path: Some(socket_path),

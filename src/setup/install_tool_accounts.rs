@@ -105,7 +105,7 @@ impl SetupToolTool {
                 })
             })
             .transpose()?;
-        let pending = crate::tools::package_support::start_oauth(
+        let pending = crate::setup::package_support::start_oauth(
             &oauth,
             &session.config_values,
             client_secret,

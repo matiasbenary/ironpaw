@@ -8,7 +8,7 @@ use async_trait::async_trait;
 
 use crate::{
     message::{ToolDefinition, external_tool_workspace},
-    tools::{self, ExecutionContext, InternalTool, ToolRegistry, ToolResponder},
+    tools::{self, ExecutionContext, InternalTool, ToolRegistry, ToolResult},
 };
 
 mod script;
@@ -145,12 +145,7 @@ impl InternalTool for DynamicToolTool {
         }
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
         let result = match self.kind {
             DynamicToolKind::Create => serde_json::from_value(args)
                 .map_err(|err| err.to_string())
@@ -162,7 +157,7 @@ impl InternalTool for DynamicToolTool {
                 .map_err(|err| err.to_string())
                 .and_then(|params| self.delete(params)),
         };
-        responder.respond(result.map_err(crate::tools::ToolError::new));
+        result.map_err(crate::tools::ToolError::new)
     }
 }
 
@@ -295,15 +290,10 @@ impl InternalTool for DynamicTool {
         }
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ExecutionContext,
-        responder: ToolResponder,
-    ) {
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
         let ctx = ctx.with_tool_workspace(external_tool_workspace(ctx, &self.name));
         let result = self.scripts.run(self.script.clone(), ctx, args).await;
-        responder.respond(result.map_err(crate::tools::ToolError::new));
+        result.map_err(crate::tools::ToolError::new)
     }
 }
 

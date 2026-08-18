@@ -23,6 +23,11 @@ pub struct Agent {
     pub(super) memory: Arc<Memory>,
 }
 
+enum AgentOutcome {
+    Response(Message),
+    EndTurn,
+}
+
 impl Agent {
     pub fn new(
         bus: Bus,
@@ -79,7 +84,9 @@ impl Agent {
             )));
         }
         let run = AgentRun::new(history_id.clone(), context, tools, messages);
-        let output = self.run(run).await?;
+        let AgentOutcome::Response(output) = self.run(run).await? else {
+            return Ok(None);
+        };
         let Message::Assistant { text, .. } = &output else {
             unreachable!("run only returns assistant messages");
         };
@@ -119,7 +126,9 @@ impl Agent {
             tools,
             system_preamble(None),
         );
-        let output = self.run(run).await?;
+        let AgentOutcome::Response(output) = self.run(run).await? else {
+            return Ok(None);
+        };
         let Message::Assistant { text, .. } = &output else {
             unreachable!("run only returns assistant messages");
         };
@@ -136,7 +145,7 @@ impl Agent {
         Ok(Some(text))
     }
 
-    async fn run(&self, mut run: AgentRun) -> Result<Message, String> {
+    async fn run(&self, mut run: AgentRun) -> Result<AgentOutcome, String> {
         let mut round = 0;
         loop {
             round += 1;
@@ -183,9 +192,12 @@ impl Agent {
             let tool_calls = tool_calls.clone();
             run.transient_messages.clear();
             if tool_calls.is_empty() {
-                return Ok(output);
+                return Ok(AgentOutcome::Response(output));
             }
-            self.handle_tool_calls(&mut run, output, tool_calls).await?;
+            match self.handle_tool_calls(&mut run, output, tool_calls).await? {
+                tools::ToolOutcome::Result(()) => continue,
+                tools::ToolOutcome::EndTurn(()) => return Ok(AgentOutcome::EndTurn),
+            }
         }
     }
 
@@ -222,7 +234,7 @@ impl Agent {
         run: &mut AgentRun,
         output: Message,
         tool_calls: Vec<ToolCall>,
-    ) -> Result<(), String> {
+    ) -> Result<tools::ToolOutcome<()>, String> {
         for tool_call in &tool_calls {
             logger::raw_tool_call_logged(tool_call);
             self.publish_action(
@@ -245,7 +257,10 @@ impl Agent {
             tool_calls,
             allowed_tool_names: Some(run.allowed_tool_names.clone()),
         });
-        let results = wait_for_tool_response(&mut events, &request_id, &expected).await?;
+        let outcome = wait_for_tool_response(&mut events, &request_id, &expected).await?;
+        let results = match &outcome {
+            tools::ToolOutcome::Result(results) | tools::ToolOutcome::EndTurn(results) => results,
+        };
         let result_messages = results
             .iter()
             .map(|result| Message::ToolResult {
@@ -257,7 +272,7 @@ impl Agent {
         self.history
             .append_tool_turn(&run.history_id, &output, &result_messages)?;
         logger::raw_tool_results_logged(&result_messages);
-        Ok(())
+        Ok(outcome.map(|_| ()))
     }
 
     fn model_messages(&self, run: &AgentRun) -> Result<Vec<Message>, String> {
@@ -447,20 +462,26 @@ async fn wait_for_tool_response(
     events: &mut tokio::sync::broadcast::Receiver<Event>,
     request_id: &str,
     expected: &HashSet<String>,
-) -> Result<Vec<crate::tools::ToolCallResult>, String> {
+) -> Result<tools::ToolOutcome<Vec<crate::tools::ToolCallResult>>, String> {
     loop {
         match events.recv().await {
             Ok(Event::ToolResponse {
                 request_id: response_id,
-                results,
-            }) if response_id == request_id
-                && results
+                outcome,
+            }) if response_id == request_id => {
+                let results = match &outcome {
+                    tools::ToolOutcome::Result(results) | tools::ToolOutcome::EndTurn(results) => {
+                        results
+                    }
+                };
+                if results
                     .iter()
                     .map(|result| &result.tool_call_id)
                     .collect::<HashSet<_>>()
-                    == expected.iter().collect::<HashSet<_>>() =>
-            {
-                return Ok(results);
+                    == expected.iter().collect::<HashSet<_>>()
+                {
+                    return Ok(outcome);
+                }
             }
             Ok(_) => {}
             Err(error) => return Err(format!("failed waiting for tool result: {error}")),
