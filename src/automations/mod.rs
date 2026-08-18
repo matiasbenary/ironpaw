@@ -608,8 +608,8 @@ mod tests {
         let task = automations.start();
         let context = ExecutionContext::new(std::path::PathBuf::from("conversation"));
 
-        crate::tools::run_tool(
-            &tools,
+        crate::tools::execute_tool(
+            &tools.registry,
             "create_automation",
             serde_json::json!({
                 "type": "scheduled",
@@ -628,8 +628,8 @@ mod tests {
         )
         .await
         .unwrap();
-        crate::tools::run_tool(
-            &tools,
+        crate::tools::execute_tool(
+            &tools.registry,
             "edit_automation",
             serde_json::json!({
                 "type": "scheduled",
@@ -680,8 +680,8 @@ mod tests {
         };
         let context = ExecutionContext::new(conversation_workspace(&conversation));
 
-        crate::tools::run_tool(
-            &tools,
+        crate::tools::execute_tool(
+            &tools.registry,
             "create_automation",
             serde_json::json!({
                 "type": "on_guest_message_in",

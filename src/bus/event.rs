@@ -169,14 +169,7 @@ pub enum Event {
     },
     ToolResponse {
         request_id: String,
-        tool_call_ids: Vec<String>,
-        result: Result<Vec<crate::tools::ToolCallResult>, String>,
-    },
-    ToolResult {
-        request_id: String,
-        tool_call_id: String,
-        tool_name: String,
-        result: crate::tools::ToolResult,
+        results: Vec<crate::tools::ToolCallResult>,
     },
     #[serde(skip)]
     SecretsUnlocked,

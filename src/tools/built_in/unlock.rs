@@ -354,8 +354,8 @@ async fn request_written_down_confirmation(
     conversation: &ConversationKey,
     ctx: &ExecutionContext,
 ) -> Result<(), String> {
-    let result = tools::run_tool(
-        tools,
+    let result = tools::execute_tool(
+        &tools.registry,
         "request_user_input",
         serde_json::json!({
             "conversation": conversation,
@@ -377,8 +377,8 @@ async fn send_unlock_message(
     let Some(message_id) = &message.message_id else {
         return send(tools, conversation, &message.content, ctx).await;
     };
-    let result = tools::run_tool(
-        tools,
+    let result = tools::execute_tool(
+        &tools.registry,
         "send_message",
         serde_json::json!({
             "channel": conversation.channel,
@@ -399,8 +399,8 @@ async fn delete_outbound_message(
     ctx: &ExecutionContext,
     message_id: &str,
 ) -> Result<(), String> {
-    let result = tools::run_tool(
-        tools,
+    let result = tools::execute_tool(
+        &tools.registry,
         "delete_message",
         serde_json::json!({
             "channel": conversation.channel,

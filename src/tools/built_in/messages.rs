@@ -237,7 +237,7 @@ mod tests {
         let tool = Arc::new(DeleteMessageTool::new(bus));
         let ctx = ExecutionContext::new(std::path::PathBuf::from("conversation"));
 
-        let _ = tools::run_internal_tool(
+        let _ = tools::execute_resolved_tool(
             tool,
             serde_json::json!({
                 "channel": "telegram",

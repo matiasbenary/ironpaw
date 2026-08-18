@@ -55,8 +55,8 @@ pub(super) async fn send(
     content: &str,
     ctx: &ExecutionContext,
 ) -> Result<(), String> {
-    let result = tools::run_tool(
-        tools,
+    let result = tools::execute_tool(
+        &tools.registry,
         "send_message",
         serde_json::json!({
             "channel": conversation.channel,
@@ -77,8 +77,8 @@ pub(super) async fn request_choice(
     options: &[(&str, &str)],
     ctx: &ExecutionContext,
 ) -> Result<(), String> {
-    let result = tools::run_tool(
-        tools,
+    let result = tools::execute_tool(
+        &tools.registry,
         "request_user_input",
         serde_json::json!({
             "conversation": conversation,
@@ -111,8 +111,8 @@ pub(super) async fn delete_current_message(
     }) {
         eprintln!("{label} could not delete inbound setup history: {error}");
     }
-    let result = tools::run_tool(
-        tools,
+    let result = tools::execute_tool(
+        &tools.registry,
         "delete_message",
         serde_json::json!({
             "channel": conversation.channel,

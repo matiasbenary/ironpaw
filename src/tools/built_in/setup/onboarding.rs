@@ -160,8 +160,8 @@ impl OnboardingTool {
     }
 
     async fn test_near(&self, ctx: &ExecutionContext) -> Result<(), String> {
-        let result = tools::run_tool(
-            &self.setup.tools,
+        let result = tools::execute_tool(
+            &self.setup.tools.registry,
             "raw_inference",
             serde_json::json!({
                 "model": self.setup.tools.inference.provider().text_model.clone(),

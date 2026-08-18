@@ -94,7 +94,7 @@ fn validate(input: &RequestUserInputParams) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::run_internal_tool;
+    use crate::tools::execute_resolved_tool;
     use std::sync::Arc;
 
     #[tokio::test]
@@ -103,7 +103,7 @@ mod tests {
         let mut events = bus.subscribe();
         let context = ExecutionContext::new(std::path::PathBuf::from("conversation"));
 
-        let result = run_internal_tool(
+        let result = execute_resolved_tool(
             Arc::new(RequestUserInputTool::new(bus)),
             serde_json::json!({
                 "conversation": {

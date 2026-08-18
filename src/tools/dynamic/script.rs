@@ -196,7 +196,7 @@ fn execute_script(
         let tool_json = Func::from(move |name: String, args: String| -> String {
             let args: serde_json::Value =
                 serde_json::from_str(&args).unwrap_or(serde_json::Value::Null);
-            let result = handle.block_on(tools::run_registered_tool(&registry, &name, args, &ctx));
+            let result = handle.block_on(tools::execute_tool(&registry, &name, args, &ctx));
             serde_json::to_string(&tool_result_json(&result))
                 .unwrap_or_else(|err| format!(r#"{{"status":"failed","error":"{err}"}}"#))
         });

@@ -135,19 +135,19 @@ mod tests {
         let tool = Arc::new(TodoTool::new());
         let ctx = ExecutionContext::new(std::path::PathBuf::from("conversation"));
 
-        let _ = tools::run_internal_tool(
+        let _ = tools::execute_resolved_tool(
             Arc::clone(&tool) as Arc<dyn InternalTool>,
             serde_json::json!({ "todos": [item("Plan", TodoStatus::InProgress)] }),
             &ctx,
         )
         .await;
-        let _ = tools::run_internal_tool(
+        let _ = tools::execute_resolved_tool(
             Arc::clone(&tool) as Arc<dyn InternalTool>,
             serde_json::json!({ "todos": [item("Plan", TodoStatus::Completed)] }),
             &ctx,
         )
         .await;
-        let next = tools::run_internal_tool(
+        let next = tools::execute_resolved_tool(
             Arc::clone(&tool) as Arc<dyn InternalTool>,
             serde_json::json!({ "todos": [item("Next", TodoStatus::Pending)] }),
             &ctx,

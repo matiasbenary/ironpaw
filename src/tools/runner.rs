@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use crate::tools::{
-    ExecutionContext, InternalTool, InternalTools, ToolError, ToolRegistry, ToolResponder,
-    ToolResult,
+    ExecutionContext, InternalTool, ToolError, ToolRegistry, ToolResponder, ToolResult,
 };
 
 /// How deep tool-calls-tool chains may go (dynamic tools and agents can
@@ -32,18 +31,7 @@ fn reserve_tool_call(ctx: &ExecutionContext) -> Result<(), String> {
     Ok(())
 }
 
-/// Execute a tool by name, folding errors into the result JSON so every
-/// caller (agent loop, scripts, automations) sees the same shape.
-pub async fn run_tool(
-    tools: &InternalTools,
-    name: &str,
-    args: serde_json::Value,
-    ctx: &ExecutionContext,
-) -> ToolResult {
-    run_registered_tool(&tools.registry, name, args, ctx).await
-}
-
-pub async fn run_registered_tool(
+pub async fn execute_tool(
     registry: &ToolRegistry,
     name: &str,
     args: serde_json::Value,
@@ -57,10 +45,10 @@ pub async fn run_registered_tool(
     let Some(tool) = tool else {
         return Err(ToolError::new(format!("unknown tool: {name}")));
     };
-    run_internal_tool(tool, args, ctx).await
+    execute_resolved_tool(tool, args, ctx).await
 }
 
-pub async fn run_internal_tool(
+pub(crate) async fn execute_resolved_tool(
     tool: Arc<dyn InternalTool>,
     args: serde_json::Value,
     ctx: &ExecutionContext,

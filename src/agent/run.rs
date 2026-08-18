@@ -452,13 +452,15 @@ async fn wait_for_tool_response(
         match events.recv().await {
             Ok(Event::ToolResponse {
                 request_id: response_id,
-                tool_call_ids,
-                result,
+                results,
             }) if response_id == request_id
-                && tool_call_ids.iter().collect::<HashSet<_>>()
+                && results
+                    .iter()
+                    .map(|result| &result.tool_call_id)
+                    .collect::<HashSet<_>>()
                     == expected.iter().collect::<HashSet<_>>() =>
             {
-                return result;
+                return Ok(results);
             }
             Ok(_) => {}
             Err(error) => return Err(format!("failed waiting for tool result: {error}")),

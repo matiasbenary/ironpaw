@@ -37,7 +37,9 @@ pub use built_in::{
 };
 pub use context::{ExecutionContext, ToolResponder};
 pub use handler::ToolHandler;
-pub use runner::{run_internal_tool, run_registered_tool, run_tool};
+#[cfg(test)]
+pub(crate) use runner::execute_resolved_tool;
+pub use runner::execute_tool;
 
 use self::built_in::{
     automation::{AutomationTool, AutomationToolKind},
@@ -655,7 +657,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_tool_caps_call_depth() {
+    async fn execute_tool_caps_call_depth() {
         let tools = test_tools();
         tools
             .registry
@@ -664,11 +666,11 @@ mod tests {
 
         let mut deep = ExecutionContext::new(std::path::PathBuf::from("test"));
         deep.depth = runner::MAX_TOOL_DEPTH;
-        let result = run_tool(&tools, "fake", serde_json::json!({}), &deep).await;
+        let result = execute_tool(&tools.registry, "fake", serde_json::json!({}), &deep).await;
         assert!(result.is_err());
 
-        let ok = run_tool(
-            &tools,
+        let ok = execute_tool(
+            &tools.registry,
             "fake",
             serde_json::json!({}),
             &ExecutionContext::new(std::path::PathBuf::from("test")),
@@ -678,7 +680,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_tool_enforces_agent_call_budget() {
+    async fn execute_tool_enforces_agent_call_budget() {
         let tools = test_tools();
         tools
             .registry
@@ -687,7 +689,7 @@ mod tests {
         let ctx = ExecutionContext::new(std::path::PathBuf::from("test"));
         ctx.tool_budget.lock().unwrap().used = runner::MAX_TOOL_CALLS;
 
-        let result = run_tool(&tools, "fake", serde_json::json!({}), &ctx).await;
+        let result = execute_tool(&tools.registry, "fake", serde_json::json!({}), &ctx).await;
 
         assert!(result.unwrap_err().message.contains("limit reached"));
     }
@@ -776,8 +778,8 @@ mod tests {
 
         let results = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
-                if let Event::ToolResponse { result, .. } = events.recv().await.expect("event") {
-                    break result.unwrap();
+                if let Event::ToolResponse { results, .. } = events.recv().await.expect("event") {
+                    break results;
                 }
             }
         })
