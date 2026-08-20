@@ -58,7 +58,7 @@ async fn memory_native_eval() {
             && case.forbidden.iter().all(|term| !lower.contains(term));
         let search_count = search_history_call_count(
             &history
-                .load(&conversation)
+                .load_active(&HistoryId::Conversation(conversation.clone()))
                 .expect("load memory evaluation transcript"),
         );
         if search_count > 1 {

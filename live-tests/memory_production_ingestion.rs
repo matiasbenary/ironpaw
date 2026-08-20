@@ -32,7 +32,9 @@ async fn memory_production_ingestion() {
         "My storage locker code is Q7-MARBLE-42. Please acknowledge that you noted it.",
     )
     .await;
-    let entries = history.load(&conversation).expect("load conversation");
+    let entries = history
+        .load_active(&HistoryId::Conversation(conversation.clone()))
+        .expect("load conversation");
     history
         .save_conversation_summary(
             &HistoryId::Conversation(conversation.clone()),

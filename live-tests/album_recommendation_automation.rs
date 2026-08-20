@@ -1,5 +1,29 @@
 use super::common::*;
 
+struct TestClock(std::sync::Mutex<chrono::DateTime<chrono::Utc>>);
+
+impl TestClock {
+    fn new(now: &str) -> Self {
+        Self(std::sync::Mutex::new(
+            chrono::DateTime::parse_from_rfc3339(now)
+                .expect("test time")
+                .with_timezone(&chrono::Utc),
+        ))
+    }
+
+    fn set(&self, now: &str) {
+        *self.0.lock().expect("test clock") = chrono::DateTime::parse_from_rfc3339(now)
+            .expect("test time")
+            .with_timezone(&chrono::Utc);
+    }
+}
+
+impl Clock for TestClock {
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        *self.0.lock().expect("test clock")
+    }
+}
+
 /// Verify the generated daily album automation returns different recommendations across runs.
 ///
 /// Run with:
@@ -15,22 +39,26 @@ async fn album_recommendation_automation() {
 
     let bus = Bus::new(32);
     let mut events = bus.subscribe();
-    let (_task, history, automations) = start_ironpaw_with_automations(&bus, files_dir);
+    let clock = Arc::new(TestClock::new("2026-08-20T10:00:00+02:00"));
+    let (_task, history, automations, _, _) =
+        start_ironpaw_config_with_clock(&bus, files_dir, clock.clone());
     let existing = automations
         .list()
         .into_iter()
         .map(|automation| automation.name().to_string())
         .collect::<HashSet<_>>();
 
-    let prompt = r#"I am trying to listing to new bands, the more distant from my usual experience the better. The idea is not to listen to crap, but to move away from the mainstream influx of music we get bombarded with, which sounds all the same. Here are the albums I already listened to:
+    let prompt = r#"I am trying to listing to new bands, the more distant from my usual experience the better. The idea is to move away from the mainstream influx of music we get bombarded with. Here are the albums I already listened to:
 
 https://docs.google.com/spreadsheets/d/1bgDum7fxXzIo5bRDJzn7dy33s8bcPZxrf1YF1-jEy1c/edit?usp=sharing
 
 rules:
 - prefer non-english speaking bands
-- bad candidates are obvious bands (e.g. daft punk, the cure, pink floyd)
+- obvious bands are bad candidates (e.g. daft punk, the cure, pink floyd)
 
-suggest me one new album to listen every day at 10am, including the band name and album name
+every day at 10am I want you to suggest me a new album to listen, include the band name and album name.
+
+Never repeat a recommendation from a previous day.
 "#;
 
     publish_user_message(
@@ -87,7 +115,9 @@ suggest me one new album to listen every day at 10am, including the band name an
     }
 
     let automation_name = generated[0].name();
+    clock.set("2026-08-20T10:00:00+02:00");
     let first = trigger_automation_and_wait(&bus, &mut events, automation_name).await;
+    clock.set("2026-08-21T10:00:00+02:00");
     let second = trigger_automation_and_wait(&bus, &mut events, automation_name).await;
     eprintln!("[live_test] first recommendation: {first:?}");
     eprintln!("[live_test] second recommendation: {second:?}");

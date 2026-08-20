@@ -5,15 +5,15 @@ pub(crate) use ironpaw::{
     agent::{Agent, AgentHandler},
     automations::{Automation, AutomationEffect, Automations, FileAutomations, Schedule},
     bus::{AutomationAction, Bus, ConversationKey, Event, MessageIn, Sender},
-    channels::append_inbound_message,
+    clock::{Clock, SystemClock},
     history::{History, HistoryEntry, HistoryId, MessageMetadata, SqliteHistory},
     inference::Inference,
     memory::Memory,
     message::{Attachment, Message},
+    setup::{OnboardingTool, SetupServices},
     tools::{
         InternalTools, ToolHandler,
         messages::{DeleteMessageTool, SendMessageTool},
-        setup::{OnboardingTool, SetupServices},
         wasm::{self, WasmTool},
     },
 };
@@ -49,13 +49,27 @@ pub(crate) fn start_ironpaw_config(
     Arc<Memory>,
     PathBuf,
 ) {
+    start_ironpaw_config_with_clock(bus, files_dir, Arc::new(SystemClock))
+}
+
+pub(crate) fn start_ironpaw_config_with_clock(
+    bus: &Bus,
+    files_dir: PathBuf,
+    clock: Arc<dyn Clock>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    Arc<dyn History>,
+    Arc<Automations>,
+    Arc<Memory>,
+    PathBuf,
+) {
     reset_raw_inference_log();
     let history = temp_history();
     let layout = ironpaw::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
         "ironpaw-live-test-runtime-{}",
         uuid::Uuid::new_v4()
     )));
-    let automation_files_dir = layout.files_dir();
+    let automation_files_dir = files_dir.clone();
     install_test_telegram_channel(&layout);
     let secrets = ironpaw::secrets::Secrets::for_tests();
     if let Ok(near_api_key) = std::env::var("NEAR_API_KEY") {
@@ -80,6 +94,7 @@ pub(crate) fn start_ironpaw_config(
         files_dir,
         Arc::clone(&history),
         secrets.clone(),
+        Arc::clone(&clock),
     );
     let tools = Arc::new(tools);
     let tool_handler = Arc::new(ToolHandler::new(bus.clone(), Arc::clone(&tools.registry)));
@@ -107,6 +122,7 @@ pub(crate) fn start_ironpaw_config(
         bus.clone(),
         Arc::clone(&tools.registry),
         automation_store,
+        clock,
     ));
     let agent_handler = Arc::new(AgentHandler::new(bus.clone(), Arc::clone(&agent)));
     install_web_search_for_live_tests(&layout, &tools, &secrets);
@@ -209,7 +225,33 @@ pub(crate) fn publish_user_message(
     conversation: ConversationKey,
     message: Message,
 ) {
-    append_inbound_message(history, &conversation, None, &message)
+    let metadata = MessageMetadata::new(conversation.clone(), None);
+    let mut entries = vec![HistoryEntry {
+        message: message.clone(),
+        metadata: metadata.clone(),
+    }];
+    if let Message::User { attachments, .. } = &message
+        && !attachments.is_empty()
+    {
+        let files = attachments
+            .iter()
+            .map(|attachment| {
+                format!(
+                    "- filename: {}\n  mime_type: {}",
+                    attachment.filename, attachment.mime_type,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        entries.push(HistoryEntry {
+            message: Message::System(format!(
+                "[attached files]\n{files}\nUse inspect_file with the filename to inspect an attached file."
+            )),
+            metadata,
+        });
+    }
+    history
+        .append(&HistoryId::Conversation(conversation.clone()), &entries)
         .expect("persist live test user message");
     let Message::User { text, attachments } = message else {
         panic!("inbound live test message must be a user message");
@@ -230,7 +272,14 @@ pub(crate) fn publish_guest_message(
     text: &str,
 ) {
     let message = user_message(text);
-    append_inbound_message(history, &conversation, None, &message)
+    history
+        .append(
+            &HistoryId::Conversation(conversation.clone()),
+            &[HistoryEntry {
+                message,
+                metadata: MessageMetadata::new(conversation.clone(), None),
+            }],
+        )
         .expect("persist live test guest message");
     bus.publish(Event::MessageIn(MessageIn {
         sender: Sender::Guest("live-test-guest".to_string()),
@@ -287,7 +336,7 @@ pub(crate) fn seed_cold_history(
         })
         .collect::<Vec<_>>();
     history
-        .append(conversation, &entries)
+        .append(&HistoryId::Conversation(conversation.clone()), &entries)
         .expect("seed memory evaluation history");
     history
         .save_conversation_summary(
@@ -313,7 +362,7 @@ fn fixture_message(fixture: &MemoryFixtureMessage) -> Message {
 
 pub(crate) fn assert_cold_history(history: &dyn History, conversation: &ConversationKey) {
     let active = history
-        .load(conversation)
+        .load_active(&HistoryId::Conversation(conversation.clone()))
         .expect("load compacted memory evaluation history");
     assert_eq!(
         active.len(),

@@ -1,7 +1,7 @@
 use super::common::*;
 
 /// Verify the agent can schedule a message at an absolute wall-clock time,
-/// which requires it to read the current time from its preamble.
+/// which requires it to call the current_time tool.
 ///
 /// Run with:
 ///   cargo test --test live_tests -- --ignored --nocapture scheduled_message_at_wall_clock_time

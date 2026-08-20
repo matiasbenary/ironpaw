@@ -89,7 +89,7 @@ async fn lottery_automation() {
     }
 
     let entries = history
-        .load_conversation(&HistoryId::Automation(automation_name))
+        .load_active(&HistoryId::Automation(automation_name))
         .expect("load automation history");
     let numbers = entries
         .iter()
