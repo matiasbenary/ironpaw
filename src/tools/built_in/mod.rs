@@ -1,4 +1,5 @@
 pub mod automation;
+pub mod current_time;
 pub mod download_file;
 pub mod files;
 pub mod image_generation;

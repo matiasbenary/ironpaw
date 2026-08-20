@@ -507,6 +507,7 @@ mod tests {
             files_dir,
             Arc::new(SqliteHistory::new(history).unwrap()),
             secrets,
+            Arc::new(crate::clock::SystemClock),
         ))
     }
 

@@ -62,6 +62,7 @@ async fn main() -> io::Result<()> {
     let provider = Arc::new(ironpaw::config::ProviderConfig::from_env());
     let inference = Inference::with_config(secrets.tools.clone(), Arc::clone(&provider))
         .map_err(std::io::Error::other)?;
+    let clock = Arc::new(ironpaw::clock::SystemClock);
     let tools = Arc::new(InternalTools::new(
         bus.clone(),
         layout.clone(),
@@ -78,6 +79,7 @@ async fn main() -> io::Result<()> {
         layout.files_dir(),
         Arc::clone(&history),
         secrets.clone(),
+        clock.clone(),
     ));
     let tool_handler = Arc::new(ToolHandler::new(bus.clone(), Arc::clone(&tools.registry)));
     let memory = Arc::new(
@@ -88,14 +90,12 @@ async fn main() -> io::Result<()> {
         )
         .map_err(io::Error::other)?,
     );
-    let clock = Arc::new(ironpaw::clock::SystemClock);
     let agent = Arc::new(Agent::new(
         bus.clone(),
         Arc::clone(&tools.registry),
         Arc::clone(&history),
         tools.inference.clone(),
         memory,
-        clock.clone(),
     ));
     let automation_store = Arc::new(
         FileAutomations::new(layout.data_dir().join("automations"))

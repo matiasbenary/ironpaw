@@ -26,12 +26,12 @@ use std::{
 use async_trait::async_trait;
 
 use crate::{
-    bus::Bus, config::RuntimeLayout, history::History, message::ToolDefinition, secrets::Secrets,
-    shell_tools::ShellExecutor,
+    bus::Bus, clock::Clock, config::RuntimeLayout, history::History, message::ToolDefinition,
+    secrets::Secrets, shell_tools::ShellExecutor,
 };
 
 pub use built_in::{
-    automation, download_file, image_generation, inference, inspect_file, messages,
+    automation, current_time, download_file, image_generation, inference, inspect_file, messages,
     request_user_input, search_history, shell, todo, unlock, web,
 };
 pub use context::ExecutionContext;
@@ -42,6 +42,7 @@ pub use runner::execute_tool;
 
 use self::built_in::{
     automation::{AutomationTool, AutomationToolKind},
+    current_time::CurrentTimeTool,
     download_file::DownloadFileTool,
     files::{EditFileTool, ReadFileTool, SearchFilesTool, WriteFileTool},
     image_generation::ImageGenerationTool,
@@ -293,6 +294,7 @@ impl InternalTools {
         files_dir: std::path::PathBuf,
         history: Arc<dyn History>,
         secrets: Secrets,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         let send_message = Arc::new(send_message);
         let delete_message = Arc::new(delete_message);
@@ -315,6 +317,7 @@ impl InternalTools {
         }
         for tool in vec![
             tool(RawInferenceTool::new(inference.clone())),
+            tool(CurrentTimeTool::new(clock)),
             Arc::clone(&send_message) as Arc<dyn InternalTool>,
             Arc::clone(&delete_message) as Arc<dyn InternalTool>,
             tool(RequestUserInputTool::new(bus.clone())),
@@ -617,6 +620,7 @@ mod tests {
             files_dir,
             Arc::new(crate::history::SqliteHistory::new(history).unwrap()),
             secrets,
+            Arc::new(crate::clock::SystemClock),
         )
     }
 
