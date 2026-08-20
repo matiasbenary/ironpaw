@@ -2,6 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::{
     bus::{AutomationAction, Bus, ConversationKey, Event, MessageIn, SenderKind},
+    clock::Clock,
     message::{automation_workspace, conversation_workspace},
     tools::{ExecutionContext, ToolRegistry},
 };
@@ -61,15 +62,22 @@ pub struct Automations {
     tools: Arc<ToolRegistry>,
     automations: RwLock<Vec<Arc<Automation>>>,
     store: Arc<FileAutomations>,
+    clock: Arc<dyn Clock>,
 }
 
 impl Automations {
-    pub fn new(bus: Bus, tools: Arc<ToolRegistry>, store: Arc<FileAutomations>) -> Self {
+    pub fn new(
+        bus: Bus,
+        tools: Arc<ToolRegistry>,
+        store: Arc<FileAutomations>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         Self {
             bus,
             tools,
             automations: RwLock::new(Vec::new()),
             store,
+            clock,
         }
     }
 
@@ -145,7 +153,7 @@ impl Automations {
             Automation::Scheduled {
                 schedule, effect, ..
             } => {
-                schedule.validate()?;
+                schedule.validate(self.clock.now())?;
                 match effect {
                     AutomationEffect::Tool(effect) => self.validate_tool_effect(effect),
                     AutomationEffect::AgentTask(effect) => self.validate_agent_task_effect(effect),
@@ -352,7 +360,7 @@ impl Automations {
     ) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            let wait = (datetime.with_timezone(&chrono::Local) - chrono::Local::now())
+            let wait = (datetime.with_timezone(&chrono::Utc) - this.clock.now())
                 .to_std()
                 .unwrap_or_default();
             tokio::time::sleep(wait).await;
@@ -375,8 +383,12 @@ impl Automations {
                 }
             };
             let schedule = schedule.expect("validated cron schedule");
-            while let Some(next) = schedule.upcoming(chrono::Local).next() {
-                let wait = (next - chrono::Local::now()).to_std().unwrap_or_default();
+            loop {
+                let now = this.clock.now().with_timezone(&chrono::Local);
+                let Some(next) = schedule.after(&now).next() else {
+                    break;
+                };
+                let wait = (next - now).to_std().unwrap_or_default();
                 tokio::time::sleep(wait).await;
                 if !this.contains(automation.name()) {
                     break;
@@ -465,6 +477,14 @@ mod tests {
         inference::Inference,
         tools::{ExecutionContext, InternalTools, messages::SendMessageTool},
     };
+
+    struct FixedClock(chrono::DateTime<chrono::Utc>);
+
+    impl Clock for FixedClock {
+        fn now(&self) -> chrono::DateTime<chrono::Utc> {
+            self.0
+        }
+    }
 
     fn test_tools(bus: &Bus) -> Arc<InternalTools> {
         let layout = crate::config::RuntimeLayout::from_root(std::env::temp_dir().join(format!(
@@ -560,6 +580,7 @@ mod tests {
             bus.clone(),
             Arc::clone(&tools.registry),
             temp_store(),
+            Arc::new(crate::clock::SystemClock),
         ));
         let scoped_conversation = ConversationKey {
             channel: "telegram".to_string(),
@@ -604,6 +625,7 @@ mod tests {
             bus.clone(),
             Arc::clone(&tools.registry),
             Arc::clone(&store),
+            Arc::new(crate::clock::SystemClock),
         ));
         let task = automations.start();
         let context = ExecutionContext::new(std::path::PathBuf::from("conversation"));
@@ -670,6 +692,7 @@ mod tests {
             bus.clone(),
             Arc::clone(&tools.registry),
             temp_store(),
+            Arc::new(crate::clock::SystemClock),
         ));
         let task = automations.start();
         let mut events = bus.subscribe();
@@ -727,6 +750,7 @@ mod tests {
             bus.clone(),
             Arc::clone(&tools.registry),
             temp_store(),
+            Arc::new(crate::clock::SystemClock),
         ));
         automations
             .add_persistent(agent_task_automation("serial"))
@@ -765,6 +789,7 @@ mod tests {
             bus.clone(),
             Arc::clone(&tools.registry),
             Arc::clone(&store),
+            Arc::new(crate::clock::SystemClock),
         ));
         let datetime = (chrono::Local::now() + chrono::Duration::milliseconds(50)).fixed_offset();
         automations
@@ -809,6 +834,7 @@ mod tests {
             bus.clone(),
             Arc::clone(&tools.registry),
             Arc::clone(&store),
+            Arc::new(crate::clock::SystemClock),
         ));
         automations
             .add_persistent(message_send_message_automation("daily-news", None))
@@ -818,5 +844,30 @@ mod tests {
 
         assert!(!automations.contains("daily-news"));
         assert!(store.load_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn schedule_validation_uses_the_automation_clock() {
+        let bus = Bus::new(4);
+        let tools = test_tools(&bus);
+        let now = chrono::DateTime::parse_from_rfc3339("2030-01-02T10:00:00+00:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let automations = Arc::new(Automations::new(
+            bus,
+            Arc::clone(&tools.registry),
+            temp_store(),
+            Arc::new(FixedClock(now)),
+        ));
+        let past = chrono::DateTime::parse_from_rfc3339("2030-01-01T10:00:00+00:00").unwrap();
+
+        let error = automations
+            .add_persistent(scheduled_send_message_automation(
+                "past",
+                Schedule::At { datetime: past },
+            ))
+            .unwrap_err();
+
+        assert!(error.contains("is in the past"));
     }
 }

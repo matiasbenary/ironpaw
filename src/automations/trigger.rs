@@ -24,19 +24,19 @@ impl Schedule {
         Ok(Self::Cron { expression })
     }
 
-    pub fn at(datetime: &str) -> Result<Self, String> {
+    pub fn at(datetime: &str, now: chrono::DateTime<chrono::Utc>) -> Result<Self, String> {
         let datetime = parse_datetime(datetime)?;
         let schedule = Self::At { datetime };
-        schedule.validate()?;
+        schedule.validate(now)?;
         Ok(schedule)
     }
 
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub(super) fn validate(&self, now: chrono::DateTime<chrono::Utc>) -> Result<(), String> {
         match self {
             Self::Cron { expression } => Self::cron(expression).map(|_| ()),
             Self::At { datetime } => {
                 const GRACE: chrono::Duration = chrono::Duration::minutes(5);
-                if *datetime <= chrono::Local::now() - GRACE {
+                if datetime.with_timezone(&chrono::Utc) <= now - GRACE {
                     return Err(format!("'{datetime}' is in the past"));
                 }
                 Ok(())
@@ -96,16 +96,17 @@ mod tests {
 
     #[test]
     fn at_accepts_future_rejects_past() {
-        let future = (chrono::Local::now() + chrono::Duration::hours(1)).to_rfc3339();
-        assert!(Schedule::at(&future).is_ok());
+        let now = chrono::Utc::now();
+        let future = (now + chrono::Duration::hours(1)).to_rfc3339();
+        assert!(Schedule::at(&future, now).is_ok());
 
-        let past = (chrono::Local::now() - chrono::Duration::hours(1)).to_rfc3339();
-        assert!(Schedule::at(&past).is_err());
+        let past = (now - chrono::Duration::hours(1)).to_rfc3339();
+        assert!(Schedule::at(&past, now).is_err());
 
-        assert!(Schedule::at("not a date").is_err());
-        let local_future = (chrono::Local::now() + chrono::Duration::hours(1))
+        assert!(Schedule::at("not a date", now).is_err());
+        let local_future = (now.with_timezone(&chrono::Local) + chrono::Duration::hours(1))
             .format("%Y-%m-%dT%H:%M:%S")
             .to_string();
-        assert!(Schedule::at(&local_future).is_ok());
+        assert!(Schedule::at(&local_future, now).is_ok());
     }
 }

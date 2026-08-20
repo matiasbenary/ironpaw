@@ -2,6 +2,7 @@ pub mod agent;
 pub mod automations;
 pub mod bus;
 pub mod channels;
+pub mod clock;
 pub mod config;
 pub mod history;
 pub mod inference;

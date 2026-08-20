@@ -17,6 +17,7 @@ pub struct HistoryEntry {
 pub struct MessageMetadata {
     /// Ironpaw-owned stable id for this history entry.
     pub id: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation: Option<ConversationKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -30,6 +31,7 @@ impl MessageMetadata {
     pub fn new(conversation: ConversationKey, external_id: Option<String>) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
+            created_at: chrono::Utc::now(),
             conversation: Some(conversation),
             automation_id: None,
             external_id,
@@ -39,6 +41,7 @@ impl MessageMetadata {
     pub fn for_automation(automation_id: impl Into<String>) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
+            created_at: chrono::Utc::now(),
             conversation: None,
             automation_id: Some(automation_id.into()),
             external_id: None,

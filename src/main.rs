@@ -88,12 +88,14 @@ async fn main() -> io::Result<()> {
         )
         .map_err(io::Error::other)?,
     );
+    let clock = Arc::new(ironpaw::clock::SystemClock);
     let agent = Arc::new(Agent::new(
         bus.clone(),
         Arc::clone(&tools.registry),
         Arc::clone(&history),
         tools.inference.clone(),
         memory,
+        clock.clone(),
     ));
     let automation_store = Arc::new(
         FileAutomations::new(layout.data_dir().join("automations"))
@@ -103,6 +105,7 @@ async fn main() -> io::Result<()> {
         bus.clone(),
         Arc::clone(&tools.registry),
         automation_store,
+        clock,
     ));
     let agent_handler = Arc::new(ironpaw::agent::AgentHandler::new(
         bus.clone(),

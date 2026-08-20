@@ -2,6 +2,7 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     bus::{Bus, ChannelAction, ConversationKey, Event},
+    clock::Clock,
     history::{History, HistoryEntry, HistoryId, MessageMetadata},
     inference::{Inference, InferenceError, InferenceRequest},
     memory::Memory,
@@ -21,6 +22,7 @@ pub struct Agent {
     pub(super) history: Arc<dyn History>,
     pub(super) inference: Inference,
     pub(super) memory: Arc<Memory>,
+    pub(super) clock: Arc<dyn Clock>,
 }
 
 enum AgentOutcome {
@@ -35,6 +37,7 @@ impl Agent {
         history: Arc<dyn History>,
         inference: Inference,
         memory: Arc<Memory>,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             bus,
@@ -42,6 +45,7 @@ impl Agent {
             history,
             inference,
             memory,
+            clock,
         }
     }
 }
@@ -297,7 +301,10 @@ impl Agent {
         }
         messages.push(Message::System(format!(
             "[runtime context] The current local time is {}.",
-            chrono::Local::now().format("%A %Y-%m-%dT%H:%M:%S%:z")
+            self.clock
+                .now()
+                .with_timezone(&chrono::Local)
+                .format("%A %Y-%m-%dT%H:%M:%S%:z")
         )));
         messages.extend(run.transient_messages.clone());
         Ok(messages)
