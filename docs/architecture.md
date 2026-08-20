@@ -105,7 +105,7 @@ Ironpaw stores files locally and passes around typed attachments containing a fi
 
 The model interacts with stored files through tools. `download_file(url)` stores a public URL in the current execution's directory and returns its filename without placing the response body in conversation history. It recognizes public Google Sheets, Docs, and Slides editor links and exports them as CSV, text, and PDF respectively. `inspect_file(filename, query)` can inspect files from the current execution or the shared inbound directory, passing bounded raw text to a text model, extracting text from PDFs, or calling a vision model for images. `image_generation(prompt, filename)` stores the generated image in the same execution directory; `send_message` can then publish an assistant message with that filename as an attachment.
 
-Inbound attachments share the root file directory. Tool-created files use a separate directory for each conversation or scheduled automation. Calls made by a dynamic tool through `list_files`, `read_file`, `create_file`, or `update_file` instead use that tool's private directory. The host derives these paths from `ExecutionContext`; relative paths only are accepted, and symlinks are rejected. Scope and tool names are encoded before becoming directory components.
+Inbound attachments share the root file directory. Tool-created files use a separate directory for each conversation or scheduled automation. Calls made by a dynamic tool through `read_file`, `write_file`, `edit`, or `search_files` instead use that tool's private directory. The host derives these paths from `ExecutionContext`; relative paths only are accepted, and symlinks are rejected. Scope and tool names are encoded before becoming directory components.
 
 Filenames are sanitized before storage. Existing names receive a numeric suffix such as `report-2.pdf`, and tools that generate files must propose a descriptive filename.
 
@@ -208,7 +208,7 @@ network/
 ├── client.rs       # HTTPS, DNS pinning, redirects, timeouts
 ├── http.rs         # scoped host grants and secret injection
 ├── policy.rs       # public/private destination policy
-├── proxy.rs        # CONNECT proxy for browser and shell traffic
+├── proxy.rs        # CONNECT proxy for shell traffic
 ├── public.rs       # unauthenticated public downloads
 ├── oauth.rs        # OAuth exchange and refresh
 └── email/          # provider-neutral IMAP/SMTP adapters and discovery
@@ -384,7 +384,7 @@ Internal tools are async and model-callable. Every internal tool exposes:
 - `tool_definition()`
 - `execute(args, ctx, responder).await`
 
-Each tool receives an `ExecutionContext` with invocation metadata and tool-call depth. The invocation is explicit: `InvocationScope::Conversation(ConversationKey)` for conversation-scoped work, or `InvocationScope::ScheduledAutomation { automation_id }` for cron/at automation work. Tools match that scope directly and decide what to do. Result delivery is separate: tools receive a `ToolResponder` alongside the context. Message ids are action input, not execution metadata, so tools that operate on a specific message, such as `delete_message`, require an explicit `message_id`.
+Each tool receives an `ExecutionContext` with a host-selected workspace, tool-call depth, and the shared call budget. Conversations and scheduled automations select their workspace before invoking a tool; tools do not branch on the invocation source. Internal tools share that workspace. Dynamic and shell tools receive a tool-specific directory beneath it. Result delivery is correlated by request id and remains separate through `ToolResponder`. Conversation and message destinations are action input, so tools such as `request_user_input` and `delete_message` require them explicitly.
 
 Implemented internal tools include:
 
@@ -392,9 +392,8 @@ Implemented internal tools include:
 - `image_generation`: calls an OpenAI-compatible image generation endpoint, stores the generated image under the requested sanitized filename, and returns that filename for later delivery.
 - `inspect_file`: inspects a locally stored file by filename, using text extraction for documents and a vision model for images.
 - `download_file`: downloads a public URL into the current execution's file directory under its sanitized original filename for bounded inspection with `inspect_file`.
-- `list_files`, `read_file`, `create_file`, `update_file`: access the execution-scoped agent workspace.
+- `read_file`, `write_file`, `edit`, `search_files`: access the execution-scoped agent workspace.
 - `web_fetch`: fetches a public URL with no credentials.
-- `browser`: navigates public HTTPS pages through a local `CONNECT` proxy. The proxy resolves destinations itself, rejects non-public addresses, and pins each tunnel to the validated address. Chromium direct bypasses, QUIC, and non-proxied WebRTC traffic are disabled.
 - `send_message`: publishes a message to a user through a channel.
 - `delete_message`: deletes a channel message when the channel supports it.
 - `request_user_input`: asks the current user to choose from specific answers. Telegram renders inline callback buttons; the selected value returns as a normal inbound user message.
@@ -558,9 +557,9 @@ This flow is the intended uniform shape: TUI and Telegram are both channels, and
 
 Channel config files currently work, and channel installation can handle some setup flows, but the user still sometimes has to know the exact JSON shape. We need broader validation, friendlier errors, and setup flows for more channels.
 
-### Web / Browser Channel
+### Web Channel
 
-The current architecture can support a web UI as another channel, but there is no `ironpaw-browser` or web channel implementation yet.
+The current architecture can support a web UI as another channel, but there is no web channel implementation yet.
 
 ### Tool Permissions
 
