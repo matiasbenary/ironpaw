@@ -1,8 +1,8 @@
-use std::{io::Read, net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, time::Duration};
 
 use reqwest::{Client, Url, redirect::Policy};
 
-use super::policy::{is_public_ip, resolve_public, resolve_public_blocking};
+use super::policy::{is_public_ip, resolve_public};
 
 pub(crate) struct PublicResponse {
     pub status: u16,
@@ -71,55 +71,6 @@ impl PublicHttp {
                 break;
             }
             body.extend_from_slice(&chunk);
-        }
-        Ok(PublicResponse {
-            status,
-            body,
-            content_type,
-        })
-    }
-
-    pub fn get_blocking(url: &str, limit: usize) -> Result<PublicResponse, String> {
-        let url = Url::parse(url).map_err(|err| format!("invalid url: {err}"))?;
-        if url.scheme() != "https" {
-            return Err("only https urls are allowed".to_string());
-        }
-        let host = url
-            .host_str()
-            .ok_or_else(|| "destination has no host".to_string())?;
-        let addresses = resolve_public_blocking(host, url.port_or_known_default().unwrap_or(443))?;
-        let response = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .redirect(Policy::none())
-            .resolve_to_addrs(host, &addresses)
-            .build()
-            .map_err(|err| err.without_url().to_string())?
-            .get(url.clone())
-            .send()
-            .map_err(|err| err.without_url().to_string())?;
-        let status = response.status().as_u16();
-        if !(200..300).contains(&status) {
-            return Err(format!("request failed with status {status}"));
-        }
-        if response
-            .content_length()
-            .is_some_and(|size| size > limit as u64)
-        {
-            return Err(format!("response is too large (> {limit} bytes)"));
-        }
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .to_string();
-        let mut body = Vec::new();
-        response
-            .take(limit as u64 + 1)
-            .read_to_end(&mut body)
-            .map_err(|err| err.to_string())?;
-        if body.len() > limit {
-            return Err(format!("response is too large (> {limit} bytes)"));
         }
         Ok(PublicResponse {
             status,

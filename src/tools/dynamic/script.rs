@@ -230,7 +230,7 @@ fn execute_script(
                 switch (module) {
                     case "fs":
                     case "node:fs":
-                        throw new Error("require is unavailable in scripts. For filesystem work, use list_files, read_file, create_file, or update_file.");
+                        throw new Error("require is unavailable in scripts. For filesystem work, use read_file, write_file, edit, or search_files.");
                     case "child_process":
                     case "node:child_process":
                         throw new Error("require is unavailable in scripts; scripts cannot start processes.");
@@ -419,7 +419,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(fs_error.contains("list_files"));
+        assert!(fs_error.contains("search_files"));
         assert!(fs_error.contains("require is unavailable"));
 
         let module_error = runtime

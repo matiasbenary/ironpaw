@@ -11,7 +11,7 @@ use crate::{
 
 use super::{logger, preamble::system_preamble};
 
-const DEFAULT_TASK_TOOLS: [&str; 4] = ["list_files", "read_file", "create_file", "update_file"];
+const DEFAULT_TASK_TOOLS: [&str; 4] = ["read_file", "write_file", "edit", "search_files"];
 const COMPACT_AT_PROMPT_TOKENS: u64 = 256_000;
 
 /// Entry point for conversation and scheduled-agent runs.

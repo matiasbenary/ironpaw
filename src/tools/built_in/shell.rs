@@ -67,10 +67,14 @@ impl ListShellCommandsTool {
 }
 
 impl ShellTool {
-    pub fn new(layout: RuntimeLayout, executor: ShellExecutor) -> Self {
+    pub fn new(
+        layout: RuntimeLayout,
+        files_dir: std::path::PathBuf,
+        executor: ShellExecutor,
+    ) -> Self {
         Self {
             tools_dir: layout.tools_dir(),
-            files_dir: layout.files_dir(),
+            files_dir,
             enabled: EnabledTools::new(layout.tools_state_path()),
             executor,
         }
@@ -223,7 +227,7 @@ mod tests {
         install_test_tool(&layout);
         let secrets = Secrets::for_tests();
         let executor = ShellExecutor::portable(layout.tools_dir(), secrets.tools);
-        let tool = ShellTool::new(layout.clone(), executor);
+        let tool = ShellTool::new(layout.clone(), layout.files_dir(), executor);
         let commands = ListShellCommandsTool::new(layout.clone());
         let context = ExecutionContext::new(std::path::PathBuf::from("conversation"));
 
