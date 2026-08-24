@@ -23,6 +23,11 @@
       "path": "/password_secret",
       "prompt": "Paste your email password or app password.",
       "when": { "path": "/provider", "equals": "imap" }
+    },
+    {
+      "name": "EMAIL_GOOGLE_CLIENT_SECRET",
+      "prompt": "Paste your Google OAuth client secret.",
+      "when": { "path": "/provider", "equals": "gmail" }
     }
   ],
   "config": [
@@ -31,6 +36,12 @@
       "prompt": "What is your email address? Ironpaw will detect the provider and mail settings.",
       "type": "email",
       "autoconfigure": { "action": "discover", "rerun_on_keep": true }
+    },
+    {
+      "path": "/oauth/client_id",
+      "prompt": "Paste your Google OAuth client ID.",
+      "type": "string",
+      "when": { "path": "/provider", "equals": "gmail" }
     },
     {
       "path": "/oauth/access",
@@ -46,8 +57,8 @@
             "login_hint_path": "/username",
             "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
             "token_url": "https://oauth2.googleapis.com/token",
-            "client_id": "REMOVED_GOOGLE_OAUTH_CLIENT_ID",
-            "client_secret": "REMOVED_GOOGLE_OAUTH_CLIENT_SECRET",
+            "client_id": { "config": "/oauth/client_id" },
+            "client_secret_handle": "EMAIL_GOOGLE_CLIENT_SECRET",
             "redirect_host": "127.0.0.1",
             "refresh_token_handle": "EMAIL_GOOGLE_REFRESH_TOKEN",
             "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
@@ -62,8 +73,8 @@
             "login_hint_path": "/username",
             "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
             "token_url": "https://oauth2.googleapis.com/token",
-            "client_id": "REMOVED_GOOGLE_OAUTH_CLIENT_ID",
-            "client_secret": "REMOVED_GOOGLE_OAUTH_CLIENT_SECRET",
+            "client_id": { "config": "/oauth/client_id" },
+            "client_secret_handle": "EMAIL_GOOGLE_CLIENT_SECRET",
             "redirect_host": "127.0.0.1",
             "refresh_token_handle": "EMAIL_GOOGLE_REFRESH_TOKEN",
             "scopes": [

@@ -246,6 +246,10 @@ mod tests {
         };
         let values = BTreeMap::from([
             ("/oauth/access".to_string(), serde_json::json!("readonly")),
+            (
+                "/oauth/client_id".to_string(),
+                serde_json::json!("test-client-id"),
+            ),
             ("/provider".to_string(), serde_json::json!("gmail")),
             ("/username".to_string(), serde_json::json!("me@gmail.com")),
         ]);
@@ -259,11 +263,20 @@ mod tests {
         assert_eq!(grants[0].host, "gmail.googleapis.com");
         assert_eq!(
             grants[0].oauth.as_ref().unwrap().client_id,
-            "REMOVED_GOOGLE_OAUTH_CLIENT_ID"
+            "test-client-id"
         );
         assert_eq!(
             grants[0].oauth.as_ref().unwrap().client_secret.as_deref(),
-            Some("REMOVED_GOOGLE_OAUTH_CLIENT_SECRET")
+            None
+        );
+        assert_eq!(
+            grants[0]
+                .oauth
+                .as_ref()
+                .unwrap()
+                .client_secret_handle
+                .as_deref(),
+            Some("EMAIL_GOOGLE_CLIENT_SECRET:ME@GMAIL.COM")
         );
     }
 }
