@@ -17,8 +17,12 @@ const QUEUE_CAPACITY: usize = 32;
 
 #[derive(Clone, Copy)]
 enum Isolation {
+    #[cfg_attr(
+        all(feature = "local-development", not(target_os = "linux")),
+        allow(dead_code)
+    )]
     Production,
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "local-development"))]
     Portable,
 }
 
@@ -49,10 +53,14 @@ enum Operation {
 
 impl ShellExecutor {
     pub fn new(tools_dir: PathBuf, secrets: ToolSecrets) -> Self {
-        Self::start(tools_dir, secrets, Isolation::Production)
+        #[cfg(all(feature = "local-development", not(target_os = "linux")))]
+        let isolation = Isolation::Portable;
+        #[cfg(not(all(feature = "local-development", not(target_os = "linux"))))]
+        let isolation = Isolation::Production;
+        Self::start(tools_dir, secrets, isolation)
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "local-development"))]
     pub fn portable(tools_dir: PathBuf, secrets: ToolSecrets) -> Self {
         Self::start(tools_dir, secrets, Isolation::Portable)
     }
@@ -187,7 +195,7 @@ async fn install(
             manifest.allowed_hosts.clone(),
             ProcessMode::Install,
         ),
-        #[cfg(debug_assertions)]
+        #[cfg(any(test, feature = "local-development"))]
         Isolation::Portable => ProcessRunner::portable(
             tool_dir.clone(),
             tool_dir.clone(),
@@ -264,7 +272,7 @@ async fn run(
             manifest.allowed_hosts.clone(),
             ProcessMode::Execute,
         )?,
-        #[cfg(debug_assertions)]
+        #[cfg(any(test, feature = "local-development"))]
         Isolation::Portable => ProcessRunner::portable(
             tool_dir,
             workspace,

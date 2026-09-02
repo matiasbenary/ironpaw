@@ -430,8 +430,8 @@ where
 
     fn oauth_token(&self, config: &OAuthGrantConfig) -> Result<String, HttpError> {
         let cache_key = format!(
-            "{}\0{}\0{}",
-            config.token_url, config.client_id, config.refresh_token_handle
+            "{:?}\0{:?}\0{:?}\0{}",
+            config.broker_provider, config.token_url, config.client_id, config.refresh_token_handle
         );
         if let Some(token) = self
             .oauth_tokens
@@ -445,18 +445,22 @@ where
             .secrets
             .get_secret(&config.refresh_token_handle)
             .ok_or_else(|| HttpError::MissingCredential(config.refresh_token_handle.clone()))?;
-        let client_secret = config
-            .client_secret
-            .clone()
-            .map(Ok)
-            .or_else(|| {
-                config.client_secret_handle.as_ref().map(|name| {
-                    self.secrets
-                        .get_secret(name)
-                        .ok_or_else(|| HttpError::MissingCredential(name.clone()))
+        let client_secret = if config.broker_provider.is_some() {
+            None
+        } else {
+            config
+                .client_secret
+                .clone()
+                .map(Ok)
+                .or_else(|| {
+                    config.client_secret_handle.as_ref().map(|name| {
+                        self.secrets
+                            .get_secret(name)
+                            .ok_or_else(|| HttpError::MissingCredential(name.clone()))
+                    })
                 })
-            })
-            .transpose()?;
+                .transpose()?
+        };
         let token =
             super::oauth::refresh_access_token(config, &refresh_token, client_secret.as_deref())
                 .map_err(HttpError::Http)?;

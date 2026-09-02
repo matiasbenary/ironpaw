@@ -83,17 +83,18 @@ impl PublicHttp {
 pub(crate) async fn guard_url(url: &Url) -> Result<Option<Vec<SocketAddr>>, String> {
     let host = url.host_str().unwrap_or_default();
     let loopback = matches!(host, "localhost" | "127.0.0.1" | "::1");
-    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
-        return Err("only https urls are allowed (http only for localhost)".to_string());
+    let local_http = cfg!(feature = "local-development") && url.scheme() == "http" && loopback;
+    if url.scheme() != "https" && !local_http {
+        return Err("only https urls are allowed".to_string());
     }
     if let Ok(ip) = host.parse() {
-        if !(is_public_ip(ip) || url.scheme() == "http" && loopback) {
+        if !(is_public_ip(ip) || local_http) {
             return Err("requests to private/internal addresses are not allowed".to_string());
         }
         return Ok(None);
     }
     if loopback {
-        return (url.scheme() == "http")
+        return local_http
             .then_some(None)
             .ok_or_else(|| "requests to private/internal addresses are not allowed".to_string());
     }

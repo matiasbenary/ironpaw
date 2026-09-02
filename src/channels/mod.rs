@@ -195,6 +195,7 @@ pub async fn start_bridge(
     bridge
         .add_channel(Arc::clone(&local_client) as Arc<dyn bridge::Channel>)
         .await;
+    let connection_token = local_client.connection_token().to_string();
     let app = axum::Router::new()
         .merge(local_client.routes())
         .merge(wasm::routes(
@@ -203,8 +204,14 @@ pub async fn start_bridge(
             files_dir,
         ));
     let server_task = tokio::spawn(async move {
-        if let Err(err) =
-            crate::network::server::run(listener, &server_addr, app, auth_log_path).await
+        if let Err(err) = crate::network::server::run(
+            listener,
+            &server_addr,
+            app,
+            auth_log_path,
+            connection_token,
+        )
+        .await
         {
             eprintln!("network server failed: {err}");
         }

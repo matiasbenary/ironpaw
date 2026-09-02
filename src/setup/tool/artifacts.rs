@@ -134,8 +134,13 @@ pub(super) fn build_account(
             header: None,
             prefix: None,
             oauth: Some(crate::network::oauth::OAuthGrantConfig {
+                broker_provider: oauth.broker.clone(),
                 token_url: oauth.token_url.clone(),
-                client_id: oauth.client_id.resolve(values)?,
+                client_id: oauth
+                    .client_id
+                    .as_ref()
+                    .map(|client_id| client_id.resolve(values))
+                    .transpose()?,
                 client_secret: oauth.client_secret.clone(),
                 client_secret_handle: oauth
                     .client_secret_handle
@@ -197,10 +202,16 @@ fn bind_oauth(
             else {
                 return false;
             };
-            match oauth.client_id.resolve(values) {
+            match oauth
+                .client_id
+                .as_ref()
+                .map(|client_id| client_id.resolve(values))
+                .transpose()
+            {
                 Ok(client_id) => {
                     grant["oauth"] =
                         serde_json::to_value(crate::network::oauth::OAuthGrantConfig {
+                            broker_provider: oauth.broker.clone(),
                             token_url: oauth.token_url.clone(),
                             client_id,
                             client_secret: oauth.client_secret.clone(),
@@ -246,10 +257,6 @@ mod tests {
         };
         let values = BTreeMap::from([
             ("/oauth/access".to_string(), serde_json::json!("readonly")),
-            (
-                "/oauth/client_id".to_string(),
-                serde_json::json!("test-client-id"),
-            ),
             ("/provider".to_string(), serde_json::json!("gmail")),
             ("/username".to_string(), serde_json::json!("me@gmail.com")),
         ]);
@@ -262,8 +269,8 @@ mod tests {
         assert_eq!(grants[0].account.as_deref(), Some("me@gmail.com"));
         assert_eq!(grants[0].host, "gmail.googleapis.com");
         assert_eq!(
-            grants[0].oauth.as_ref().unwrap().client_id,
-            "test-client-id"
+            grants[0].oauth.as_ref().unwrap().broker_provider.as_deref(),
+            Some("google")
         );
         assert_eq!(
             grants[0].oauth.as_ref().unwrap().client_secret.as_deref(),
@@ -276,7 +283,7 @@ mod tests {
                 .unwrap()
                 .client_secret_handle
                 .as_deref(),
-            Some("EMAIL_GOOGLE_CLIENT_SECRET:ME@GMAIL.COM")
+            None
         );
     }
 }

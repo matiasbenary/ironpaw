@@ -57,14 +57,18 @@ pub struct SetupChoice {
 pub struct SetupOAuth {
     pub host: String,
     pub login_hint_path: String,
-    pub authorize_url: String,
-    pub token_url: String,
-    pub client_id: SetupOAuthClientId,
+    #[serde(default)]
+    pub broker: Option<String>,
+    #[serde(default)]
+    pub authorize_url: Option<String>,
+    #[serde(default)]
+    pub token_url: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<SetupOAuthClientId>,
     #[serde(default)]
     pub client_secret: Option<String>,
     #[serde(default)]
     pub client_secret_handle: Option<String>,
-    pub redirect_host: String,
     pub refresh_token_handle: String,
     pub scopes: Vec<String>,
     #[serde(default)]

@@ -82,10 +82,12 @@ selected package's current workspace and never receive secrets.
 - A command has a two-minute timeout. When it returns or times out, Ironpaw
   kills its process group and drops the sandbox and network proxy.
 
-Debug builds also contain a portable runner for tests. It retains the private
-working directory, scrubbed environment, timeout, and network proxy, but does
-not make the package read-only and does not provide Bubblewrap filesystem or
-namespace isolation. It must not be treated as a production sandbox.
+On non-Linux development machines, compiling with `--features
+local-development` enables a portable runner. It retains the private working
+directory, scrubbed environment, timeout, and network proxy, but does not make
+the package read-only and does not provide Bubblewrap filesystem or namespace
+isolation. It must not be treated as a production sandbox. Without that
+feature, non-Linux shell execution fails closed.
 
 **Network access:**
 

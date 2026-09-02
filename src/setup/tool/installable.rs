@@ -174,7 +174,8 @@ fn wasm_capabilities(package: &ToolPackage) -> String {
         .iter()
         .flat_map(|config| &config.choices)
         .filter_map(|choice| choice.oauth.as_ref())
-        .flat_map(|oauth| [&oauth.authorize_url, &oauth.token_url])
+        .flat_map(|oauth| [oauth.authorize_url.as_ref(), oauth.token_url.as_ref()])
+        .flatten()
         .collect::<std::collections::BTreeSet<_>>();
     let scopes = package
         .manifest

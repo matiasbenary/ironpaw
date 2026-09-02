@@ -1,21 +1,24 @@
+'use client';
+
 import { useEffect, useRef, useState } from 'react';
 
 import { Chat } from './Chat';
 import { ConnectionScreen } from './ConnectionScreen';
+import { OAUTH_CALLBACK_CHANNEL } from './OAuthCallback';
 import { ReconnectDialog } from './ReconnectDialog';
 import { Sidebar } from './Sidebar';
 import {
   AuthenticationError,
   clearClientToken,
+  completeOAuth,
   defaultAddress,
-  emailOauthComplete,
   loadClientConfig,
   saveClientConfig,
   sendMessage,
   subscribe,
   verifyClient,
 } from './client';
-import type { ClientConfig } from './client';
+import type { ClientConfig, OAuthCallback } from './client';
 import {
   listConversations,
   loadMessages,
@@ -48,7 +51,8 @@ const fileAsBase64 = (file: File): Promise<string> => new Promise((resolve, reje
 });
 
 export function App() {
-  const [config, setConfig] = useState<ClientConfig | null>(() => loadClientConfig());
+  const [config, setConfig] = useState<ClientConfig | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<StoredMessage[]>([]);
@@ -58,10 +62,20 @@ export function App() {
   const [connectionState, setConnectionState] = useState<ConnectionState>('connected');
   const [reconnectOpen, setReconnectOpen] = useState(false);
   const activeIdRef = useRef<string | null>(null);
-  const oauthStates = useRef(new Set<string>());
+  const oauthConversations = useRef(new Map<string, string>());
   const connectedRef = useRef(false);
-  const greetingConfigRef = useRef(config ? `${config.baseUrl}:${config.token}` : null);
-  const greetingPending = useRef(Boolean(config));
+  const greetingConfigRef = useRef<string | null>(null);
+  const greetingPending = useRef(false);
+
+  useEffect(() => {
+    const saved = loadClientConfig();
+    if (saved) {
+      greetingConfigRef.current = `${saved.baseUrl}:${saved.token}`;
+      greetingPending.current = true;
+      setConfig(saved);
+    }
+    setLoaded(true);
+  }, []);
 
   function updateTransient(id: string, patch: Partial<TransientState>) {
     setTransients((current) => ({
@@ -290,34 +304,40 @@ export function App() {
     setMessages((current) => current.map((message) => message.key === choice.key ? choice : message));
   }
 
+  useEffect(() => {
+    if (!config) return;
+    const callbacks = new BroadcastChannel(OAUTH_CALLBACK_CHANNEL);
+    callbacks.onmessage = ({ data }: MessageEvent<OAuthCallback>) => {
+      const conversationId = oauthConversations.current.get(data.state);
+      if (!conversationId) return;
+      callbacks.postMessage({ state: data.state, received: true });
+      oauthConversations.current.delete(data.state);
+      void (async () => {
+        try {
+          await completeOAuth(config, data);
+          await sendMessage(config, conversationId, {
+            content: 'done',
+            message_id: crypto.randomUUID(),
+            attachments: [],
+          });
+        } catch (error) {
+          updateTransient(conversationId, { error: errorMessage(error) });
+        }
+      })();
+    };
+    return () => callbacks.close();
+  }, [config]);
+
   function watchOauth(href: string) {
     if (!config) return;
     const url = new URL(href);
-    if (url.hostname !== 'accounts.google.com' && url.hostname !== 'login.microsoftonline.com') return;
     const state = url.searchParams.get('state');
+    const redirect = url.searchParams.get('redirect_uri');
     const conversationId = activeIdRef.current;
-    if (!state || !conversationId || oauthStates.current.has(state)) return;
-    oauthStates.current.add(state);
-    void (async () => {
-      try {
-        for (let attempt = 0; attempt < 300; attempt += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 1000));
-          if (await emailOauthComplete(config, state)) {
-            await sendMessage(config, conversationId, {
-              content: 'done',
-              message_id: crypto.randomUUID(),
-              attachments: [],
-            });
-            return;
-          }
-        }
-        updateTransient(conversationId, { error: 'Gmail authorization timed out.' });
-      } catch (error) {
-        updateTransient(conversationId, { error: errorMessage(error) });
-      } finally {
-        oauthStates.current.delete(state);
-      }
-    })();
+    if (!state || !redirect || !conversationId) return;
+    const callback = new URL(redirect);
+    if (callback.origin !== location.origin || callback.pathname !== '/oauth/callback') return;
+    oauthConversations.current.set(state, conversationId);
   }
 
   async function renameActive(title: string) {
@@ -343,6 +363,7 @@ export function App() {
     }
   }
 
+  if (!loaded) return null;
   if (!config) {
     return <ConnectionScreen initialAddress={defaultAddress()} onConnect={({ address, token }) => connect(address, token)} />;
   }

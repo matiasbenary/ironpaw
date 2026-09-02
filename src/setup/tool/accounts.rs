@@ -71,40 +71,46 @@ impl SetupToolTool {
                 self.complete(session, ctx).await
             };
         }
-        let client_secret = oauth
-            .client_secret
-            .clone()
-            .map(Ok)
-            .or_else(|| {
-                oauth.client_secret_handle.as_ref().map(|name| {
-                    let name = if session.package.accounts().is_some() {
-                        scoped_secret(
-                            &account_identity(
-                                wasm_package(&session.package),
-                                &session.config_values,
-                            )?,
-                            name,
-                        )
-                    } else {
-                        name.clone()
-                    };
-                    session
-                        .secret_values
-                        .get(&name)
-                        .cloned()
-                        .or_else(|| match &session.mode {
-                            SetupMode::Configure { .. } => self
-                                .setup
-                                .secrets
-                                .get(&session.package.secret_store_name(&name)),
-                            SetupMode::Install => None,
-                        })
-                        .ok_or_else(|| {
-                            format!("OAuth client secret was not collected during setup: {name}")
-                        })
+        let client_secret = if oauth.broker.is_some() {
+            None
+        } else {
+            oauth
+                .client_secret
+                .clone()
+                .map(Ok)
+                .or_else(|| {
+                    oauth.client_secret_handle.as_ref().map(|name| {
+                        let name = if session.package.accounts().is_some() {
+                            scoped_secret(
+                                &account_identity(
+                                    wasm_package(&session.package),
+                                    &session.config_values,
+                                )?,
+                                name,
+                            )
+                        } else {
+                            name.clone()
+                        };
+                        session
+                            .secret_values
+                            .get(&name)
+                            .cloned()
+                            .or_else(|| match &session.mode {
+                                SetupMode::Configure { .. } => self
+                                    .setup
+                                    .secrets
+                                    .get(&session.package.secret_store_name(&name)),
+                                SetupMode::Install => None,
+                            })
+                            .ok_or_else(|| {
+                                format!(
+                                    "OAuth client secret was not collected during setup: {name}"
+                                )
+                            })
+                    })
                 })
-            })
-            .transpose()?;
+                .transpose()?
+        };
         let pending =
             crate::setup::autoconfigure::start_oauth(&oauth, &session.config_values, client_secret)
                 .await?;

@@ -8,17 +8,21 @@ use std::{
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UnixListener},
+    net::{TcpStream, UnixListener},
     task::{JoinHandle, JoinSet},
 };
 
 use super::policy::resolve_public;
+
+#[cfg(any(test, feature = "local-development"))]
+use tokio::net::TcpListener;
 
 const MAX_REQUEST_HEADER_BYTES: usize = 8 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct ConnectProxy {
+    #[cfg(any(test, feature = "local-development"))]
     tcp_address: Option<SocketAddr>,
     socket_path: Option<PathBuf>,
     task: JoinHandle<()>,
@@ -30,11 +34,12 @@ impl ConnectProxy {
         Self::restricted_tcp(Vec::new(), false).await
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "local-development"))]
     pub(crate) async fn shell_tcp(allowed_hosts: Vec<String>) -> Result<Self, String> {
         Self::restricted_tcp(allowed_hosts, true).await
     }
 
+    #[cfg(any(test, feature = "local-development"))]
     async fn restricted_tcp(
         allowed_hosts: Vec<String>,
         enforce_allowlist: bool,
@@ -75,12 +80,14 @@ impl ConnectProxy {
             HostPolicy::new(allowed_hosts, enforce_allowlist),
         ));
         Ok(Self {
+            #[cfg(any(test, feature = "local-development"))]
             tcp_address: None,
             socket_path: Some(socket_path),
             task,
         })
     }
 
+    #[cfg(any(test, feature = "local-development"))]
     pub(crate) fn tcp_address(&self) -> SocketAddr {
         self.tcp_address.expect("TCP proxy has an address")
     }
@@ -118,6 +125,7 @@ impl HostPolicy {
     }
 }
 
+#[cfg(any(test, feature = "local-development"))]
 async fn run_tcp(listener: TcpListener, policy: HostPolicy) {
     let mut connections = JoinSet::new();
     loop {

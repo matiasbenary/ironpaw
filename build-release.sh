@@ -12,7 +12,8 @@ mkdir -p "$CHANNELS_DIR"
 mkdir -p "$TOOL_STORE_DIR"
 
 echo "building ironpaw"
-cargo build --manifest-path "$SCRIPT_DIR/Cargo.toml" --release --locked
+cargo build --manifest-path "$SCRIPT_DIR/Cargo.toml" --release --locked \
+  --features local-development
 cp "$SCRIPT_DIR/target/release/ironpaw" "$RELEASE_DIR/ironpaw"
 if command -v xattr >/dev/null 2>&1; then
   xattr -c "$RELEASE_DIR/ironpaw" || true

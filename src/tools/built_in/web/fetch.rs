@@ -10,7 +10,7 @@ const MAX_BODY_BYTES: usize = 100_000;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct WebFetchParams {
-    /// URL to fetch. HTTPS only (http allowed for localhost).
+    /// URL to fetch. HTTPS only.
     pub url: String,
 }
 
@@ -103,6 +103,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "local-development")]
     #[tokio::test]
     async fn does_not_follow_redirects() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

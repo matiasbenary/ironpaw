@@ -2,10 +2,10 @@ use std::{convert::Infallible, path::Path, path::PathBuf, sync::Arc};
 
 use axum::{
     Json, Router,
-    extract::{Path as RoutePath, Query, Request, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
-    middleware::{self, Next},
-    response::{IntoResponse, Response, Sse, sse::Event as SseEvent},
+    extract::{Path as RoutePath, Query, State},
+    http::{HeaderMap, StatusCode},
+    middleware,
+    response::{Sse, sse::Event as SseEvent},
     routing::{get, post},
 };
 use futures::{StreamExt as _, stream};
@@ -16,6 +16,7 @@ use crate::{
     bus::{ChannelAction, ConversationKey, Event},
     channels::bridge::{Bridge, Channel, Delivery, DeliveryFuture, InboundMessage},
     message::{Attachment, Message, ToolCall},
+    network::server::preflight,
 };
 
 use super::wasm::attachment_from_content;
@@ -52,8 +53,7 @@ impl LocalClient {
             )
             .route("/client/events", get(events).options(preflight))
             .route("/client/status", get(status).options(preflight))
-            .route("/client/oauth/status", get(oauth_status).options(preflight))
-            .layer(middleware::from_fn(cors))
+            .layer(middleware::from_fn(crate::network::server::cors))
             .with_state(Arc::clone(self))
     }
 
@@ -295,22 +295,6 @@ fn conversation(client_id: &str, conversation_id: &str) -> ConversationKey {
     }
 }
 
-#[derive(Deserialize)]
-struct OauthStatusQuery {
-    state: String,
-}
-
-async fn oauth_status(
-    State(client): State<Arc<LocalClient>>,
-    Query(query): Query<OauthStatusQuery>,
-    headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    client.authorize(&headers)?;
-    Ok(Json(serde_json::json!({
-        "complete": crate::network::oauth::callback_received(&query.state)
-    })))
-}
-
 async fn status(
     State(client): State<Arc<LocalClient>>,
     headers: HeaderMap,
@@ -415,33 +399,6 @@ fn validate_id(name: &str, value: &str) -> Result<(), (StatusCode, String)> {
 
 fn internal_error(error: String) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error)
-}
-
-async fn preflight() -> StatusCode {
-    StatusCode::NO_CONTENT
-}
-
-async fn cors(request: Request, next: Next) -> Response {
-    let is_preflight = request.method() == Method::OPTIONS;
-    let mut response = if is_preflight {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        next.run(request).await
-    };
-    let headers = response.headers_mut();
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_ORIGIN,
-        HeaderValue::from_static("*"),
-    );
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("authorization, content-type"),
-    );
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_static("GET, POST, OPTIONS"),
-    );
-    response
 }
 
 #[cfg(test)]

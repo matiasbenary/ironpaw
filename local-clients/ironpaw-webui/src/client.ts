@@ -6,6 +6,13 @@ export interface ClientConfig {
   token: string;
 }
 
+export interface OAuthCallback {
+  state: string;
+  code?: string;
+  error?: string;
+  error_description?: string;
+}
+
 interface OutgoingMessage {
   content: string;
   message_id: string;
@@ -61,7 +68,7 @@ export function saveClientConfig(address: string, token: string): ClientConfig {
   localStorage.setItem(ADDR_KEY, address);
   sessionStorage.setItem(TOKEN_KEY, token);
   return {
-    baseUrl: `${address.replace(/\/$/, '')}/client`,
+    baseUrl: address.replace(/\/$/, ''),
     clientId,
     token,
   };
@@ -74,7 +81,7 @@ export function clearClientToken(): void {
 export async function verifyClient(config: ClientConfig): Promise<void> {
   let response: Response;
   try {
-    response = await fetch(`${config.baseUrl}/status`, {
+    response = await fetch(`${config.baseUrl}/client/status`, {
       headers: { Authorization: `Bearer ${config.token}` },
     });
   } catch {
@@ -89,7 +96,7 @@ export async function sendMessage(
   message: OutgoingMessage,
 ): Promise<void> {
   const response = await fetch(
-    `${config.baseUrl}/conversations/${encodeURIComponent(conversationId)}/messages`,
+    `${config.baseUrl}/client/conversations/${encodeURIComponent(conversationId)}/messages`,
     {
       method: 'POST',
       headers: {
@@ -102,14 +109,19 @@ export async function sendMessage(
   await requireSuccessful(response, 'Could not send message');
 }
 
-export async function emailOauthComplete(config: ClientConfig, state: string): Promise<boolean> {
-  const url = new URL(`${config.baseUrl}/oauth/status`);
-  url.searchParams.set('state', state);
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${config.token}` },
+export async function completeOAuth(
+  config: ClientConfig,
+  callback: OAuthCallback,
+): Promise<void> {
+  const response = await fetch(`${config.baseUrl}/oauth/callback`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(callback),
   });
-  await requireSuccessful(response, 'Could not check Gmail authorization');
-  return Boolean((await response.json() as { complete?: boolean }).complete);
+  await requireSuccessful(response, 'Could not complete authorization');
 }
 
 export async function subscribe(
@@ -121,7 +133,7 @@ export async function subscribe(
 ): Promise<void> {
   while (!signal?.aborted) {
     try {
-      const url = new URL(`${config.baseUrl}/events`);
+      const url = new URL(`${config.baseUrl}/client/events`);
       url.searchParams.set('client_id', config.clientId);
       const response = await fetch(url, {
         headers: { Authorization: `Bearer ${config.token}` },

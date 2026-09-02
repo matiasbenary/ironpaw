@@ -40,11 +40,15 @@ pub(crate) async fn start_oauth(
         .ok_or_else(|| format!("OAuth login hint is missing: {}", config.login_hint_path))?;
     let flow = oauth::start(
         ProviderSettings {
+            broker_provider: config.broker.clone(),
             authorize_url: config.authorize_url.clone(),
             token_url: config.token_url.clone(),
-            client_id: config.client_id.resolve(values)?,
+            client_id: config
+                .client_id
+                .as_ref()
+                .map(|client_id| client_id.resolve(values))
+                .transpose()?,
             client_secret,
-            redirect_host: config.redirect_host.clone(),
             refresh_token_handle: config.refresh_token_handle.clone(),
             scopes: config.scopes.clone(),
             extra_authorize_params: config

@@ -16,7 +16,7 @@ const SAFE_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 
 #[derive(Clone, Copy)]
 enum Isolation {
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "local-development"))]
     Portable,
     Linux,
 }
@@ -66,7 +66,7 @@ impl ProcessRunner {
         Self::with_isolation(tool_dir, workspace, allowed_hosts, Isolation::Linux, mode)
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "local-development"))]
     pub(super) fn portable(
         tool_dir: PathBuf,
         workspace: PathBuf,
@@ -132,7 +132,7 @@ impl ProcessRunner {
         }
 
         let (proxy, mut command, proxy_url) = match self.isolation {
-            #[cfg(debug_assertions)]
+            #[cfg(any(test, feature = "local-development"))]
             Isolation::Portable => {
                 let proxy = ConnectProxy::shell_tcp(self.allowed_hosts.clone()).await?;
                 let url = format!("http://{}", proxy.tcp_address());
@@ -162,7 +162,7 @@ impl ProcessRunner {
             proxy_url.as_deref(),
             &request.env,
             match self.isolation {
-                #[cfg(debug_assertions)]
+                #[cfg(any(test, feature = "local-development"))]
                 Isolation::Portable => self.tool_dir.join("bin"),
                 Isolation::Linux => match self.mode {
                     ProcessMode::Install => PathBuf::from("/workspace/bin"),
@@ -241,7 +241,7 @@ impl ProcessRunner {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(any(test, feature = "local-development"))]
 fn direct_command(executable: &Path, args: &[String]) -> Command {
     let mut command = Command::new(executable);
     command.args(args);

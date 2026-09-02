@@ -276,17 +276,33 @@ fn validate_oauth(manifest: &ToolInstallManifest) -> Result<(), String> {
         .flat_map(|config| &config.choices)
         .filter_map(|choice| choice.oauth.as_ref())
     {
+        if oauth.broker.is_some() {
+            if oauth.authorize_url.is_some()
+                || oauth.token_url.is_some()
+                || oauth.client_id.is_some()
+                || oauth.client_secret.is_some()
+                || oauth.client_secret_handle.is_some()
+            {
+                return Err("brokered OAuth must not declare provider credentials".to_string());
+            }
+            continue;
+        }
         for (kind, endpoint) in [
-            ("authorization", &oauth.authorize_url),
-            ("token", &oauth.token_url),
+            ("authorization", oauth.authorize_url.as_ref()),
+            ("token", oauth.token_url.as_ref()),
         ] {
+            let endpoint = endpoint.ok_or_else(|| format!("OAuth {kind} endpoint is missing"))?;
             let url = reqwest::Url::parse(endpoint)
                 .map_err(|error| format!("invalid OAuth {kind} endpoint: {error}"))?;
             if url.scheme() != "https" || url.host_str().is_none() {
                 return Err(format!("OAuth {kind} endpoint must be absolute HTTPS"));
             }
         }
-        if let crate::setup::common::SetupOAuthClientId::Config { config } = &oauth.client_id
+        let client_id = oauth
+            .client_id
+            .as_ref()
+            .ok_or_else(|| "OAuth client id is missing".to_string())?;
+        if let crate::setup::common::SetupOAuthClientId::Config { config } = client_id
             && !config_paths.contains(config.as_str())
         {
             return Err(format!(

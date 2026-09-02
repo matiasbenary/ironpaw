@@ -23,11 +23,6 @@
       "path": "/password_secret",
       "prompt": "Paste your email password or app password.",
       "when": { "path": "/provider", "equals": "imap" }
-    },
-    {
-      "name": "EMAIL_GOOGLE_CLIENT_SECRET",
-      "prompt": "Paste your Google OAuth client secret.",
-      "when": { "path": "/provider", "equals": "gmail" }
     }
   ],
   "config": [
@@ -36,12 +31,6 @@
       "prompt": "What is your email address? Ironpaw will detect the provider and mail settings.",
       "type": "email",
       "autoconfigure": { "action": "discover", "rerun_on_keep": true }
-    },
-    {
-      "path": "/oauth/client_id",
-      "prompt": "Paste your Google OAuth client ID.",
-      "type": "string",
-      "when": { "path": "/provider", "equals": "gmail" }
     },
     {
       "path": "/oauth/access",
@@ -55,14 +44,9 @@
           "oauth": {
             "host": "gmail.googleapis.com",
             "login_hint_path": "/username",
-            "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
-            "token_url": "https://oauth2.googleapis.com/token",
-            "client_id": { "config": "/oauth/client_id" },
-            "client_secret_handle": "EMAIL_GOOGLE_CLIENT_SECRET",
-            "redirect_host": "127.0.0.1",
+            "broker": "google",
             "refresh_token_handle": "EMAIL_GOOGLE_REFRESH_TOKEN",
-            "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
-            "extra_authorize_params": { "access_type": "offline", "prompt": "consent" }
+            "scopes": ["https://www.googleapis.com/auth/gmail.readonly"]
           }
         },
         {
@@ -71,17 +55,12 @@
           "oauth": {
             "host": "gmail.googleapis.com",
             "login_hint_path": "/username",
-            "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
-            "token_url": "https://oauth2.googleapis.com/token",
-            "client_id": { "config": "/oauth/client_id" },
-            "client_secret_handle": "EMAIL_GOOGLE_CLIENT_SECRET",
-            "redirect_host": "127.0.0.1",
+            "broker": "google",
             "refresh_token_handle": "EMAIL_GOOGLE_REFRESH_TOKEN",
             "scopes": [
               "https://www.googleapis.com/auth/gmail.modify",
               "https://www.googleapis.com/auth/gmail.send"
-            ],
-            "extra_authorize_params": { "access_type": "offline", "prompt": "consent" }
+            ]
           }
         }
       ]
@@ -101,7 +80,6 @@
             "authorize_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
             "token_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
             "client_id": "0755399f-97ab-4fb1-acdb-6371f7615d7f",
-            "redirect_host": "localhost",
             "refresh_token_handle": "EMAIL_MICROSOFT_REFRESH_TOKEN",
             "scopes": ["offline_access", "https://graph.microsoft.com/Mail.Read"]
           }
@@ -115,7 +93,6 @@
             "authorize_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize",
             "token_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/token",
             "client_id": "0755399f-97ab-4fb1-acdb-6371f7615d7f",
-            "redirect_host": "localhost",
             "refresh_token_handle": "EMAIL_MICROSOFT_REFRESH_TOKEN",
             "scopes": [
               "offline_access",

@@ -12,7 +12,7 @@ const MAX_DOWNLOAD_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 pub struct DownloadFileParams {
-    /// Public HTTPS URL to download. HTTP is allowed only for localhost.
+    /// Public HTTPS URL to download.
     pub url: String,
 }
 
@@ -176,8 +176,10 @@ fn fragment_parameter(fragment: Option<&str>, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "local-development")]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    #[cfg(feature = "local-development")]
     #[tokio::test]
     async fn downloads_file_into_download_directory() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
