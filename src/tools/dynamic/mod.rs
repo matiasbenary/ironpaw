@@ -87,16 +87,17 @@ impl DynamicToolTool {
             return Err("script must not be empty".to_string());
         }
         self.scripts.validate_source(&params.script)?;
+        let parameters = params.parameters.map(parameters_schema).transpose()?;
         let directory = self.tools_dir.join(&name);
         let manifest = DynamicToolManifest {
             description: params.description.clone(),
-            parameters: params.parameters.clone(),
+            parameters: parameters.clone(),
         };
         DynamicTool::write_files(&directory, &params.script, &manifest)?;
         let tool = DynamicTool::new(
             name.clone(),
             params.description,
-            params.parameters,
+            parameters,
             params.script,
             self.scripts.clone(),
         );
@@ -190,7 +191,10 @@ impl DynamicTool {
         Self {
             name,
             description,
-            parameters: parameters.unwrap_or_else(free_form_parameters),
+            // Lenient for manifests saved before validation existed.
+            parameters: parameters
+                .and_then(|value| parameters_schema(value).ok())
+                .unwrap_or_else(free_form_parameters),
             script,
             scripts,
         }
@@ -269,6 +273,20 @@ pub fn valid_tool_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
 }
 
+/// Models sometimes send the schema as a JSON-encoded string; providers reject anything
+/// that is not an object, so one bad tool would break every request.
+fn parameters_schema(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let value = match value {
+        serde_json::Value::String(text) => serde_json::from_str(&text)
+            .map_err(|err| format!("parameters must be a JSON Schema object: {err}"))?,
+        value => value,
+    };
+    if !value.is_object() {
+        return Err("parameters must be a JSON Schema object".to_string());
+    }
+    Ok(value)
+}
+
 fn free_form_parameters() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -306,6 +324,18 @@ mod tests {
         inference::Inference,
         tools::{InternalTools, messages::SendMessageTool},
     };
+
+    #[test]
+    fn parameters_schema_accepts_stringified_objects_only() {
+        let schema = serde_json::json!({"type": "object", "properties": {}});
+        assert_eq!(parameters_schema(schema.clone()).unwrap(), schema);
+        assert_eq!(
+            parameters_schema(serde_json::json!(schema.to_string())).unwrap(),
+            schema
+        );
+        assert!(parameters_schema(serde_json::json!("not json")).is_err());
+        assert!(parameters_schema(serde_json::json!([1])).is_err());
+    }
 
     struct DynamicHarness {
         tools: Arc<InternalTools>,

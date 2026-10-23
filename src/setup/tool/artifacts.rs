@@ -151,6 +151,24 @@ pub(super) fn build_account(
         });
     }
     for secret in &package.manifest.secrets {
+        if secret
+            .when
+            .as_ref()
+            .is_some_and(|condition| values.get(&condition.path) != Some(&condition.equals))
+        {
+            continue;
+        }
+        for grant in &secret.grants {
+            grants.push(crate::network::http::NetworkGrantConfig {
+                host: grant.host.clone(),
+                account: Some(identity.clone()),
+                secret: grant.bearer.then(|| scoped_secret(&identity, &secret.name)),
+                placeholder: None,
+                header: None,
+                prefix: None,
+                oauth: None,
+            });
+        }
         if let Some(path) = &secret.path {
             set_json_pointer(
                 &mut account,
@@ -242,6 +260,48 @@ mod tests {
 
     use super::*;
     use crate::setup::tool::package::ToolInstallManifest;
+
+    #[test]
+    fn outlayer_wallets_get_their_own_key_and_hosts() {
+        let manifest: ToolInstallManifest = serde_json::from_str(include_str!(
+            "../../../wasm-tools/outlayer/outlayer.install.json"
+        ))
+        .unwrap();
+        let package = ToolPackage {
+            name: "outlayer".to_string(),
+            display_name: "OutLayer".to_string(),
+            wasm_path: PathBuf::new(),
+            config_template_path: PathBuf::new(),
+            manifest,
+        };
+        let values = BTreeMap::from([
+            ("/name".to_string(), serde_json::json!("trading")),
+            ("/network".to_string(), serde_json::json!("testnet")),
+        ]);
+
+        let (identity, account, grants) = build_account(&package, &values).unwrap();
+
+        assert_eq!(identity, "trading");
+        assert_eq!(account["network"], "testnet");
+        assert_eq!(
+            account["api_key_secret"],
+            "OUTLAYER_TESTNET_API_KEY:TRADING"
+        );
+        // Only the testnet key is bound, and the faucet never receives it.
+        assert_eq!(grants.len(), 2);
+        assert_eq!(grants[0].host, "testnet-api.outlayer.ai");
+        assert_eq!(
+            grants[0].secret.as_deref(),
+            Some("OUTLAYER_TESTNET_API_KEY:TRADING")
+        );
+        assert_eq!(grants[1].host, "faucet-near-testnet.onrender.com");
+        assert_eq!(grants[1].secret, None);
+        assert!(
+            grants
+                .iter()
+                .all(|grant| grant.account.as_deref() == Some("trading"))
+        );
+    }
 
     #[test]
     fn selected_oauth_recipe_becomes_the_only_runtime_grant() {

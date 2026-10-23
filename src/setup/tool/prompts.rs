@@ -84,7 +84,32 @@ impl SetupToolTool {
                 )
                 .await;
         }
-        let prompt = secret_prompt(&session.package, &secret);
+        if secret.register.is_some() {
+            session.stage = super::InstallStage::RegisterSecret { index };
+            self.state.save(session.clone());
+            return session
+                .request_choice(
+                    &self.setup.tools,
+                    &format!(
+                        "{}: create a new account for {} automatically, or paste an existing one?",
+                        session.package.display_name(),
+                        secret.name
+                    ),
+                    &[("Create new", "create"), ("Paste existing", "paste")],
+                    ctx,
+                )
+                .await;
+        }
+        self.prompt_secret_value(session, index, ctx).await
+    }
+
+    pub(super) async fn prompt_secret_value(
+        &self,
+        mut session: InstallSession,
+        index: usize,
+        ctx: &ExecutionContext,
+    ) -> Result<(), String> {
+        let prompt = secret_prompt(&session.package, &session.package.required_secrets()[index]);
         session.stage = super::InstallStage::Secret { index };
         self.state.save(session.clone());
         session.send(&self.setup.tools, &prompt, ctx).await

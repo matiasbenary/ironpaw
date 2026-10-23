@@ -278,7 +278,8 @@ impl Automations {
             .collect::<Vec<_>>();
         if matching.is_empty() {
             if message.sender.kind() == SenderKind::User {
-                let context = ExecutionContext::new(conversation_workspace(&message.conversation));
+                let context = ExecutionContext::new(conversation_workspace(&message.conversation))
+                    .with_conversation(message.conversation.clone());
                 self.bus.publish(Event::AgentRequest {
                     execution_id: uuid::Uuid::new_v4().to_string(),
                     request: crate::bus::AgentRequest::ContinueConversation {
@@ -289,7 +290,8 @@ impl Automations {
             }
             return;
         }
-        let context = ExecutionContext::new(conversation_workspace(&message.conversation));
+        let context = ExecutionContext::new(conversation_workspace(&message.conversation))
+            .with_conversation(message.conversation.clone());
         let event = serde_json::to_value(message).expect("serialize inbound message");
         for automation in matching {
             self.invoke_message(
@@ -702,7 +704,8 @@ mod tests {
             chat_id: "c1".to_string(),
             thread_id: None,
         };
-        let context = ExecutionContext::new(conversation_workspace(&conversation));
+        let context = ExecutionContext::new(conversation_workspace(&conversation))
+            .with_conversation(conversation.clone());
 
         crate::tools::execute_tool(
             &tools.registry,

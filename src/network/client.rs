@@ -113,3 +113,23 @@ mod tests {
         assert!(destination("http://localhost.evil:3000", true).is_err());
     }
 }
+
+/// Unauthenticated JSON POST through the guarded client (public IPs only, no redirects
+/// to private ranges; plain http only to loopback in `local-development` builds). Used by setup to register an account before any secret exists.
+pub(crate) async fn post_json_public(
+    url: &str,
+    body: &serde_json::Value,
+    timeout: Duration,
+) -> Result<serde_json::Value, String> {
+    async_for_https_or_loopback(url, timeout)
+        .await?
+        .post(url)
+        .json(body)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|err| super::http::describe_reqwest_error(err))?
+        .json()
+        .await
+        .map_err(|err| format!("response was not JSON: {}", err.without_url()))
+}

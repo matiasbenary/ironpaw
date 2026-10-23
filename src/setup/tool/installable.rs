@@ -69,6 +69,8 @@ impl InstallableTool {
                     )),
                     optional: false,
                     auto_generate: None,
+                    register: None,
+                    grants: Vec::new(),
                     when: None,
                 })
                 .collect(),
@@ -97,6 +99,14 @@ impl InstallableTool {
         match self {
             Self::Wasm(package) => package.manifest.accounts.as_ref(),
             Self::Shell(_) => None,
+        }
+    }
+
+    /// Hosts this package already sends credentials to.
+    pub(super) fn credential_hosts(&self) -> Vec<String> {
+        match self {
+            Self::Wasm(package) => template_hosts(package),
+            Self::Shell(package) => package.manifest.allowed_hosts.clone(),
         }
     }
 
@@ -146,16 +156,34 @@ impl InstallableTool {
     }
 }
 
-fn wasm_capabilities(package: &ToolPackage) -> String {
-    let config: serde_json::Value = std::fs::read_to_string(&package.config_template_path)
+/// `http_credentials` hosts from the package's config template.
+fn template_hosts(package: &ToolPackage) -> Vec<String> {
+    let mut hosts: Vec<String> = std::fs::read_to_string(&package.config_template_path)
         .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
+        .and_then(|text| serde_json::from_str::<crate::tools::wasm::WasmToolConfig>(&text).ok())
+        .map(|config| {
+            config
+                .http_credentials
+                .into_iter()
+                .map(|grant| grant.host)
+                .collect()
+        })
         .unwrap_or_default();
-    let mut hosts = config["http_credentials"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|grant| grant["host"].as_str())
+    hosts.extend(
+        package
+            .manifest
+            .secrets
+            .iter()
+            .flat_map(|secret| secret.grants.iter().map(|grant| grant.host.clone())),
+    );
+    hosts
+}
+
+fn wasm_capabilities(package: &ToolPackage) -> String {
+    let template_hosts = template_hosts(package);
+    let mut hosts = template_hosts
+        .iter()
+        .map(String::as_str)
         .collect::<Vec<_>>();
     hosts.extend(
         package

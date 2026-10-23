@@ -10,6 +10,7 @@ macro_rules! tool_metadata {
 }
 pub(crate) use tool_metadata;
 
+pub mod approval;
 mod built_in;
 mod context;
 pub mod dynamic;

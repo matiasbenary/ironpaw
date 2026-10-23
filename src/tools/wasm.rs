@@ -81,15 +81,17 @@ impl InternalTool for WasmTool {
         }
     }
 
-    async fn execute(&self, args: serde_json::Value, _ctx: &ExecutionContext) -> ToolResult {
+    async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {
         let result: Result<serde_json::Value, String> = async {
             let args_json = serde_json::to_string(&args).map_err(|err| err.to_string())?;
             let wasm_path = self.wasm_path.clone();
             let secrets = self.secrets.clone();
             let config = self.config.clone();
             let guest_config_json = self.guest_config_json.clone();
+            let conversation = ctx.conversation.clone();
             let output = tokio::task::spawn_blocking(move || {
                 let mut loaded = LoadedTool::load(&wasm_path, secrets, config)?;
+                loaded.set_conversation(conversation);
                 loaded.execute(&args_json, &guest_config_json)
             })
             .await
@@ -115,6 +117,16 @@ pub struct WasmToolConfig {
     pub http_credentials: Vec<NetworkGrantConfig>,
     #[serde(default)]
     pub email: Option<EmailCapabilityConfig>,
+    /// When set, every non-GET request the tool makes needs the user's approval unless its
+    /// path is listed in `safe_paths`.
+    #[serde(default)]
+    pub approval: Option<ApprovalConfig>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct ApprovalConfig {
+    #[serde(default)]
+    pub safe_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -239,12 +251,18 @@ impl LoadedTool {
                         .collect(),
                 ),
                 email: EmailHost::new(secrets, tool_config.email),
+                approval: tool_config.approval,
+                conversation: None,
             },
         );
         let bindings =
             Tool::instantiate(&mut store, &component, &linker).map_err(|err| err.to_string())?;
 
         Ok(Self { store, bindings })
+    }
+
+    fn set_conversation(&mut self, conversation: Option<crate::bus::ConversationKey>) {
+        self.store.data_mut().conversation = conversation;
     }
 
     fn name(&mut self) -> Result<String, String> {
@@ -280,6 +298,43 @@ struct StoreData {
     table: ResourceTable,
     http: NetworkGate<ToolSecrets>,
     email: EmailHost,
+    approval: Option<ApprovalConfig>,
+    conversation: Option<crate::bus::ConversationKey>,
+}
+
+impl StoreData {
+    /// `Err` holds what the tool should report instead of sending the request.
+    fn require_approval(
+        &self,
+        account: Option<&str>,
+        method: &str,
+        url: &str,
+        body_json: &str,
+    ) -> Result<(), String> {
+        let Some(approval) = &self.approval else {
+            return Ok(());
+        };
+        let path = reqwest::Url::parse(url)
+            .map(|url| url.path().to_string())
+            .map_err(|err| format!("invalid url: {err}"))?;
+        if method.eq_ignore_ascii_case("GET") || approval.safe_paths.contains(&path) {
+            return Ok(());
+        }
+        let body = serde_json::from_str::<serde_json::Value>(body_json)
+            .map(|body| body.to_string())
+            .unwrap_or_else(|_| body_json.to_string());
+        let wallet = account.unwrap_or("default");
+        let fingerprint = format!("{wallet}|{method}|{url}|{body}");
+        let summary = format!(
+            "Approve this action?\nWallet: {wallet}\n{} {url}\n{body}",
+            method.to_ascii_uppercase()
+        );
+        crate::tools::approval::Approvals::global().require(
+            self.conversation.as_ref(),
+            &fingerprint,
+            &summary,
+        )
+    }
 }
 
 impl ironpaw::tool::tool_host::Host for StoreData {
@@ -291,6 +346,7 @@ impl ironpaw::tool::tool_host::Host for StoreData {
         headers_json: String,
         body_json: String,
     ) -> Result<String, String> {
+        self.require_approval(account.as_deref(), &method, &url, &body_json)?;
         self.http
             .request_bytes_headers_for_string_blocking(
                 account.as_deref(),
@@ -437,7 +493,11 @@ mod tests {
     fn packaged_tools_link_against_the_host() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let secrets = crate::secrets::Secrets::for_tests().tools;
-        for (name, directory) in [("email", "email"), ("web_search", "web-search")] {
+        for (name, directory) in [
+            ("email", "email"),
+            ("web_search", "web-search"),
+            ("outlayer", "outlayer"),
+        ] {
             let directory = root.join("wasm-tools").join(directory);
             let config: WasmToolConfig = serde_json::from_str(
                 &std::fs::read_to_string(
@@ -454,5 +514,176 @@ mod tests {
             .unwrap();
             assert_eq!(tool.name().unwrap(), name);
         }
+    }
+
+    /// Full agent flow through the host against ~/projects/near/outlayer-mock.
+    /// Run with: (cd ~/projects/near/outlayer-mock && node server.js) then
+    /// cargo test --features local-development outlayer_flow_against_mock -- --ignored
+    #[cfg(feature = "local-development")]
+    #[test]
+    #[ignore = "needs the OutLayer mock on localhost:4400"]
+    fn outlayer_flow_against_mock() {
+        const MOCK: &str = "http://localhost:4400";
+        let admin = |path: &str, body: serde_json::Value| -> serde_json::Value {
+            reqwest::blocking::Client::new()
+                .post(format!("{MOCK}{path}"))
+                .json(&body)
+                .send()
+                .and_then(reqwest::blocking::Response::error_for_status)
+                .and_then(reqwest::blocking::Response::json)
+                .unwrap_or_else(|err| panic!("mock admin {path}: {err}"))
+        };
+        let wallet = admin(
+            "/admin/wallets",
+            serde_json::json!({ "label": "ironpaw-test" }),
+        );
+        let account = wallet["near_account_id"].as_str().unwrap().to_string();
+        admin(
+            "/admin/wallet",
+            serde_json::json!({ "wallet_id": wallet["wallet_id"], "active": true }),
+        );
+        admin(
+            "/admin/balance",
+            serde_json::json!({ "account": account, "asset": "near", "source": "wallet", "amount": "5000000000000000000000000" }),
+        );
+
+        let directory =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("wasm-tools/outlayer");
+        let mut config: WasmToolConfig = serde_json::from_str(
+            &std::fs::read_to_string(directory.join("outlayer.config.template.json")).unwrap(),
+        )
+        .unwrap();
+        // The mock's active wallet answers any key; approvals are covered by their own tests.
+        config.approval = None;
+        config.http_credentials = vec![crate::network::http::NetworkGrantConfig {
+            host: "localhost".to_string(),
+            account: Some("test".to_string()),
+            secret: None,
+            placeholder: None,
+            header: None,
+            prefix: None,
+            oauth: None,
+        }];
+        let mut tool = LoadedTool::load(
+            directory.join("outlayer.wasm"),
+            crate::secrets::Secrets::for_tests().tools,
+            config,
+        )
+        .unwrap();
+        let mut call = |method: &str, path: &str, body: serde_json::Value| {
+            tool.execute(
+                &serde_json::json!({ "method": method, "path": path, "body": body }).to_string(),
+                r#"{"outlayer":{"accounts":{"test":{"network":"mainnet"}}}}"#,
+            )
+        };
+        const NEAR: &str = "1000000000000000000000000";
+        let swap = serde_json::json!({
+            "token_in": "nep141:wrap.near",
+            "token_out": "nep141:usdt.tether-token.near",
+            "amount_in": NEAR,
+        });
+
+        let address = call(
+            "GET",
+            "/wallet/v1/address?chain=near",
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        assert_eq!(address["address"], account);
+        let balance = call(
+            "GET",
+            "/wallet/v1/balance?chain=near",
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        assert_eq!(balance["balance"], "5000000000000000000000000");
+
+        // Swaps spend the intents balance only: nothing deposited yet.
+        let err = call("POST", "/wallet/v1/intents/swap", swap.clone()).unwrap_err();
+        assert!(err.contains("ntents balance"), "{err}");
+
+        // Native NEAR -> intents: storage, wrap (args JSON-encoded, as models send it), deposit.
+        call(
+            "POST",
+            "/wallet/v1/storage-deposit",
+            serde_json::json!({ "token": "wrap.near" }),
+        )
+        .unwrap();
+        let wrap = call(
+            "POST",
+            "/wallet/v1/call",
+            serde_json::json!({ "receiver_id": "wrap.near", "method_name": "near_deposit", "args": "{}",
+                "gas": "30000000000000", "deposit": "2000000000000000000000000" }),
+        )
+        .unwrap();
+        assert_eq!(wrap["status"], "success", "{wrap}");
+        call(
+            "POST",
+            "/wallet/v1/intents/deposit",
+            serde_json::json!({ "token": "wrap.near", "amount": "2000000000000000000000000" }),
+        )
+        .unwrap();
+        let intents = call(
+            "GET",
+            "/wallet/v1/balance?token=wrap.near&source=intents",
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        assert_eq!(intents["balance"], "2000000000000000000000000");
+
+        let quote = call("POST", "/wallet/v1/intents/swap/quote", swap.clone()).unwrap();
+        assert!(
+            quote["amount_out"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                > 0,
+            "{quote}"
+        );
+        let swapped = call("POST", "/wallet/v1/intents/swap", swap).unwrap();
+        assert_eq!(swapped["status"], "success", "{swapped}");
+
+        let withdraw = call(
+            "POST",
+            "/wallet/v1/intents/withdraw",
+            serde_json::json!({ "chain": "near", "to": "bob.near", "amount": "500000000000000000000000", "async": true }),
+        )
+        .unwrap();
+        let id = withdraw["request_id"].as_str().unwrap().to_string();
+        admin("/admin/settle", serde_json::json!({}));
+        let status = call(
+            "GET",
+            &format!("/wallet/v1/requests/{id}"),
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        assert_eq!(status["status"], "success", "{status}");
+    }
+
+    #[test]
+    fn money_requests_wait_for_the_user_but_reads_do_not() {
+        let mut config: WasmToolConfig = serde_json::from_str(
+            r#"{"approval":{"safe_paths":["/wallet/v1/intents/swap/quote"]}}"#,
+        )
+        .unwrap();
+        let mut tool = LoadedTool::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("wasm-tools/outlayer/outlayer.wasm"),
+            crate::secrets::Secrets::for_tests().tools,
+            config.clone(),
+        )
+        .unwrap();
+        let data = tool.store.data_mut();
+        let gate = |data: &super::StoreData, method: &str, path: &str| {
+            data.require_approval(Some("w"), method, &format!("https://x.test{path}"), "{}")
+        };
+        assert!(gate(data, "GET", "/wallet/v1/balance").is_ok());
+        assert!(gate(data, "POST", "/wallet/v1/intents/swap/quote").is_ok());
+        // No conversation to ask: the money call is refused, not let through.
+        assert!(gate(data, "POST", "/wallet/v1/transfer").is_err());
+        config.approval = None;
+        data.approval = None;
+        assert!(gate(data, "POST", "/wallet/v1/transfer").is_ok());
     }
 }

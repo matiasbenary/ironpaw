@@ -95,6 +95,19 @@ impl ShellTool {
             &self.tools_dir,
             &params.tool,
         )?);
+        if manifest
+            .commands
+            .iter()
+            .any(|command| command.name == params.command && command.requires_approval)
+        {
+            let line = format!("{} {}", params.command, params.args.join(" "));
+            let cwd = params.cwd.as_deref().unwrap_or("");
+            crate::tools::approval::Approvals::global().require(
+                ctx.conversation.as_ref(),
+                &format!("shell|{}|{line}|{cwd}", params.tool),
+                &format!("Approve this command?\nTool: {}\n{line}", params.tool),
+            )?;
+        }
         self.executor
             .execute(
                 manifest,
@@ -179,7 +192,7 @@ mod tests {
         },
     };
 
-    fn install_test_tool(layout: &RuntimeLayout) {
+    fn install_test_tool(layout: &RuntimeLayout, requires_approval: bool) {
         let tool_dir = layout.tools_dir().join("example");
         let bin_dir = tool_dir.join("bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
@@ -200,6 +213,7 @@ mod tests {
             commands: vec![ShellCommand {
                 name: "hello".to_string(),
                 environment: std::collections::BTreeMap::new(),
+                requires_approval,
                 invocations: vec![ShellInvocation {
                     args_prefix: Vec::new(),
                     secrets: Vec::new(),
@@ -220,11 +234,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn commands_marked_for_approval_do_not_run_unapproved() {
+        let root =
+            std::env::temp_dir().join(format!("ironpaw-shell-tool-{}", uuid::Uuid::new_v4()));
+        let layout = RuntimeLayout::from_root(root);
+        install_test_tool(&layout, true);
+        EnabledTools::new(layout.tools_state_path())
+            .enable("example")
+            .unwrap();
+        let executor = ShellExecutor::portable(layout.tools_dir(), Secrets::for_tests().tools);
+        let tool = ShellTool::new(layout.clone(), layout.files_dir(), executor);
+        let context = ExecutionContext::new(std::path::PathBuf::from("conversation"));
+
+        let error = tool
+            .run(
+                ShellParams {
+                    tool: "example".to_string(),
+                    command: "hello".to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                },
+                &context,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("approval"), "{error}");
+    }
+
+    #[tokio::test]
     async fn runs_only_enabled_installed_shell_tools() {
         let root =
             std::env::temp_dir().join(format!("ironpaw-shell-tool-{}", uuid::Uuid::new_v4()));
         let layout = RuntimeLayout::from_root(root.clone());
-        install_test_tool(&layout);
+        install_test_tool(&layout, false);
         let secrets = Secrets::for_tests();
         let executor = ShellExecutor::portable(layout.tools_dir(), secrets.tools);
         let tool = ShellTool::new(layout.clone(), layout.files_dir(), executor);

@@ -40,6 +40,10 @@ pub struct ConfigureToolParams {
     pub name: String,
     /// Conversation where the setup flow should continue.
     pub conversation: ConversationKey,
+    /// For tools with several accounts or wallets: go straight to adding a new one (it asks
+    /// for the name and offers to create the account) instead of opening the account menu.
+    #[serde(default)]
+    pub add_account: bool,
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -68,6 +72,8 @@ struct InstallSession {
     grants: Vec<crate::network::http::NetworkGrantConfig>,
     account_current: Option<serde_json::Value>,
     removed_secrets: BTreeSet<String>,
+    /// Set up one new account and finish, without the account menu.
+    add_only: bool,
 }
 
 #[derive(Clone)]
@@ -75,6 +81,7 @@ enum InstallStage {
     ConfirmInstall,
     ConfirmSecret { index: usize },
     Secret { index: usize },
+    RegisterSecret { index: usize },
     ConfirmConfig { index: usize },
     Config { index: usize },
     Autoconfigure(crate::setup::autoconfigure::PendingSetup),
@@ -212,6 +219,7 @@ impl InstallToolTool {
             grants: Vec::new(),
             account_current: None,
             removed_secrets: BTreeSet::new(),
+            add_only: false,
         };
         self.state.save(session.clone());
         self.setup
@@ -264,6 +272,7 @@ impl InstallToolTool {
         let grants =
             serde_json::from_value(current_config["http_credentials"].clone()).unwrap_or_default();
         let account_setup = package.accounts().is_some();
+        let add_only = account_setup && params.add_account;
         let config_before_secrets = package.config_before_secrets();
         self.state.save(InstallSession {
             conversation: conversation.clone(),
@@ -282,12 +291,15 @@ impl InstallToolTool {
             grants,
             account_current: None,
             removed_secrets: BTreeSet::new(),
+            add_only,
         });
         self.setup
             .automations
             .add_runtime(Self::automation(&name, &conversation))?;
         let session = self.state.get().expect("configure session");
-        if account_setup {
+        if add_only {
+            self.setup_tool().start_account(session, None, ctx).await?;
+        } else if account_setup {
             self.setup_tool().prompt_account_menu(session, ctx).await?;
         } else if session.package.config_before_secrets() {
             self.setup_tool()
@@ -360,7 +372,9 @@ impl InternalTool for ConfigureToolTool {
         "configure_tool",
         ConfigureToolParams,
         "Reconfigure an installed external WASM tool. This starts a deterministic setup flow \
-         that asks before replacing each saved secret or non-secret configuration value."
+         that asks before replacing each saved secret or non-secret configuration value. For a \
+         tool with several accounts or wallets, pass add_account=true when the user wants a new \
+         one: it asks for a name and creates it, and the key stays private."
     );
 
     async fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> ToolResult {

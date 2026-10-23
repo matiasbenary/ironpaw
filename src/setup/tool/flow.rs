@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::tools::{ExecutionContext, wasm::WasmTool};
 
 use crate::setup::{
-    common::{config_value, is_yes, secret_value},
+    common::{config_value, is_yes, register_secret, secret_value},
     stop_setup_automation,
 };
 
@@ -11,7 +11,7 @@ use super::{
     InstallSession, InstallStage, SetupMode, SetupToolTool,
     artifacts::{install_package, reconfigure_package, write_account_package},
     installable::InstallableTool,
-    prompts::{collect_account_secrets, rerun_autoconfigure_on_keep, save_secrets, secret_prompt},
+    prompts::{collect_account_secrets, rerun_autoconfigure_on_keep, save_secrets},
 };
 
 impl SetupToolTool {
@@ -47,12 +47,7 @@ impl SetupToolTool {
             }
             InstallStage::ConfirmSecret { index } => {
                 if is_yes(message) {
-                    let prompt =
-                        secret_prompt(&session.package, &session.package.required_secrets()[index]);
-                    let mut session = session;
-                    session.stage = InstallStage::Secret { index };
-                    self.state.save(session.clone());
-                    session.send(&self.setup.tools, &prompt, ctx).await?;
+                    self.prompt_secret_value(session, index, ctx).await?;
                 } else {
                     self.prompt_secret_or_finish(session, index + 1, ctx)
                         .await?;
@@ -68,6 +63,33 @@ impl SetupToolTool {
                     .await;
                 self.prompt_secret_or_finish(session, index + 1, ctx)
                     .await?;
+            }
+            InstallStage::RegisterSecret { index } => {
+                let mut session = session;
+                let secret = session.package.required_secrets()[index].clone();
+                if message.trim().eq_ignore_ascii_case("create") {
+                    let register = secret
+                        .register
+                        .as_ref()
+                        .ok_or_else(|| format!("{} has no register action", secret.name))?;
+                    let (value, summary) =
+                        register_secret(register, &session.package.credential_hosts()).await?;
+                    session.secret_values.insert(secret.name.clone(), value);
+                    session
+                        .send(
+                            &self.setup.tools,
+                            &format!(
+                                "{}: account created. {summary}",
+                                session.package.display_name()
+                            ),
+                            ctx,
+                        )
+                        .await?;
+                    self.prompt_secret_or_finish(session, index + 1, ctx)
+                        .await?;
+                } else {
+                    self.prompt_secret_value(session, index, ctx).await?;
+                }
             }
             InstallStage::ConfirmConfig { index } => {
                 if is_yes(message) {

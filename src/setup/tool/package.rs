@@ -109,6 +109,11 @@ impl ListToolsTool {
             let package = package?;
             let is_installed = installed.contains(&package.name);
             package_names.insert(package.name.clone());
+            let required = if is_installed && package.manifest.accounts.is_some() {
+                account_secret_statuses(&self.layout, &package, &self.secrets)?
+            } else {
+                secret_statuses(required_secrets(&package), &self.secrets, false)
+            };
             tool_rows.push(serde_json::json!({
                 "name": package.name,
                 "kind": "wasm",
@@ -116,7 +121,7 @@ impl ListToolsTool {
                 "description": package.manifest.description,
                 "installed": is_installed,
                 "installable": !is_installed,
-                "required_secrets": secret_statuses(required_secrets(&package), &self.secrets, false),
+                "required_secrets": required,
                 "required_config": config_statuses(required_config(&package)),
             }));
         }
@@ -164,6 +169,45 @@ impl ListToolsTool {
         });
         Ok(serde_json::json!({ "ok": true, "tools": tool_rows }))
     }
+}
+
+/// Per-account secret status for an installed account package. The template's unscoped
+/// names (`NAME`) are never stored; each account keeps its own (`NAME:ACCOUNT`).
+fn account_secret_statuses(
+    layout: &RuntimeLayout,
+    package: &ToolPackage,
+    secrets: &crate::secrets::Secrets,
+) -> Result<Vec<serde_json::Value>, String> {
+    let setup = package.manifest.accounts.as_ref().expect("account package");
+    let Some(manifest) = installed_tool_manifest(layout, &package.name)? else {
+        return Ok(Vec::new());
+    };
+    let config: serde_json::Value =
+        serde_json::from_str(&manifest.config_json).map_err(|err| err.to_string())?;
+    let accounts = config
+        .pointer(&setup.path)
+        .and_then(|value| value.as_object());
+    let mut rows = Vec::new();
+    for (account, value) in accounts.into_iter().flatten() {
+        let mut seen = BTreeSet::new();
+        for secret in &package.manifest.secrets {
+            let Some(handle) = secret
+                .path
+                .as_deref()
+                .and_then(|path| value.pointer(path))
+                .and_then(|handle| handle.as_str())
+                .filter(|handle| !handle.is_empty() && seen.insert(handle.to_string()))
+            else {
+                continue;
+            };
+            rows.push(serde_json::json!({
+                "account": account,
+                "name": handle,
+                "configured": secrets.exists(&crate::setup::common::stored_secret_name(handle)),
+            }));
+        }
+    }
+    Ok(rows)
 }
 
 fn shell_inventory_row(
@@ -393,4 +437,52 @@ pub(super) fn required_secrets(package: &ToolPackage) -> Vec<SetupSecret> {
 
 pub(super) fn required_config(package: &ToolPackage) -> Vec<SetupConfig> {
     package.manifest.config.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_packages_report_each_wallets_scoped_secret() {
+        let root = std::env::temp_dir().join(format!("ironpaw-inventory-{}", uuid::Uuid::new_v4()));
+        let layout = RuntimeLayout::from_root(root);
+        std::fs::create_dir_all(layout.tools_dir()).unwrap();
+        std::fs::write(layout.tools_dir().join("outlayer.wasm"), b"").unwrap();
+        std::fs::write(
+            layout.tools_dir().join("outlayer.config.json"),
+            serde_json::json!({
+                "http_credentials": [],
+                "outlayer": { "accounts": {
+                    "principal": { "api_key_secret": "OUTLAYER_API_KEY:PRINCIPAL" },
+                    "segunda": { "api_key_secret": "OUTLAYER_API_KEY:SEGUNDA" }
+                }}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let package = ToolPackage {
+            name: "outlayer".to_string(),
+            display_name: "OutLayer".to_string(),
+            wasm_path: PathBuf::new(),
+            config_template_path: PathBuf::new(),
+            manifest: serde_json::from_str(include_str!(
+                "../../../wasm-tools/outlayer/outlayer.install.json"
+            ))
+            .unwrap(),
+        };
+        let secrets = crate::secrets::Secrets::for_tests();
+        secrets.set("OUTLAYER_API_KEY:PRINCIPAL", "wk_x").unwrap();
+
+        let rows = account_secret_statuses(&layout, &package, &secrets).unwrap();
+
+        let configured = |account: &str| {
+            rows.iter()
+                .find(|row| row["account"] == account)
+                .map(|row| row["configured"].as_bool().unwrap())
+        };
+        assert_eq!(configured("principal"), Some(true));
+        assert_eq!(configured("segunda"), Some(false));
+        assert_eq!(rows.len(), 2);
+    }
 }

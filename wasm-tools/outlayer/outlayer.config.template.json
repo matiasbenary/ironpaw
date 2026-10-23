@@ -1,0 +1,16 @@
+{
+  "http_credentials": [],
+  "outlayer": {
+    "accounts": {}
+  },
+  "approval": {
+    "safe_paths": [
+      "/wallet/v1/storage-deposit",
+      "/wallet/v1/intents/swap/quote",
+      "/wallet/v1/intents/withdraw/dry-run",
+      "/wallet/v1/confidential/swap/quote",
+      "/wallet/v1/confidential/withdraw/dry-run",
+      "/api/faucet"
+    ]
+  }
+}

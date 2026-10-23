@@ -1,0 +1,57 @@
+{
+  "name": "outlayer",
+  "display_name": "OutLayer Wallet",
+  "description": "Manage several OutLayer custody wallets on NEAR mainnet and testnet: balances, transfers, NEAR Intents swaps and withdrawals. Money movements need your approval.",
+  "setup_url": "https://app.outlayer.ai",
+  "config_before_secrets": true,
+  "accounts": {
+    "path": "/outlayer/accounts",
+    "identity_path": "/name",
+    "template": { "name": "", "network": "", "api_key_secret": "" }
+  },
+  "config": [
+    {
+      "path": "/name",
+      "prompt": "Name for this wallet (letters and digits, e.g. trading).",
+      "type": "string"
+    },
+    {
+      "path": "/network",
+      "prompt": "Which network is this wallet on?",
+      "type": "string",
+      "choices": [
+        { "label": "Mainnet", "value": "mainnet" },
+        { "label": "Testnet", "value": "testnet" }
+      ]
+    }
+  ],
+  "secrets": [
+    {
+      "name": "OUTLAYER_API_KEY",
+      "path": "/api_key_secret",
+      "prompt": "Paste your OutLayer mainnet wallet API key (wk_...).",
+      "when": { "path": "/network", "equals": "mainnet" },
+      "register": {
+        "url": "http://localhost:4400/register",
+        "secret_field": "api_key",
+        "show_fields": ["near_account_id", "wallet_id"]
+      },
+      "grants": [{ "host": "localhost", "bearer": true }]
+    },
+    {
+      "name": "OUTLAYER_TESTNET_API_KEY",
+      "path": "/api_key_secret",
+      "prompt": "Paste your OutLayer testnet wallet API key (wk_...).",
+      "when": { "path": "/network", "equals": "testnet" },
+      "register": {
+        "url": "https://testnet-api.outlayer.ai/register",
+        "secret_field": "api_key",
+        "show_fields": ["near_account_id", "wallet_id"]
+      },
+      "grants": [
+        { "host": "testnet-api.outlayer.ai", "bearer": true },
+        { "host": "faucet-near-testnet.onrender.com" }
+      ]
+    }
+  ]
+}

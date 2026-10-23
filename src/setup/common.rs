@@ -15,8 +15,76 @@ pub struct SetupSecret {
     pub optional: bool,
     #[serde(default)]
     pub auto_generate: Option<AutoGenerate>,
+    /// Lets setup create the credential itself by calling a registration endpoint.
+    #[serde(default)]
+    pub register: Option<SecretRegister>,
+    /// Hosts an account-scoped copy of this secret is granted to.
+    #[serde(default)]
+    pub grants: Vec<SecretGrant>,
     #[serde(default)]
     pub when: Option<SetupCondition>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct SecretGrant {
+    pub host: String,
+    /// Attach the secret as a bearer token. Without it the host is only reachable for this account.
+    #[serde(default)]
+    pub bearer: bool,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub struct SecretRegister {
+    pub url: String,
+    /// Response field stored as the secret. It is never shown in chat.
+    pub secret_field: String,
+    /// Non-secret response fields shown to the user after registering.
+    #[serde(default)]
+    pub show_fields: Vec<String>,
+}
+
+/// POSTs an empty JSON body to the registration URL and returns the secret plus a
+/// summary of the public fields. The URL must be https on a host the package already
+/// sends credentials to, so a manifest cannot use this to reach anywhere new.
+pub async fn register_secret(
+    register: &SecretRegister,
+    allowed_hosts: &[String],
+) -> Result<(String, String), String> {
+    let url =
+        reqwest::Url::parse(&register.url).map_err(|err| format!("invalid register url: {err}"))?;
+    // Plain http is accepted only for loopback in local-development builds (the OutLayer mock).
+    let local_http = cfg!(feature = "local-development")
+        && url.scheme() == "http"
+        && matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
+    if (url.scheme() != "https" && !local_http)
+        || !url
+            .host_str()
+            .is_some_and(|host| allowed_hosts.iter().any(|allowed| allowed == host))
+    {
+        return Err(format!(
+            "register url must be https on one of the package hosts ({})",
+            allowed_hosts.join(", ")
+        ));
+    }
+    let response = crate::network::client::post_json_public(
+        url.as_str(),
+        &serde_json::json!({}),
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .map_err(|err| format!("registration failed: {err}"))?;
+    let secret = response[&register.secret_field]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("registration response has no '{}'", register.secret_field))?
+        .to_string();
+    let summary = register
+        .show_fields
+        .iter()
+        .filter_map(|field| Some(format!("{field}: {}", response[field].as_str()?)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok((secret, summary))
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -331,6 +399,92 @@ pub fn is_yes(message: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn register_secret_stays_on_package_hosts() {
+        let hosts = vec!["api.outlayer.ai".to_string()];
+        for url in [
+            "https://evil.example/register",
+            "http://api.outlayer.ai/register",
+            "https://api.outlayer.ai.evil.example/register",
+        ] {
+            let register = SecretRegister {
+                url: url.to_string(),
+                secret_field: "api_key".to_string(),
+                show_fields: Vec::new(),
+            };
+            assert!(register_secret(&register, &hosts).await.is_err(), "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn register_over_plain_http_is_loopback_only_and_dev_only() {
+        let register = |url: &str| SecretRegister {
+            url: url.to_string(),
+            secret_field: "api_key".to_string(),
+            show_fields: Vec::new(),
+        };
+        // A loopback host the package did not declare is never reachable.
+        let error = register_secret(&register("http://localhost:1/register"), &[])
+            .await
+            .unwrap_err();
+        assert!(error.contains("package hosts"), "{error}");
+
+        let hosts = vec!["localhost".to_string()];
+        let error = register_secret(&register("http://localhost:1/register"), &hosts)
+            .await
+            .unwrap_err();
+        if cfg!(feature = "local-development") {
+            // Allowed by the guard; nothing listens on port 1, so the request itself fails.
+            assert!(error.contains("registration failed"), "{error}");
+        } else {
+            assert!(error.contains("package hosts"), "{error}");
+        }
+        // Non-loopback http stays rejected even if declared.
+        let hosts = vec!["example.com".to_string()];
+        let error = register_secret(&register("http://example.com/register"), &hosts)
+            .await
+            .unwrap_err();
+        assert!(error.contains("package hosts"), "{error}");
+    }
+
+    #[cfg(feature = "local-development")]
+    #[tokio::test]
+    async fn register_creates_an_account_on_a_local_loopback_server() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            let read = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).to_string();
+            let body = r#"{"api_key":"wk_created","near_account_id":"abc.near","wallet_id":"w-1"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            request
+        });
+        let register = SecretRegister {
+            url: format!("http://localhost:{port}/register"),
+            secret_field: "api_key".to_string(),
+            show_fields: vec!["near_account_id".to_string(), "wallet_id".to_string()],
+        };
+
+        let (secret, summary) = register_secret(&register, &["localhost".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(secret, "wk_created");
+        assert_eq!(summary, "near_account_id: abc.near, wallet_id: w-1");
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /register "), "{request}");
+        assert!(!request.to_ascii_lowercase().contains("authorization"));
+    }
 
     #[test]
     fn oauth_client_id_can_be_publisher_or_operator_provided() {

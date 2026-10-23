@@ -384,6 +384,7 @@ mod tests {
             commands: vec![ShellCommand {
                 name: script_name.to_string(),
                 environment: std::collections::BTreeMap::new(),
+                requires_approval: false,
                 invocations: vec![ShellInvocation {
                     args_prefix: Vec::new(),
                     secrets: Vec::new(),
@@ -415,6 +416,7 @@ mod tests {
         let command = ShellCommand {
             name: "gh".to_string(),
             environment: std::collections::BTreeMap::new(),
+            requires_approval: false,
             invocations: vec![ShellInvocation {
                 args_prefix: vec!["issue".to_string(), "list".to_string()],
                 secrets: Vec::new(),

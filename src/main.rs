@@ -44,6 +44,8 @@ async fn main() -> io::Result<()> {
     let addr = std::env::var("IRONPAW_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string());
     let bus = Bus::new(512);
     let secrets = ironpaw::secrets::Secrets::locked();
+    ironpaw::tools::approval::Approvals::global()
+        .attach(bus.clone(), layout.data_dir().join("approvals.json"));
     let history: Arc<dyn History> = Arc::new(
         SqliteHistory::new(layout.data_dir().join("history.db")).map_err(std::io::Error::other)?,
     );

@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::message::Message;
+use crate::{bus::ConversationKey, message::Message};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionContext {
@@ -16,6 +16,9 @@ pub struct ExecutionContext {
     #[serde(skip)]
     pub(crate) tool_budget: Arc<Mutex<ToolBudget>>,
     pub depth: usize,
+    /// Conversation this run belongs to, when there is one to ask for approvals.
+    #[serde(default)]
+    pub conversation: Option<ConversationKey>,
 }
 
 #[derive(Debug, Default)]
@@ -32,7 +35,13 @@ impl ExecutionContext {
             tool_stack: Vec::new(),
             tool_budget: Arc::new(Mutex::new(ToolBudget::default())),
             depth: 0,
+            conversation: None,
         }
+    }
+
+    pub fn with_conversation(mut self, conversation: ConversationKey) -> Self {
+        self.conversation = Some(conversation);
+        self
     }
 
     pub fn with_tool(&self, tool_name: String) -> Self {
@@ -44,6 +53,7 @@ impl ExecutionContext {
             tool_stack,
             tool_budget: Arc::clone(&self.tool_budget),
             depth: self.depth,
+            conversation: self.conversation.clone(),
         }
     }
 
@@ -54,6 +64,7 @@ impl ExecutionContext {
             tool_stack: self.tool_stack.clone(),
             tool_budget: Arc::clone(&self.tool_budget),
             depth: self.depth,
+            conversation: self.conversation.clone(),
         }
     }
 
@@ -92,5 +103,23 @@ mod tests {
             second.files_workspace(),
             std::path::Path::new("conversations/owner/tools/7365636f6e64")
         );
+    }
+
+    #[test]
+    fn nested_tool_contexts_keep_the_conversation_for_approvals() {
+        let conversation = ConversationKey {
+            channel: "local-client".to_string(),
+            chat_id: "chat".to_string(),
+            thread_id: None,
+        };
+        let context = ExecutionContext::new(PathBuf::from("conversations/owner"))
+            .with_conversation(conversation.clone());
+
+        let nested = context
+            .with_tool("script".to_string())
+            .with_tool_workspace(PathBuf::from("tools/x"))
+            .with_tool("outlayer".to_string());
+
+        assert_eq!(nested.conversation, Some(conversation));
     }
 }

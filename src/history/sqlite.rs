@@ -30,6 +30,8 @@ impl SqliteHistory {
         let conn = Connection::open(&path).map_err(|e| e.to_string())?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
+             -- Deleted messages (redacted secrets) must not linger in free pages.
+             PRAGMA secure_delete=ON;
              CREATE TABLE IF NOT EXISTS entries (
                  id              INTEGER PRIMARY KEY,
                  conversation_key TEXT    NOT NULL,
@@ -217,6 +219,10 @@ impl History for SqliteHistory {
                 .map_err(|err| err.to_string())?;
             }
         }
+        // The WAL keeps the original INSERT frame until a checkpoint; fold it away now so the
+        // deleted message does not stay readable on disk.
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|err| err.to_string())?;
         Ok(())
     }
 
@@ -430,5 +436,45 @@ mod tests {
             panic!("expected user message");
         };
         assert_eq!(text, "keep");
+    }
+
+    #[test]
+    fn deleted_secret_is_gone_from_the_database_files() {
+        let path =
+            std::env::temp_dir().join(format!("ironpaw-history-test-{}.db", uuid::Uuid::new_v4()));
+        let history = SqliteHistory::new(path.clone()).unwrap();
+        let conversation = ConversationKey {
+            channel: "local-client".to_string(),
+            chat_id: "chat".to_string(),
+            thread_id: None,
+        };
+        history
+            .append(
+                &HistoryId::Conversation(conversation.clone()),
+                &[HistoryEntry {
+                    message: Message::User {
+                        text: "sk-super-secret-key-value".to_string(),
+                        attachments: Vec::new(),
+                    },
+                    metadata: MessageMetadata::new(conversation.clone(), Some("m1".to_string())),
+                }],
+            )
+            .unwrap();
+        history
+            .delete_external_message(&MessageRef {
+                conversation,
+                message_id: "m1".to_string(),
+            })
+            .unwrap();
+        for file in [path.clone(), path.with_extension("db-wal")] {
+            let bytes = std::fs::read(&file).unwrap_or_default();
+            assert!(
+                !bytes
+                    .windows(b"super-secret".len())
+                    .any(|window| window == b"super-secret"),
+                "deleted message still readable in {}",
+                file.display()
+            );
+        }
     }
 }

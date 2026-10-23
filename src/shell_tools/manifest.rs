@@ -50,6 +50,9 @@ pub struct ShellCommand {
     pub invocations: Vec<ShellInvocation>,
     #[serde(default)]
     pub environment: std::collections::BTreeMap<String, String>,
+    /// Every run waits for the user's approval of the exact command line.
+    #[serde(default)]
+    pub requires_approval: bool,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

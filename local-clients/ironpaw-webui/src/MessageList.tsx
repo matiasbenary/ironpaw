@@ -1,6 +1,7 @@
 import { Fragment, useLayoutEffect, useRef } from 'react';
 
 import { attachmentUrl } from './attachments';
+import { approvalPresentation } from './approval';
 import { Icon, Logo } from './Icon';
 import { Markdown } from './Markdown';
 import type { Attachment, StoredMessage, TransientState } from './types';
@@ -24,10 +25,18 @@ function AttachmentView({ attachment }: { attachment: Attachment }) {
 
 function MessageView({ disabled, message, onChoice, onLink }: { disabled: boolean; message: StoredMessage; onChoice: (value: string, message: StoredMessage) => void; onLink: (href: string) => void }) {
   if (message.role === 'choice') {
+    const approval = message.options?.some((option) => option.value.startsWith('approve:'))
+      ? approvalPresentation(message.question || '') : undefined;
     return (
       <section className="choice-card">
-        <p>{message.question || 'Choose an option'}</p>
-        {message.answered && <small className="choice-answer">Answered: {message.answered}</small>}
+        <p>{approval?.title || message.question || 'Choose an option'}</p>
+        {approval && (
+          <details className="tool-details approval-details">
+            <summary>Action details</summary>
+            <pre>{approval.details}</pre>
+          </details>
+        )}
+        {message.answered && <small className="choice-answer">Answered: {message.options?.find((option) => option.value === message.answered)?.label || message.answered}</small>}
         <div className="choice-options">
           {(message.options || []).map((option) => (
             <button type="button" key={option.value} disabled={disabled || Boolean(message.answered)} onClick={() => onChoice(option.value, message)}>

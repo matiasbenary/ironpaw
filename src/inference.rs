@@ -118,12 +118,17 @@ impl Inference {
     where
         T: serde::Serialize + ?Sized,
     {
-        self.http
-            .post_json(
-                &format!("{}{}", self.provider.base_url.trim_end_matches('/'), path),
-                body,
-            )
-            .await
+        let url = format!("{}{}", self.provider.base_url.trim_end_matches('/'), path);
+        let mut attempt = 0;
+        loop {
+            match self.http.post_json(&url, body).await {
+                Err(error) if is_connection_failure(&error) && attempt < CONNECTION_RETRIES => {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * attempt)).await;
+                }
+                result => return result,
+            }
+        }
     }
 
     pub async fn execute(
@@ -160,6 +165,16 @@ impl Inference {
         })?;
         response_to_output(response).map_err(InferenceError::Other)
     }
+}
+
+/// Extra tries after a request that never got an answer (connection reset, EOF, refused).
+const CONNECTION_RETRIES: u64 = 2;
+
+/// True for failures to reach the provider. Timeouts are not retried (they already waited the
+/// full chat timeout) and neither are HTTP error statuses, which carry a real answer.
+fn is_connection_failure(error: &HttpError) -> bool {
+    matches!(error, HttpError::Http(message)
+        if message.contains("error sending request") && !message.contains("timed out"))
 }
 
 fn response_to_output(response: ChatResponse) -> Result<InferenceOutput, String> {
@@ -312,5 +327,23 @@ mod tests {
             .await
             .expect_err("missing key must fail");
         assert!(error.to_string().contains("NEAR_API_KEY"));
+    }
+
+    #[test]
+    fn only_connection_failures_are_retried() {
+        let http = |message: &str| HttpError::Http(message.to_string());
+        assert!(is_connection_failure(&http(
+            "error sending request: client error (Connect): Connection reset by peer (os error 104)"
+        )));
+        assert!(is_connection_failure(&http(
+            "error sending request: client error (Connect): unexpected EOF"
+        )));
+        assert!(!is_connection_failure(&http(
+            "error sending request: operation timed out (timed out)"
+        )));
+        assert!(!is_connection_failure(&http("request failed with 500")));
+        assert!(!is_connection_failure(&HttpError::MissingCredential(
+            "NEAR_API_KEY".to_string()
+        )));
     }
 }

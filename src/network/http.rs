@@ -256,9 +256,9 @@ where
         let response = self
             .authorize_for(request, &url, account)?
             .send()
-            .map_err(sanitize_blocking_reqwest_error)?;
+            .map_err(sanitize_reqwest_error)?;
         let status = response.status();
-        let body = response.bytes().map_err(sanitize_blocking_reqwest_error)?;
+        let body = response.bytes().map_err(sanitize_reqwest_error)?;
 
         if !status.is_success() {
             let body = String::from_utf8_lossy(&body);
@@ -306,13 +306,19 @@ where
 
     fn client(&self, url: &reqwest::Url) -> Result<Client, HttpError> {
         self.require_credentials(url)?;
-        super::client::blocking_for(url.as_str(), self.timeout).map_err(HttpError::InvalidRequest)
+        // Loopback is only honored on local-development builds (enforced in client::destination).
+        super::client::blocking_for_https_or_loopback(url.as_str(), self.timeout)
+            .map_err(HttpError::InvalidRequest)
     }
 
     fn prepare_url(&self, url: &str) -> Result<reqwest::Url, HttpError> {
         let original = reqwest::Url::parse(url)
             .map_err(|err| HttpError::InvalidRequest(format!("invalid URL: {err}")))?;
-        if original.scheme() != "https" {
+        // local-development lets tools reach local mocks such as outlayer-mock.
+        let loopback_http = cfg!(feature = "local-development")
+            && original.scheme() == "http"
+            && matches!(original.host_str(), Some("localhost" | "127.0.0.1"));
+        if original.scheme() != "https" && !loopback_http {
             return Err(HttpError::InvalidRequest(
                 "only https URLs are allowed".to_string(),
             ));
@@ -475,9 +481,9 @@ where
         let response = self
             .authorize(request, url)?
             .send()
-            .map_err(sanitize_blocking_reqwest_error)?;
+            .map_err(sanitize_reqwest_error)?;
         let status = response.status();
-        let body = response.text().map_err(sanitize_blocking_reqwest_error)?;
+        let body = response.text().map_err(sanitize_reqwest_error)?;
 
         if !status.is_success() {
             return Err(HttpError::Http(format!(
@@ -542,10 +548,23 @@ pub type HttpTool<S> = NetworkGate<S>;
 pub type CredentialInjection = NetworkGrant;
 pub type CredentialInjectionConfig = NetworkGrantConfig;
 
-fn sanitize_blocking_reqwest_error(err: reqwest::Error) -> HttpError {
-    HttpError::Http(err.without_url().to_string())
+/// Drops the URL (it can carry secrets) but keeps the cause chain, otherwise a timeout
+/// and a refused connection both read as "error sending request".
+fn sanitize_reqwest_error(err: reqwest::Error) -> HttpError {
+    HttpError::Http(describe_reqwest_error(err))
 }
 
-fn sanitize_reqwest_error(err: reqwest::Error) -> HttpError {
-    HttpError::Http(err.without_url().to_string())
+pub(crate) fn describe_reqwest_error(err: reqwest::Error) -> String {
+    let err = err.without_url();
+    let mut message = if err.is_timeout() {
+        format!("{err} (timed out)")
+    } else {
+        err.to_string()
+    };
+    let mut source = std::error::Error::source(&err);
+    while let Some(cause) = source {
+        let _ = std::fmt::Write::write_fmt(&mut message, format_args!(": {cause}"));
+        source = cause.source();
+    }
+    message
 }

@@ -127,7 +127,7 @@ impl SetupToolTool {
         ctx: &ExecutionContext,
     ) -> Result<(), String> {
         session.config_values.clear();
-        session.secret_values.clear();
+        keep_collected_accounts(&mut session.secret_values);
         session.account_current = current;
         self.prompt_config_or_finish(session, 0, ctx).await
     }
@@ -173,8 +173,19 @@ impl SetupToolTool {
                     .insert(scoped_secret(&identity, &secret.name), value);
             }
         }
+        if let Some(previous) = &session.account_current {
+            // Same wallet, different secret (e.g. it moved to another network).
+            session.removed_secrets.extend(stale_secret_handles(
+                &session.package,
+                previous,
+                &account,
+            ));
+        }
         session.accounts.insert(identity, account);
         session.account_current = None;
+        if session.add_only {
+            return self.complete(session, ctx).await;
+        }
         if matches!(session.mode, SetupMode::Install) {
             session.stage = InstallStage::AddAnother;
             self.state.save(session.clone());
@@ -239,5 +250,72 @@ fn wasm_package(package: &InstallableTool) -> &super::package::ToolPackage {
     match package {
         InstallableTool::Wasm(package) => package,
         InstallableTool::Shell(_) => unreachable!("shell tools cannot have accounts"),
+    }
+}
+
+/// Secret handles the previous version of an account used that the new one no longer does.
+fn stale_secret_handles(
+    package: &InstallableTool,
+    previous: &serde_json::Value,
+    current: &serde_json::Value,
+) -> Vec<String> {
+    let mut before = std::collections::BTreeSet::new();
+    let mut after = std::collections::BTreeSet::new();
+    collect_account_secrets(package, previous, &mut before);
+    collect_account_secrets(package, current, &mut after);
+    before.difference(&after).cloned().collect()
+}
+
+/// Starting another account drops the unscoped values just typed, but keeps scoped ones
+/// (`NAME:ACCOUNT`): those belong to accounts already collected in this session.
+fn keep_collected_accounts(secret_values: &mut std::collections::BTreeMap<String, String>) {
+    secret_values.retain(|name, _| name.contains(':'));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{keep_collected_accounts, stale_secret_handles};
+    use crate::setup::tool::{installable::InstallableTool, package::ToolPackage};
+
+    #[test]
+    fn adding_another_account_keeps_earlier_wallets_keys() {
+        let mut values = BTreeMap::from([
+            ("OUTLAYER_API_KEY:PRINCIPAL".to_string(), "wk_a".to_string()),
+            (
+                "OUTLAYER_API_KEY".to_string(),
+                "typed-for-the-next".to_string(),
+            ),
+        ]);
+
+        keep_collected_accounts(&mut values);
+
+        assert_eq!(
+            values,
+            BTreeMap::from([("OUTLAYER_API_KEY:PRINCIPAL".to_string(), "wk_a".to_string())])
+        );
+    }
+
+    #[test]
+    fn moving_a_wallet_to_another_network_retires_its_old_key() {
+        let package = InstallableTool::Wasm(ToolPackage {
+            name: "outlayer".to_string(),
+            display_name: "OutLayer".to_string(),
+            wasm_path: std::path::PathBuf::new(),
+            config_template_path: std::path::PathBuf::new(),
+            manifest: serde_json::from_str(include_str!(
+                "../../../wasm-tools/outlayer/outlayer.install.json"
+            ))
+            .unwrap(),
+        });
+        let testnet = serde_json::json!({ "api_key_secret": "OUTLAYER_TESTNET_API_KEY:PRUEBA" });
+        let mainnet = serde_json::json!({ "api_key_secret": "OUTLAYER_API_KEY:PRUEBA" });
+
+        assert_eq!(
+            stale_secret_handles(&package, &testnet, &mainnet),
+            vec!["OUTLAYER_TESTNET_API_KEY:PRUEBA".to_string()]
+        );
+        assert!(stale_secret_handles(&package, &mainnet, &mainnet).is_empty());
     }
 }

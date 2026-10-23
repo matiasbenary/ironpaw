@@ -114,6 +114,9 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
 .typing-dots i:nth-child(3) { animation-delay: .3s; }
 .choice-card, .error-card { width: min(100%, 640px); margin: 8px 0 24px; padding: 15px; border: 1px solid var(--line); border-radius: 10px; background: #fafaf8; }
 .choice-card p { margin: 0 0 12px; font-weight: 500; }
+.choice-card { min-width: 0; overflow-wrap: anywhere; }
+.approval-details { margin: 0 0 12px; }
+.approval-details pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .choice-options { display: flex; flex-wrap: wrap; gap: 8px; }
 .choice-options button { padding: 7px 11px; border: 1px solid #a7a7a1; border-radius: 7px; color: #3d3d39; background: #fff; cursor: pointer; }
 .choice-options button:hover { color: #fff; border-color: var(--accent); background: var(--accent); }

@@ -210,6 +210,8 @@ pub(super) fn required_secrets(
             ),
             optional: false,
             auto_generate: None,
+            register: None,
+            grants: Vec::new(),
             when: None,
         });
     }
@@ -344,6 +346,8 @@ mod tests {
                 prompt: Some("User supplied secret".to_string()),
                 optional: false,
                 auto_generate: None,
+                register: None,
+                grants: Vec::new(),
                 when: None,
             },
             SetupSecret {
@@ -352,6 +356,8 @@ mod tests {
                 prompt: None,
                 optional: false,
                 auto_generate: Some(AutoGenerate { length: 32 }),
+                register: None,
+                grants: Vec::new(),
                 when: None,
             },
         ];
