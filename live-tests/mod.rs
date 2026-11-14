@@ -10,6 +10,7 @@ mod album_recommendation_automation;
 mod delayed_message_automation;
 mod hacker_news_automation;
 mod image_generation_routes_to_telegram;
+mod inference_transcribes_speech;
 mod lottery_automation;
 mod memory_native_eval;
 mod memory_production_ingestion;

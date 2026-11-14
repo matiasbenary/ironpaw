@@ -127,6 +127,10 @@ pub struct WasmToolConfig {
 pub struct ApprovalConfig {
     #[serde(default)]
     pub safe_paths: Vec<String>,
+    /// Extra paths that skip approval when the request comes from one local client, keyed by
+    /// client id (e.g. `esp32`). Opt-in per installation, for devices where a card is impractical.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub client_safe_paths: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -317,7 +321,15 @@ impl StoreData {
         let path = reqwest::Url::parse(url)
             .map(|url| url.path().to_string())
             .map_err(|err| format!("invalid url: {err}"))?;
-        if method.eq_ignore_ascii_case("GET") || approval.safe_paths.contains(&path) {
+        let client_safe = self
+            .conversation
+            .as_ref()
+            .filter(|conversation| conversation.channel == crate::channels::local_client::CHANNEL)
+            .and_then(|conversation| conversation.thread_id.as_ref())
+            .and_then(|client| approval.client_safe_paths.get(client))
+            .is_some_and(|paths| paths.contains(&path));
+        if method.eq_ignore_ascii_case("GET") || approval.safe_paths.contains(&path) || client_safe
+        {
             return Ok(());
         }
         let body = serde_json::from_str::<serde_json::Value>(body_json)
@@ -525,8 +537,13 @@ mod tests {
     fn outlayer_flow_against_mock() {
         const MOCK: &str = "http://localhost:4400";
         let admin = |path: &str, body: serde_json::Value| -> serde_json::Value {
-            reqwest::blocking::Client::new()
-                .post(format!("{MOCK}{path}"))
+            let url = format!("{MOCK}{path}");
+            crate::network::client::blocking_for_https_or_loopback(
+                &url,
+                std::time::Duration::from_secs(10),
+            )
+            .unwrap()
+            .post(url)
                 .json(&body)
                 .send()
                 .and_then(reqwest::blocking::Response::error_for_status)
@@ -685,5 +702,34 @@ mod tests {
         config.approval = None;
         data.approval = None;
         assert!(gate(data, "POST", "/wallet/v1/transfer").is_ok());
+    }
+
+    #[test]
+    fn a_client_can_be_trusted_with_specific_paths_only() {
+        let config: WasmToolConfig = serde_json::from_str(
+            r#"{"approval":{"client_safe_paths":{"esp32":["/wallet/v1/transfer"]}}}"#,
+        )
+        .unwrap();
+        let mut tool = LoadedTool::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("wasm-tools/outlayer/outlayer.wasm"),
+            crate::secrets::Secrets::for_tests().tools,
+            config,
+        )
+        .unwrap();
+        let from = |tool: &mut LoadedTool, channel: &str, client: &str, path: &str| {
+            tool.set_conversation(Some(crate::bus::ConversationKey {
+                channel: channel.to_string(),
+                chat_id: "chat".to_string(),
+                thread_id: Some(client.to_string()),
+            }));
+            let url = format!("https://x.test{path}");
+            // `Ok` only when nothing has to be asked; a held request is an `Err`.
+            tool.store.data_mut().require_approval(Some("w"), "POST", &url, "{}")
+        };
+        assert!(from(&mut tool, "local-client", "esp32", "/wallet/v1/transfer").is_ok());
+        assert!(from(&mut tool, "local-client", "esp32", "/wallet/v1/call").is_err());
+        assert!(from(&mut tool, "local-client", "webui", "/wallet/v1/transfer").is_err());
+        assert!(from(&mut tool, "telegram", "esp32", "/wallet/v1/transfer").is_err());
     }
 }

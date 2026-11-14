@@ -1,0 +1,3 @@
+# The firmware's config (one level up) targets the ESP32; the simulator runs on the PC.
+[build]
+target = "x86_64-unknown-linux-gnu"

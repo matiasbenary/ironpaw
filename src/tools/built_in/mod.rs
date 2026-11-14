@@ -1,5 +1,6 @@
 pub mod automation;
 pub mod current_time;
+pub mod device_reminders;
 pub mod download_file;
 pub mod files;
 pub mod image_generation;

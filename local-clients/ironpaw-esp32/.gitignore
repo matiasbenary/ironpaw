@@ -1,0 +1,6 @@
+/target
+/.embuild
+/sim/target
+/sim/out
+/sim/sdcard
+__pycache__/

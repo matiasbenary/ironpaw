@@ -14,6 +14,27 @@ pub(super) fn system_preamble(conversation: Option<&ConversationKey>) -> Vec<Mes
             }
             text.push(')');
             text.push('.');
+            text.push_str(&format!(
+                " The local date and time now is {}.",
+                chrono::Local::now().format("%A %Y-%m-%d %H:%M")
+            ));
+            if conversation.channel == crate::channels::local_client::CHANNEL
+                && conversation.thread_id.as_deref()
+                    == Some(crate::channels::local_client::DEVICE_CLIENT_ID)
+            {
+                text.push_str(&format!(
+                    " The user talks to you through a small voice device with a screen: \
+                    keep replies to a sentence or two. The device keeps two files in your \
+                    workspace that you manage with your file tools: `notes.md`, one bullet \
+                    per voice note, and `{}`, a JSON list of reminders the device rings on \
+                    its own, each {{\"at\": \"YYYY-MM-DDTHH:MM\" (local time), \"text\": \
+                    \"...\", \"repeat\": \"daily\"|\"weekly\" (optional)}}. When the user asks \
+                    to be reminded of something, add it there; when they ask to move or cancel \
+                    one, edit or remove it; when they ask what is coming up, read it. Do not \
+                    create automations for these reminders.",
+                    crate::channels::local_client::EVENTS_FILE
+                ));
+            }
             text.push_str(
                 " Your final message is delivered to this conversation \
                 automatically: do not use send_message to reply here, only \

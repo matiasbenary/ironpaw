@@ -1,0 +1,158 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Perro del parque, realista</title>
+<style>
+:root{--bg:#dfe6ea;--fg:#23272b;--muted:#5d666d;--panel:#ffffffcc}
+@media (prefers-color-scheme: dark){:root{--bg:#171a1d;--fg:#e7eaec;--muted:#9aa3aa;--panel:#24282ccc}}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:Georgia,serif;overflow:hidden}
+#c{display:block;width:100%;height:100%}
+.ui{position:fixed;left:0;right:0;bottom:0;padding:12px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:var(--panel);backdrop-filter:blur(6px)}
+.ui h1{font-size:18px;margin:0;font-weight:normal}
+.ui p{margin:0;font-size:13px;color:var(--muted);font-family:system-ui,sans-serif}
+.ui button{margin-left:auto;font:13px system-ui,sans-serif;padding:6px 12px;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--fg);cursor:pointer}
+</style></head><body>
+<canvas id="c"></canvas>
+<div class="ui"><h1>Perro del parque</h1><p>Arrastrá para girar, rueda para acercar.</p><button id="wag">Mover la cola</button></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=.95;
+renderer.outputEncoding=THREE.sRGBEncoding;
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0xbfd3e0);scene.fog=new THREE.Fog(0xbfd3e0,12,30);
+const camera=new THREE.PerspectiveCamera(35,1,0.1,100);camera.position.set(3.4,1.9,5.6);
+const controls=new THREE.OrbitControls(camera,canvas);controls.target.set(0,1.1,0);controls.enableDamping=true;controls.maxPolarAngle=Math.PI/2.02;
+
+// luz: cielo frio, sol calido bajo, contraluz
+scene.add(new THREE.HemisphereLight(0xcfe3ff,0x4a5a2a,0.55));
+const sun=new THREE.DirectionalLight(0xffe2b8,1.6);sun.position.set(5,6,4);sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);sun.shadow.radius=4;sun.shadow.bias=-0.0005;
+Object.assign(sun.shadow.camera,{left:-4,right:4,top:4,bottom:-4,near:1,far:20});scene.add(sun);
+const rim=new THREE.DirectionalLight(0xbfd8ff,0.6);rim.position.set(-4,3,-5);scene.add(rim);
+
+// textura de pelo: ruido de pinceladas cortas, misma imagen como color y relieve
+function furTexture(base,dark,light){
+  const s=1024,cv=document.createElement('canvas');cv.width=cv.height=s;const g=cv.getContext('2d');
+  g.fillStyle=base;g.fillRect(0,0,s,s);g.lineCap='round';
+  for(let i=0;i<60000;i++){const x=Math.random()*s,y=Math.random()*s,l=6+Math.random()*14,a=(Math.random()-.5)*.9;
+    g.strokeStyle=Math.random()<.5?dark:light;g.globalAlpha=.08+Math.random()*.18;g.lineWidth=1+Math.random()*1.5;
+    g.beginPath();g.moveTo(x,y);g.lineTo(x+Math.sin(a)*l,y+Math.cos(a)*l);g.stroke();}
+  const t=new THREE.CanvasTexture(cv);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(2,2);t.encoding=THREE.sRGBEncoding;return t;
+}
+const furMap=furTexture('#c4915a','#7a5330','#e8c38f');
+const fur=new THREE.MeshStandardMaterial({map:furMap,bumpMap:furMap,bumpScale:.012,roughness:.9,metalness:0});
+const furLight=new THREE.MeshStandardMaterial({map:furTexture('#e2c69c','#a98a5f','#fff0d2'),roughness:.9});
+const skin=new THREE.MeshStandardMaterial({color:0xd98391,roughness:.55});
+const nariz=new THREE.MeshStandardMaterial({color:0x1a1416,roughness:.25,metalness:.1});
+const ojo=new THREE.MeshStandardMaterial({color:0x2b1a10,roughness:.15,metalness:.2});
+const blanco=new THREE.MeshStandardMaterial({color:0xffffff,roughness:.1});
+const negro=new THREE.MeshStandardMaterial({color:0x151515,roughness:.5});
+const rosa=new THREE.MeshStandardMaterial({color:0xe88aa6,roughness:.85});
+const metal=new THREE.MeshStandardMaterial({color:0xd8d8d8,metalness:.9,roughness:.25});
+
+const dog=new THREE.Group();scene.add(dog);
+// ellipsoide: esfera suave escalada, la pieza basica de todo el cuerpo
+const ell=(r,sx,sy,sz,mat,x,y,z,rx=0,ry=0,rz=0,parent=dog)=>{const m=new THREE.Mesh(new THREE.SphereGeometry(r,40,30),mat);
+  m.scale.set(sx,sy,sz);m.position.set(x,y,z);m.rotation.set(rx,ry,rz);m.castShadow=m.receiveShadow=true;parent.add(m);return m};
+
+// suelo
+const suelo=new THREE.Mesh(new THREE.CircleGeometry(30,64),new THREE.MeshStandardMaterial({map:furTexture('#5f7a3c','#3a5223','#8aa65a'),roughness:1}));
+suelo.material.map.repeat.set(14,14);suelo.rotation.x=-Math.PI/2;suelo.receiveShadow=true;scene.add(suelo);
+
+// tronco de perro atletico: caja toracica honda e inclinada, cintura recogida, cadera sentada
+// columna: cadena de esferas sobre una curva, radio interpolado; da una silueta continua
+const v=(x,y,z)=>new THREE.Vector3(x,y,z);
+const spine=(pts,radii,sx,mat,n=28)=>{const c=new THREE.CatmullRomCurve3(pts);for(let i=0;i<=n;i++){const t=i/n,p=c.getPoint(t),k=t*(radii.length-1),a=Math.floor(k);
+  const r=THREE.MathUtils.lerp(radii[a],radii[Math.min(a+1,radii.length-1)],k-a);ell(r,sx,1,1,mat,p.x,p.y,p.z);}};
+spine([v(0,.58,-.62),v(0,.92,-.3),v(0,1.28,.1),v(0,1.5,.36)],[.48,.36,.43,.36],.82,fur);   // cadera, cintura, torax, cruz
+spine([v(0,1.5,.36),v(0,1.8,.56),v(0,2.08,.7)],[.32,.29,.27],.85,fur);                      // cuello
+ell(.27,.8,.9,.45,furLight,0,1.2,.44,.1);           // esternon claro
+ell(.2,.75,.8,.45,furLight,0,1.72,.78,.5);         // garganta clara
+// cabeza cuadrada de pit, hocico largo
+const cabeza=new THREE.Group();cabeza.position.set(0,2.2,.72);dog.add(cabeza);const orejas=[];
+ell(.36,1.05,.85,1,fur,0,0,0,0,0,0,cabeza);
+ell(.3,1.2,.7,.8,fur,0,-.1,.12,0,0,0,cabeza);        // cachetes
+ell(.26,.85,.62,1.25,fur,0,-.1,.4,.06,0,0,cabeza);   // hocico
+ell(.2,.8,.4,1.0,furLight,0,-.28,.42,0,0,0,cabeza);  // mandibula
+ell(.095,1,.8,.85,nariz,0,-.02,.73,0,0,0,cabeza);
+const lengua=ell(.11,.45,.16,1.1,skin,0,-.33,.72,.3,0,0,cabeza);  // lengua afuera
+[-1,1].forEach(s=>{
+  ell(.07,1,1,1,ojo,s*.17,.08,.3,0,0,0,cabeza);
+  ell(.018,1,1,1,blanco,s*.19,.11,.365,0,0,0,cabeza);
+  // oreja en rosa, plegada hacia atras
+  const o=new THREE.Group();o.position.set(s*.3,.27,-.05);o.rotation.set(-.9,s*.35,s*-.55);o.userData.s=s;orejas.push(o);cabeza.add(o);
+  ell(.17,.5,1,.25,fur,0,.08,0,0,0,0,o);
+  ell(.12,.38,.8,.18,skin,0,.07,.045,0,0,0,o);
+});
+// collar negro con tachas, rodea el cuello inclinado
+const col=new THREE.Mesh(new THREE.TorusGeometry(.3,.035,12,48),negro);col.position.set(0,2.0,.62);col.rotation.x=-.85;col.castShadow=true;dog.add(col);
+for(let i=0;i<12;i++){const a=i/12*Math.PI*2;ell(.022,1,1,1,metal,Math.cos(a)*.3,Math.sin(a)*.3,0,0,0,0,col);}
+// pretal rosa: aro de pecho delante de las patas, cincha detras, tira dorsal y tira de pecho
+const aro=(r,y,z,tilt)=>{const m=new THREE.Mesh(new THREE.TorusGeometry(r,.05,12,64),rosa);m.position.set(0,y,z);m.rotation.x=tilt;m.castShadow=true;dog.add(m);return m};
+aro(.42,1.33,.26,-.55);aro(.45,1.1,-.1,-.72);
+const tira=new THREE.Mesh(new THREE.BoxGeometry(.14,.045,.5),rosa);tira.position.set(0,1.66,.1);tira.rotation.x=-.65;tira.castShadow=true;dog.add(tira);
+const pecho=new THREE.Mesh(new THREE.BoxGeometry(.12,.045,.45),rosa);pecho.position.set(0,.9,.2);pecho.rotation.x=-.5;dog.add(pecho);
+[-1,1].forEach(s=>{const h=new THREE.Mesh(new THREE.BoxGeometry(.07,.14,.1),negro);h.position.set(s*.45,1.2,-.1);dog.add(h);});
+// patas delanteras largas y rectas; traseras plegadas con el corvejon atras
+[-1,1].forEach(s=>{
+  const p=new THREE.Mesh(new THREE.CylinderGeometry(.085,.1,1.25,20),fur);p.position.set(s*.25,.65,.52);p.castShadow=true;dog.add(p);
+  ell(.17,.8,1,1,fur,s*.24,1.25,.42);               // hombro
+  ell(.12,1,.55,1.5,fur,s*.26,.07,.66);              // garra
+  ell(.4,.45,.8,1.15,fur,s*.34,.6,-.5,.45,0,s*.08);    // muslo inclinado
+  ell(.16,.7,.6,.9,fur,s*.42,.28,-.85);                // corvejon
+  ell(.13,.85,.5,2.1,fur,s*.46,.13,-.2);              // canilla apoyada
+  ell(.12,1,.55,1.4,fur,s*.48,.07,.34);              // garra trasera
+});
+// cola fina que cae al piso
+const cola=new THREE.Group();cola.position.set(0,.5,-1.0);dog.add(cola);
+const curva=new THREE.CatmullRomCurve3([new THREE.Vector3(0,0,0),new THREE.Vector3(.15,-.2,-.35),new THREE.Vector3(.5,-.4,-.5),new THREE.Vector3(.9,-.43,-.3)]);
+const colaM=new THREE.Mesh(new THREE.TubeGeometry(curva,24,.045,12,false),fur);colaM.castShadow=true;cola.add(colaM);
+ell(.045,1,1,1,fur,.9,-.43,-.3,0,0,0,cola);
+
+// respiracion, cabeza que mira, cola a pedido
+let wagUntil=0;document.getElementById('wag').onclick=()=>wagUntil=performance.now()+2500;
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function resize(){const w=canvas.clientWidth,h=canvas.clientHeight;if(canvas.width!==Math.floor(w*renderer.getPixelRatio())){renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}}
+function loop(t){
+  resize();
+  if(!reduce){cabeza.rotation.y=Math.sin(t/2600)*.18;cabeza.rotation.z=Math.sin(t/4100)*.05;}
+  cola.rotation.y=t<wagUntil?Math.sin(t/70)*.8:Math.sin(t/1500)*.08;
+  controls.update();renderer.render(scene,camera);requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---- sprites de estado (ver sprites.py): accesorios + poses + capture(nombre, tam) ----
+const toon=c=>new THREE.MeshStandardMaterial({color:c,roughness:.6});
+const bowl=new THREE.Mesh(new THREE.CylinderGeometry(.4,.3,.22,24),toon(0xdde6ff));bowl.position.set(.45,.8,1.25);const stand=new THREE.Mesh(new THREE.CylinderGeometry(.12,.18,.7,16),toon(0x6a5a7a));stand.position.y=-.45;bowl.add(stand);/* ponytail: comedero elevado, asi la cabeza llega sin despegar el cuello */bowl.castShadow=true;bowl.visible=false;scene.add(bowl);
+const zs=[0,1,2].map(i=>{const g=new THREE.Group(),s=.28+i*.09,m=new THREE.MeshBasicMaterial({color:0xffffff}),bar=(w,y,r)=>{const b=new THREE.Mesh(new THREE.BoxGeometry(w,.08,.06),m);b.position.y=y;b.rotation.z=r;g.add(b)};bar(s,s/2,0);bar(s,-s/2,0);bar(s*1.3,0,Math.atan2(s,s));g.position.set(-.6-i*.2,1.45+i*.25,.9);g.rotation.y=.43;g.userData.y=g.position.y;g.visible=false;scene.add(g);return g});
+const heart=new THREE.Mesh(new THREE.OctahedronGeometry(.26),new THREE.MeshBasicMaterial({color:0xff4d7a}));heart.position.set(.9,2.35,.9);heart.scale.set(1,.8,.5);heart.visible=false;scene.add(heart);
+const dots=[0,1,2].map(i=>{const d=new THREE.Mesh(new THREE.SphereGeometry(.09+i*.05,12,8),new THREE.MeshBasicMaterial({color:0xf2f4ff}));d.position.set(.75+i*.22,2.55+i*.28,.9);d.visible=false;scene.add(d);return d});
+const F=o=>Object.assign({ms:150,head:0,tilt:0,pitch:0,bob:0,tail:0,tailUp:0,breath:0,ears:0,squash:1,lean:0,tongue:1,over:null,n:3,zf:0,earSplit:0,dip:0},o);
+const seq=(n,ms,fn)=>Array.from({length:n},(_,i)=>F({ms,...fn(i,i/n*Math.PI*2,i/n)}));
+const SPRITES={
+  idle:seq(16,200,(i,t,u)=>({head:Math.sin(t)*.35,tilt:Math.sin(t*2)*.08,breath:(1-Math.cos(t))*.015})),
+  happy:seq(16,90,(i,t,u)=>({bob:Math.abs(Math.sin(t))*.22,tilt:Math.sin(t)*.2,tail:Math.sin(t*2)*.9,tailUp:-.9,ears:-.5,over:u>=.25&&u<.75?'heart':null,tongue:1.6})),
+  sleep:seq(16,400,(i,t,u)=>({squash:.7,pitch:.8,breath:(1-Math.cos(t))*.03,ears:.6,over:'z',n:i<12?(i>>2)+1:3,zf:(i%4)/4,tongue:0})),
+  angry:seq(16,80,(i,t,u)=>({lean:.15,pitch:.3,head:Math.sin(t*2)*.35,ears:.8,bob:i%2?.05:0,tail:Math.sin(t*4)*.3,tongue:0})),
+  hungry:seq(16,140,(i,t,u)=>{const come=u<.6;return {over:'bowl',lean:.08,dip:come?.52:.12,pitch:come?1.1+(i%2?.1:0):.4,head:come?.35+Math.sin(t*3)*.08:.25,tilt:come?(i%2?.1:-.1):0,ears:-.35,tongue:come?(i%2?2:.6):(i%2?1.6:.3),tail:Math.sin(t*2)*.6}}),
+  sad:seq(16,300,(i,t,u)=>({squash:.92,pitch:.85,ears:.9,head:Math.sin(t)*.1,breath:(1-Math.cos(t))*.01,tongue:0})),
+  listening:seq(16,160,(i,t,u)=>({ears:-.9,tilt:u<.5?.18:-.18,head:u<.5?-.25:.25,breath:(1-Math.cos(t))*.01})),
+  thinking:seq(16,250,(i,t,u)=>({ears:-.2,earSplit:.6,tilt:Math.sin(t)*1.4,pitch:-.1,head:.2,over:'dots',n:Math.min(3,(i>>2)+1),breath:(1-Math.cos(t))*.015})),
+  talking:seq(16,100,(i,t,u)=>({pitch:i%2?.25:-.05,head:Math.sin(t)*.15,ears:-.4,tail:Math.sin(t)*.4,tongue:i%2?2.2:.5})),
+};
+const pose=f=>{cabeza.rotation.set(f.pitch,f.head,f.tilt);cabeza.position.set(0,2.2-f.dip,.72+f.dip*.45);cola.rotation.set(f.tailUp,f.tail,0);dog.rotation.set(f.lean,0,0);dog.scale.set(1+f.breath,f.squash+f.breath,1+f.breath);dog.position.set(0,f.bob,0);
+  orejas.forEach(o=>{const s=o.userData.s;const e=f.ears+s*f.earSplit;o.rotation.set(-.9-e*.4,s*.35,s*(-.55-e*.7));});lengua.scale.set(.45,.16,1.1*f.tongue);
+  bowl.visible=f.over=='bowl';heart.visible=f.over=='heart';zs.forEach((z,i)=>{z.visible=f.over=='z'&&i<f.n;z.position.y=z.userData.y+f.zf*.3;});dots.forEach((d,i)=>d.visible=f.over=='dots'&&i<f.n);};
+window.capture=(name,size=200)=>{
+  const fr=SPRITES[name];if(!fr)throw new Error('estado desconocido '+name);
+  const cam=new THREE.PerspectiveCamera(32,1,.1,100);cam.position.set(2.3,2.1,5.0);cam.lookAt(0,1.3,0);
+  const bg=scene.background,fog=scene.fog,pr=renderer.getPixelRatio();renderer.setPixelRatio(1);scene.background=new THREE.Color(0x102848);scene.fog=null;suelo.visible=false;renderer.setSize(size,size,false);
+  const out=fr.map(f=>{pose(f);renderer.render(scene,cam);return {ms:f.ms,png:canvas.toDataURL()}});
+  pose(F());scene.background=bg;scene.fog=fog;suelo.visible=true;renderer.setPixelRatio(pr);canvas.width=0;return out;
+};
+</script>
+</body></html>

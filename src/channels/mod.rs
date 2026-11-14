@@ -2,7 +2,10 @@ use std::{io, sync::Arc};
 
 use tokio::{sync::Mutex, task::JoinHandle};
 
-use crate::{bus::Bus, config::RuntimeLayout, history::History, secrets::ChannelSecrets};
+use crate::{
+    bus::Bus, config::RuntimeLayout, history::History, inference::Inference,
+    secrets::ChannelSecrets,
+};
 
 pub(crate) mod bridge;
 pub(crate) mod local_client;
@@ -162,9 +165,10 @@ pub async fn start(
     history: Arc<dyn History>,
     layout: &RuntimeLayout,
     secrets: ChannelSecrets,
+    inference: Inference,
     addr: &str,
 ) -> io::Result<ChannelRuntime> {
-    let runtime = start_bridge(bus, history, layout, secrets, addr).await?;
+    let runtime = start_bridge(bus, history, layout, secrets, inference, addr).await?;
     runtime
         .load_installed_channels()
         .await
@@ -177,6 +181,7 @@ pub async fn start_bridge(
     history: Arc<dyn History>,
     layout: &RuntimeLayout,
     secrets: ChannelSecrets,
+    inference: Inference,
     addr: &str,
 ) -> io::Result<ChannelRuntime> {
     let listener = crate::network::server::bind(addr).await?;
@@ -191,7 +196,17 @@ pub async fn start_bridge(
         outbound_bridge.run().await;
     });
 
-    let local_client = local_client::LocalClient::new(bridge.clone(), files_dir.clone());
+    let token = local_client::connection_token(std::env::var("IRONPAW_CLIENT_TOKEN").ok())
+        .map_err(io::Error::other)?;
+    let device_token = local_client::device_token(std::env::var("IRONPAW_DEVICE_TOKEN").ok())
+        .map_err(io::Error::other)?;
+    let local_client = local_client::LocalClient::new(
+        bridge.clone(),
+        files_dir.clone(),
+        inference,
+        token,
+        device_token,
+    );
     bridge
         .add_channel(Arc::clone(&local_client) as Arc<dyn bridge::Channel>)
         .await;

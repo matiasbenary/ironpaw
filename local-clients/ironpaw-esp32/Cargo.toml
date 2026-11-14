@@ -1,0 +1,29 @@
+[package]
+name = "ironpaw-esp32"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+
+[[bin]]
+name = "ironpaw-esp32"
+harness = false
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true
+opt-level = "z"
+
+[dependencies]
+log = "0.4"
+anyhow = "1"
+# experimental: the SDMMC peripherals (sd.rs)
+esp-idf-svc = { version = "0.51", features = ["experimental"] }
+embedded-svc = "0.28"
+embedded-graphics = "0.8"
+base64 = "0.22"
+serde_json = "1"
+
+[build-dependencies]
+embuild = "0.33"

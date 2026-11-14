@@ -49,21 +49,22 @@ async fn main() -> io::Result<()> {
     let history: Arc<dyn History> = Arc::new(
         SqliteHistory::new(layout.data_dir().join("history.db")).map_err(std::io::Error::other)?,
     );
+    let provider = Arc::new(ironpaw::config::ProviderConfig::from_env());
+    let inference = Inference::with_config(secrets.tools.clone(), Arc::clone(&provider))
+        .map_err(std::io::Error::other)?;
     let channel_runtime = Arc::new(
         channels::start_bridge(
             bus.clone(),
             Arc::clone(&history),
             &layout,
             secrets.channels.clone(),
+            inference.clone(),
             &addr,
         )
         .await
         .map_err(std::io::Error::other)?,
     );
     let token = channel_runtime.connection_token().to_string();
-    let provider = Arc::new(ironpaw::config::ProviderConfig::from_env());
-    let inference = Inference::with_config(secrets.tools.clone(), Arc::clone(&provider))
-        .map_err(std::io::Error::other)?;
     let clock = Arc::new(ironpaw::clock::SystemClock);
     let tools = Arc::new(InternalTools::new(
         bus.clone(),

@@ -9,6 +9,7 @@ const DEFAULT_TEXT_MODEL: &str = "deepseek-ai/DeepSeek-V4-Flash";
 const DEFAULT_VISION_MODEL: &str = "google/gemma-4-31B-it";
 const DEFAULT_IMAGE_MODEL: &str = "black-forest-labs/FLUX.2-klein-4B";
 const DEFAULT_EMBEDDING_MODEL: &str = "Qwen/Qwen3-Embedding-0.6B";
+const DEFAULT_TRANSCRIPTION_MODEL: &str = "openai/whisper-large-v3";
 
 #[derive(Clone, Debug)]
 pub struct ProviderConfig {
@@ -17,6 +18,9 @@ pub struct ProviderConfig {
     pub vision_model: String,
     pub image_model: String,
     pub embedding_model: String,
+    pub transcription_model: String,
+    /// A local OpenAI-compatible speech-to-text server (`whisper-server.py`) instead of NEAR AI.
+    pub whisper_url: Option<String>,
     pub chat_timeout: Duration,
     pub image_timeout: Duration,
 }
@@ -32,6 +36,9 @@ impl ProviderConfig {
                 .unwrap_or_else(|_| DEFAULT_IMAGE_MODEL.to_string()),
             embedding_model: env::var("NEAR_EMBEDDING_MODEL")
                 .unwrap_or_else(|_| DEFAULT_EMBEDDING_MODEL.to_string()),
+            transcription_model: env::var("NEAR_TRANSCRIPTION_MODEL")
+                .unwrap_or_else(|_| DEFAULT_TRANSCRIPTION_MODEL.to_string()),
+            whisper_url: env::var("WHISPER_URL").ok().filter(|url| !url.is_empty()),
             chat_timeout: Duration::from_secs(env_u64("NEAR_CHAT_TIMEOUT_SECS", 180)),
             image_timeout: Duration::from_secs(env_u64("NEAR_IMAGE_TIMEOUT_SECS", 120)),
         }

@@ -44,6 +44,7 @@ pub use runner::execute_tool;
 use self::built_in::{
     automation::{AutomationTool, AutomationToolKind},
     current_time::CurrentTimeTool,
+    device_reminders::DeviceRemindersTool,
     download_file::DownloadFileTool,
     files::{EditFileTool, ReadFileTool, SearchFilesTool, WriteFileTool},
     image_generation::ImageGenerationTool,
@@ -334,6 +335,7 @@ impl InternalTools {
             tool(EditFileTool::new(files_dir.clone())),
             tool(SearchFilesTool::new(files_dir.clone())),
             tool(TodoTool::new()),
+            tool(DeviceRemindersTool::new(files_dir.clone())),
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::Create)),
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::Edit)),
             tool(AutomationTool::new(bus.clone(), AutomationToolKind::Delete)),

@@ -131,6 +131,64 @@ impl Inference {
         }
     }
 
+    /// Transcribes speech through an OpenAI-compatible audio endpoint: the local whisper
+    /// server when `WHISPER_URL` is set, otherwise the provider's.
+    pub async fn transcribe(
+        &self,
+        filename: String,
+        mime_type: String,
+        data_base64: String,
+    ) -> Result<String, String> {
+        let http = self.http.clone();
+        let fields = serde_json::json!({ "model": self.provider.transcription_model }).to_string();
+        let whisper = self.provider.whisper_url.clone();
+        let url = format!(
+            "{}/v1/audio/transcriptions",
+            whisper
+                .as_deref()
+                .unwrap_or(&self.provider.base_url)
+                .trim_end_matches('/')
+        );
+        let timeout = self.provider.chat_timeout;
+        let body = tokio::task::spawn_blocking(move || {
+            if whisper.is_none() {
+                return http
+                    .post_multipart_base64_blocking(
+                        &url,
+                        &fields,
+                        "file",
+                        &filename,
+                        &mime_type,
+                        &data_base64,
+                    )
+                    .map_err(|error| error.to_string());
+            }
+            // Local, no credentials: outside the network gate (loopback http needs local-development).
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&data_base64)
+                .map_err(|error| error.to_string())?;
+            let part = reqwest::blocking::multipart::Part::bytes(bytes)
+                .file_name(filename)
+                .mime_str(&mime_type)
+                .map_err(|error| error.to_string())?;
+            crate::network::client::blocking_for_https_or_loopback(&url, timeout)?
+                .post(&url)
+                .multipart(reqwest::blocking::multipart::Form::new().part("file", part))
+                .send()
+                .and_then(|response| response.error_for_status())
+                .and_then(|response| response.text())
+                .map_err(|error| error.without_url().to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        let value: serde_json::Value =
+            serde_json::from_str(&body).map_err(|error| error.to_string())?;
+        value["text"]
+            .as_str()
+            .map(|text| text.trim().to_string())
+            .ok_or_else(|| format!("transcription response missing text: {body}"))
+    }
+
     pub async fn execute(
         &self,
         request: InferenceRequest,
